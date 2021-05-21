@@ -14,8 +14,8 @@ class WebSocketClient(object):
         self.https = https
         self.id = id
         self.url = f"ws{'s' if self.https else ''}://{self.server}:{self.port}/?clientID={self.id}"
-        from ..session import Session
-        self.client_session = Session.get().client_session
+        from ..session import UbiiSession
+        self.client_session = UbiiSession.get().client_session
         self.task: Task = asyncio.create_task(self.run(), name=f"{self}")
 
     async def on_message(self, message):
@@ -38,7 +38,7 @@ class WebSocketClient(object):
                     log.error(message)
                     break
 
-            log.info(f"{self} closing.")
+        log.info(f"{self} closing.")
 
     def __str__(self):
         return f"Websocket Client for {self.url}"

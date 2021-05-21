@@ -1,23 +1,23 @@
 import asyncio
 import logging
 import socket
-from asyncio import Task
-from typing import List, Dict
+from typing import Dict
 import aiohttp
 from proto.services.serviceReply_pb2 import ServiceReply
-from .client.rest import RESTClient
-from .util.translators import protomessages, serialize as proto_serialize
-from .util import constants
+
 from .client.node import ClientNode
+from .client.rest import RESTClient
+from .util.translators import protomessages
+from .util import constants
 
 __session_instance__ = None
 log = logging.getLogger(__name__)
 
-class Session(object):
+class UbiiSession(object):
     __create_key = object()
 
     def __init__(self, create_key) -> None:
-        assert (create_key == Session.__create_key), \
+        assert (create_key == UbiiSession.__create_key), \
             "The singleton Session object can be accessed using Session.get"
 
         super().__init__()
@@ -37,13 +37,23 @@ class Session(object):
     def get(cls):
         global __session_instance__
         if not __session_instance__:
-            __session_instance__ = Session(cls.__create_key)
+            __session_instance__ = UbiiSession(cls.__create_key)
         return __session_instance__
 
     @property
     def client_session(self):
         if not self._client_session:
-            self._client_session = aiohttp.ClientSession(raise_for_status=True, json_serialize=proto_serialize)
+            trace_config = aiohttp.TraceConfig()
+
+            async def on_request_start(self, session, trace_config_ctx, params):
+                logging.getLogger('aiohttp.client').debug(f'Starting request <{params}>')
+
+            trace_config.on_request_start.append(on_request_start)
+
+            from .util.translators import serialize as proto_serialize
+            self._client_session = aiohttp.ClientSession(raise_for_status=True,
+                                                         json_serialize=proto_serialize,
+                                                         trace_configs=[trace_config])
         return self._client_session
 
     @property
@@ -59,27 +69,56 @@ class Session(object):
 
     async def get_server_config(self):
         reply = await self.call_service({"topic": constants.DEFAULT_TOPICS.SERVICES.SERVER_CONFIG})
-        return reply.server
+        return reply.server if reply else None
 
     async def get_client_list(self):
         reply = await self.service_client.send({"topic": constants.DEFAULT_TOPICS.SERVICES.CLIENT_GET_LIST})
-        return protomessages['CLIENT_LIST'].from_json(reply)
+        return protomessages['CLIENT_LIST'].create(**reply) if reply else None
 
-    async def subscribe_topic(self, topic, callback):
+    async def subscribe_topic(self, client_id, topic, callback):
         pass
 
     async def register_session(self, session):
         reply = await self.service_client.send({"topic": constants.DEFAULT_TOPICS.SERVICES})
-        return protomessages['CLIENT_LIST'].from_json(reply)
+        return protomessages['CLIENT_LIST'].create(**reply)
+
+    async def register_device(self, device):
+        log.debug(f"Registering device {device}")
+        result = await self.call_service({'topic': constants.DEFAULT_TOPICS.SERVICES.DEVICE_REGISTRATION,
+                                          'device': device})
+        return result.device if result else None
+
+    async def unregister_device(self, device):
+        log.debug(f"Unregistering device {device}")
+        result = await self.call_service({'topic': constants.DEFAULT_TOPICS.SERVICES.DEVICE_DEREGISTRATION,
+                                          'device': device})
+
+        return not result.error
+
+    async def register_client(self, client):
+        log.debug(f"Registering {client}")
+        reply = await self.call_service({"topic": constants.DEFAULT_TOPICS.SERVICES.CLIENT_REGISTRATION,
+                                         'client': client})
+
+        return reply.client if reply else None
+
+    async def unregister_client(self, client):
+        log.debug(f"Unregistering {client}")
+        result = await self.call_service({"topic": constants.DEFAULT_TOPICS.SERVICES.CLIENT_DEREGISTRATION,
+                                          'client': client})
+        return not result.error
 
     async def call_service(self, message) -> ServiceReply:
         reply = await self.service_client.send(message)
         try:
-            message = protomessages['SERVICE_REPLY'].from_json(reply)
+            message = protomessages['SERVICE_REPLY'].create(**reply)
             if any([message.error.title, message.error.stack, message.error.message]):
-                log.error(f"{message.error}")
+                log.error(f"Server error: {message.error}")
+                return
+
         except Exception as e:
-            log.error(e)
+            log.error(f"Client error: {e}")
+            return
 
         return message
 
@@ -96,3 +135,4 @@ class Session(object):
         nodes = [ClientNode.create(name) for name in names]
         nodes = await asyncio.gather(*nodes)
         self.nodes.update({node.id: node for node in nodes})
+

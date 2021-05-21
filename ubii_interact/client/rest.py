@@ -28,12 +28,12 @@ class RESTClient(object):
             self.endpoint = kwargs.get('endpoint', '')
             self.url = f"http{'s' if self.https else ''}://{self.server}:{self.port}/{self.endpoint}"
 
-        from ..session import Session
-        self.session = Session.get()
+        from ..session import UbiiSession
+        self.client_session = UbiiSession.get().client_session
 
     async def send(self, message):
-        async with self.session.client_session.post(self.url, json=message) as resp:
-            resp = await resp.text()
+        async with self.client_session.post(self.url, json=message) as resp:
+            resp = await resp.json()
             return resp
 
     def __str__(self):

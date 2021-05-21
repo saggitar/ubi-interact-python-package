@@ -18,6 +18,9 @@ def import_proto(name) -> Optional[gpmt]:
             warn(f"Found Python Protobuf Object with matching name {descriptor.name} in {descriptor.file.name} "
                  f"but full name {descriptor.full_name} does not match with expected name {name}.")
             found = None
+    else:
+        warn(f"Could not find descriptor matching {name} in {proto}")
+
     return found
 
 
