@@ -45,7 +45,7 @@ class UbiiSession(object):
         if not self._client_session:
             trace_config = aiohttp.TraceConfig()
 
-            async def on_request_start(self, session, trace_config_ctx, params):
+            async def on_request_start(session, trace_config_ctx, params):
                 logging.getLogger('aiohttp.client').debug(f'Starting request <{params}>')
 
             trace_config.on_request_start.append(on_request_start)
@@ -72,8 +72,8 @@ class UbiiSession(object):
         return reply.server if reply else None
 
     async def get_client_list(self):
-        reply = await self.service_client.send({"topic": constants.DEFAULT_TOPICS.SERVICES.CLIENT_GET_LIST})
-        return protomessages['CLIENT_LIST'].create(**reply) if reply else None
+        reply = await self.call_service({"topic": constants.DEFAULT_TOPICS.SERVICES.CLIENT_GET_LIST})
+        return reply.client_list if reply else None
 
     async def subscribe_topic(self, client_id, topic, callback):
         pass
