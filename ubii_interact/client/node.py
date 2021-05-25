@@ -40,7 +40,7 @@ class ClientNode(object):
 
     @property
     def initialized(self):
-        return self.registered
+        return self.registered and self.topicdata_client.connected
 
     @classmethod
     def create(cls, *args, **kwargs):
@@ -49,6 +49,10 @@ class ClientNode(object):
         return node.initialize()
 
     async def initialize(self):
+        if self.initialized:
+            log.debug(f"{self} is already initialized.")
+            return
+
         await self.register()
         await self.start_websocket()
         return self
@@ -70,17 +74,23 @@ class ClientNode(object):
         log.info(f"{self} shut down.")
 
     async def register(self):
+        if self.registered:
+            log.debug(f"Already registered {self}")
+            return
+
         self.client_config = await self.session.register_client(self.client_config)
         log.debug(f"Registered {self}")
 
     async def unregister(self):
         success = await self.session.unregister_client(self.client_config)
         if success:
+            self.client_config.id = ''
             log.debug(f"Unregistered {self}")
 
     async def register_device(self, device):
-        self.devices.append(await self.session.register_device(device))
-
+        device = await self.session.register_device(device)
+        if device:
+            self.devices.append(device)
 
     async def subscribe_topic(self, callback, *topics: Tuple[str]):
         reply = await self.session.call_service({'topic': constants.DEFAULT_TOPICS.SERVICES.TOPIC_SUBSCRIPTION,
@@ -88,7 +98,7 @@ class ClientNode(object):
                                                      'clientId': self.id,
                                                      'subscribeTopics': topics
                                                  }})
-        if reply and not reply.error:
+        if reply and reply.success:
             self.topicdata_client.callbacks.update({t: callback for t in topics})
 
         return reply

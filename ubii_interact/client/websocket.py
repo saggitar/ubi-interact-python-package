@@ -4,6 +4,8 @@ from asyncio import Task
 
 import aiohttp
 
+from ubii_interact.util.translators import protomessages
+
 log = logging.getLogger(__name__)
 
 class WebSocketClient(object):
@@ -18,44 +20,60 @@ class WebSocketClient(object):
         self.client_session = UbiiSession.instance.client_session
         self.task: Task = asyncio.create_task(self.run(), name=f"{self}")
 
-        self.ws = self.client_session.ws_connect(self.url)
+        self.ws = None
         self.callbacks = {}
 
-    async def on_message(self, message):
-        log.info(message)
+    async def on_message(self, data):
+        if not self.callbacks:
+            log.debug(f"{self} received {data}")
+            return
+
+        record = protomessages['TOPIC_DATA'].proto()
+        record.ParseFromString(data)
+        record = getattr(record, record.WhichOneof('type'))
+
+        callbacks = [call(record)
+                     for topic, call in self.callbacks.items()
+                     if record.topic == topic]
+
+        await asyncio.gather(*callbacks)
 
     async def run(self):
         log.info(f"Starting {self}")
+        async with self.client_session.ws_connect(self.url) as ws:
+            self.ws = ws
 
-        async for message in self.ws:
-            if message.type == aiohttp.WSMsgType.TEXT:
-                if message.data == 'close cmd':
-                    await self.ws.close()
+            async for message in ws:
+                if message.type == aiohttp.WSMsgType.TEXT:
+                    if message.data == "PING":
+                        log.debug("Handling Ping.")
+                        await ws.send_str('PONG')
+                    else:
+                        log.error(message.data)
+                elif message.type == aiohttp.WSMsgType.ERROR:
+                    log.error(message)
                     break
-                elif message.data == "PING":
-                    log.debug("Handling Ping.")
-                    await self.ws.send_str('PONG')
-                else:
+                elif message.type == aiohttp.WSMsgType.BINARY:
                     await self.on_message(message.data)
-            elif message.type == aiohttp.WSMsgType.ERROR:
-                log.error(message)
-                break
 
         log.info(f"{self} closing.")
 
     def __str__(self):
         return f"Websocket Client for {self.url}"
 
+    @property
+    def connected(self):
+        return bool(self.ws) and not self.ws.closed
+
     async def send(self, data):
-        if not self.ws or self.ws.closed:
+        if not self.connected:
             log.debug(f"Can't send {data} because connection is closed.")
             return
 
-        log.info(f"Sending data {data}")
-        result = await self.ws.send_bytes(data)
+        log.debug(f"Sending data {data}")
+        await self.ws.send_bytes(data)
 
     async def shutdown(self):
         self.task.cancel()
-        await self.ws.close()
         log.info(f"Shutting down {self}")
 
