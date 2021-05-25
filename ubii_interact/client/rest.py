@@ -1,3 +1,4 @@
+import asyncio
 import logging
 import os
 
@@ -29,12 +30,15 @@ class RESTClient(object):
             self.url = f"http{'s' if self.https else ''}://{self.server}:{self.port}/{self.endpoint}"
 
         from ..session import UbiiSession
-        self.client_session = UbiiSession.get().client_session
+        self.client_session = UbiiSession.instance.client_session
 
     async def send(self, message):
-        async with self.client_session.post(self.url, json=message) as resp:
-            resp = await resp.json()
-            return resp
+        try:
+            async with self.client_session.post(self.url, json=message) as resp:
+                resp = await resp.json()
+                return resp
+        except asyncio.TimeoutError:
+            log.error(f"Timeout, REST Backend did not reply with {self.client_session.timeout}!")
 
     def __str__(self):
         return f"REST Client for {self.url}"

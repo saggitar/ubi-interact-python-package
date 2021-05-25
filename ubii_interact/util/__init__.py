@@ -1,6 +1,8 @@
 import argparse
+import contextlib
 import json
 import logging
+
 import proto
 import sys
 from importlib.resources import read_text as _read_text_resource
@@ -69,4 +71,13 @@ def apply(fun, item):
         return fun(item)
 
 
+@contextlib.contextmanager
+def tmpfile(location, content=None):
+    from pathlib import Path
+    location = Path(location)
+    with location.open('w') as f:
+        if content:
+            f.write(content)
+        yield f
 
+    location.unlink()

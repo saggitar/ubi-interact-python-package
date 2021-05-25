@@ -1,6 +1,10 @@
 import asyncio
 import logging
+from typing import Tuple
+from warnings import warn
+
 from .websocket import WebSocketClient
+from ..util import constants
 from ..util.translators import protomessages
 
 log = logging.getLogger(__name__)
@@ -15,7 +19,7 @@ class ClientNode(object):
         self.client_config.name = name
         self.topicdata_client: WebSocketClient = None
         from ..session import UbiiSession
-        self.session = UbiiSession.get()
+        self.session = UbiiSession.instance
         assert self.session.initialized
 
     @property
@@ -33,6 +37,10 @@ class ClientNode(object):
     @property
     def registered(self):
         return bool(self.id)
+
+    @property
+    def initialized(self):
+        return self.registered
 
     @classmethod
     def create(cls, *args, **kwargs):
@@ -72,6 +80,30 @@ class ClientNode(object):
 
     async def register_device(self, device):
         self.devices.append(await self.session.register_device(device))
+
+
+    async def subscribe_topic(self, callback, *topics: Tuple[str]):
+        reply = await self.session.call_service({'topic': constants.DEFAULT_TOPICS.SERVICES.TOPIC_SUBSCRIPTION,
+                                                 'topicSubscription': {
+                                                     'clientId': self.id,
+                                                     'subscribeTopics': topics
+                                                 }})
+        if reply and not reply.error:
+            self.topicdata_client.callbacks.update({t: callback for t in topics})
+
+        return reply
+
+    async def publish_record(self, *records):
+        if len(records) < 1:
+            warn(f"Called {self.publish_record} without TopicDataRecord message to publish")
+            return
+
+        if len(records) == 1:
+            data = protomessages['TOPIC_DATA'].create(topic_data_record=records[0])
+        else:
+            data = protomessages['TOPIC_DATA'].create(topic_data_record_list=records)
+
+        await self.topicdata_client.send(data.SerializeToString())
 
     def __str__(self):
         return f"Node {self.id}"
