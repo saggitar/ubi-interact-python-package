@@ -1,28 +1,22 @@
-import argparse
+import asyncio
+
+from typing import Any, Dict
+
 import contextlib
 import json
-import logging
-
 import proto
-import sys
 from importlib.resources import read_text as _read_text_resource
-
-# configure logging on import
-_parser = argparse.ArgumentParser()
-_parser.add_argument('--verbose', '-v', action='count', default=0)
-_args = _parser.parse_args()
-logging.basicConfig(level=logging.ERROR - 10 * _args.verbose)
-
-if not sys.warnoptions:
-    import os, warnings
-    warnings.simplefilter("default")  # Change the filter in this process
-    os.environ["PYTHONWARNINGS"] = "default"  # Also affect subprocesses
-
 
 class __jsondict__(object):
     def __init__(self, fromdict=None) -> None:
         super().__init__()
         self.data = fromdict or {}
+
+    def __contains__(self, item):
+        """
+        Since items can't be set to None, this check is ok.
+        """
+        return self[item] is not None
 
     def get(self, *items):
         extracted = self
@@ -42,6 +36,9 @@ class __jsondict__(object):
             return self.get(*keys)
 
     def __setitem__(self, key, value):
+        if value is None:
+            return ValueError(f"value is {value}")
+
         if not '.' in key:
             self.data[key] = value
         else:
@@ -81,3 +78,51 @@ def tmpfile(location, content=None):
         yield f
 
     location.unlink()
+
+
+def makelist(obj):
+    try:
+        return list(obj)
+    except TypeError:
+        return [obj]
+
+class PushDict(object):
+    def __init__(self, from_dict=None, filter=None):
+        self._filter = filter
+        self._data = dict(from_dict) if from_dict else {}
+
+    def update(self, kwargs):
+        for k, v in kwargs.items():
+            v = makelist(v)
+            self._data[k] = self._data.setdefault(k, v[:1]) + v[1:]
+
+    def clear(self, key):
+        self._data[key].clear()
+
+    def items(self):
+        return self._data.items()
+
+    def setdefault(self, key, item):
+        return self._data.setdefault(key, item)
+
+    def __getitem__(self, item):
+        if item in self._filter:
+            item = self._filter[item]
+
+        return self._data[item]
+
+    def __bool__(self):
+        return bool(self._data)
+
+
+def as_iterator(value):
+    """
+    Sometimes we need to have an iterator from something that can either be itself an iterator or a simple value
+    :param value: iterator or value
+    """
+    try:
+        yield from value
+    except TypeError:
+        yield value
+
+

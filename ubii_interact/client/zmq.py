@@ -12,5 +12,5 @@ class ZMQClient(object):
     async def connect(self):
         print("Connecting to hello world server…")
         socket = self.context.socket(zmq.SUB)
-        socket.connect("tcp://localhost:8101")
+        socket.slots("tcp://localhost:8101")
 

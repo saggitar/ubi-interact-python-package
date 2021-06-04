@@ -1,18 +1,17 @@
 import asyncio
 import logging
 import socket
-from typing import Dict, List, Tuple, Union
-from warnings import warn
-
+from typing import Dict, Tuple
 import aiohttp
 from proto.services.serviceReply_pb2 import ServiceReply
 
 from .client.node import ClientNode
 from .client.rest import RESTClient
-from .util.translators import protomessages
+from .util.translators import ProtoMessages
 from .util import constants
 
 log = logging.getLogger(__name__)
+
 
 class Instance(object):
     def __init__(self, create_key):
@@ -23,9 +22,11 @@ class Instance(object):
             owner.__instance__ = owner(self.create_key)
         return owner.__instance__
 
+
 class UbiiSession(object):
     __ubii_sessions = {}
     __create_key = object()
+    __debug = False
     instance: 'UbiiSession' = Instance(__create_key)
 
     def __init__(self, create_key) -> None:
@@ -38,6 +39,10 @@ class UbiiSession(object):
         self.server_config = None
         self._service_client = None
         self._client_session = None
+
+    @classmethod
+    def enable_debug(cls, enabled=True):
+        cls.__debug = enabled
 
     @property
     def service_client(self):
@@ -62,17 +67,23 @@ class UbiiSession(object):
     @property
     def client_session(self):
         if not self._client_session:
-            trace_config = aiohttp.TraceConfig()
+            if self.__debug:
+                trace_config = aiohttp.TraceConfig()
 
-            async def on_request_start(session, trace_config_ctx, params):
-                logging.getLogger('aiohttp.client').debug(f'Starting request <{params}>')
+                async def on_request_start(session, trace_config_ctx, params):
+                    logging.getLogger('aiohttp.client').debug(f'Starting request <{params}>')
 
-            trace_config.on_request_start.append(on_request_start)
-            timeout = aiohttp.ClientTimeout(total=5)
+                trace_config.on_request_start.append(on_request_start)
+                trace_configs = [trace_config]
+                timeout = aiohttp.ClientTimeout(total=300)
+            else:
+                timeout = aiohttp.ClientTimeout(total=5)
+                trace_configs = []
+
             from .util.translators import serialize as proto_serialize
             self._client_session = aiohttp.ClientSession(raise_for_status=True,
                                                          json_serialize=proto_serialize,
-                                                         trace_configs=[trace_config],
+                                                         trace_configs=trace_configs,
                                                          timeout=timeout)
         return self._client_session
 
@@ -85,9 +96,17 @@ class UbiiSession(object):
         return bool(self.server_config)
 
     async def initialize(self):
-        self.server_config = await self.get_server_config()
+        while not self.initialized:
+            try:
+                log.info(f"{self} is initializing.")
+                self.server_config = await self.get_server_config()
+            except aiohttp.ClientConnectorError as e:
+                log.error(f"{e}. Trying again in 5 seconds ...")
+                await asyncio.sleep(5)
 
-    async def get_server_config(self):
+        log.info(f"{self} initialized successfully.")
+
+    async def get_server_config(self, timeout=5):
         reply = await self.call_service({"topic": constants.DEFAULT_TOPICS.SERVICES.SERVER_CONFIG})
         return reply.server if reply else None
 
@@ -105,7 +124,7 @@ class UbiiSession(object):
 
     async def register_session(self, session):
         reply = await self.service_client.send({"topic": constants.DEFAULT_TOPICS.SERVICES})
-        return protomessages['CLIENT_LIST'].create(**reply)
+        return ProtoMessages['CLIENT_LIST'].create(**reply)
 
     async def register_device(self, device):
         log.debug(f"Registering device {device}")
@@ -134,18 +153,22 @@ class UbiiSession(object):
         return not result.error
 
     async def call_service(self, message) -> ServiceReply:
-        reply = await self.service_client.send(message)
+        request = ProtoMessages['SERVICE_REQUEST']
+        if not isinstance(message, request.proto):
+            request = request.create(**message)
+
+        reply = await self.service_client.send(request)
         try:
-            message = protomessages['SERVICE_REPLY'].create(**reply)
-            if any([message.error.title, message.error.stack, message.error.message]):
-                log.error(f"Server error: {message.error}")
+            reply = ProtoMessages['SERVICE_REPLY'].create(**reply)
+            if any([reply.error.title, reply.error.stack, reply.error.message]):
+                log.error(f"Server error: {reply.error}")
                 return
 
         except Exception as e:
-            log.error(f"Client error: {e}")
+            log.exception(e)
             return
 
-        return message
+        return reply
 
     async def shutdown(self):
         for _, node in self.nodes.items():
@@ -161,4 +184,3 @@ class UbiiSession(object):
         nodes = await asyncio.gather(*nodes)
         self.nodes.update({node.id: node for node in nodes})
         return nodes
-

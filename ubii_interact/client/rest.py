@@ -39,6 +39,8 @@ class RESTClient(object):
                 return resp
         except asyncio.TimeoutError:
             log.error(f"Timeout, REST Backend did not reply with {self.client_session.timeout}!")
+            raise
+
 
     def __str__(self):
         return f"REST Client for {self.url}"
