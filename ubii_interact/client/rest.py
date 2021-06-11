@@ -35,11 +35,12 @@ class RESTClient(object):
     async def send(self, message):
         try:
             async with self.client_session.post(self.url, json=message) as resp:
-                resp = await resp.json()
-                return resp
+                result = await resp.json()
         except asyncio.TimeoutError:
             log.error(f"Timeout, REST Backend did not reply with {self.client_session.timeout}!")
             raise
+        else:
+            return result
 
 
     def __str__(self):

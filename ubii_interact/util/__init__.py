@@ -1,9 +1,7 @@
-import asyncio
-
-from typing import Any, Dict
-
 import contextlib
 import json
+from typing import TypeVar, Mapping
+
 import proto
 from importlib.resources import read_text as _read_text_resource
 
@@ -55,6 +53,57 @@ class __jsondict__(object):
     def __str__(self):
         return str(self.data)
 
+    def __iter__(self):
+        return iter(self.data)
+
+    def __len__(self):
+        return len(self.data)
+
+
+T = TypeVar('T')
+
+class AliasDict(Mapping[str, T]):
+    def __init__(self, data: Mapping[str, T], aliases=None) -> None:
+        super().__init__()
+        self.data = data
+        self.aliases = aliases or {}
+
+    def __contains__(self, item):
+        """
+        Since items can't be set to None, this check is ok.
+        """
+        return self[item] is not None
+
+    def search(self, key):
+        return self.data[self.aliases[key]] if key in self.aliases else self.data[key]
+
+    def add_alias(self, key, alias):
+        if alias in self.aliases:
+            raise ValueError("Alias already exists.")
+
+        self.aliases[alias] = key
+
+    def with_aliases(self, aliases):
+        self.aliases = aliases
+        return self
+
+    def __getitem__(self, key):
+        return self.search(key)
+
+    def __setitem__(self, key, value):
+        raise AttributeError("Values in AliasDicts are read only")
+
+    def __repr__(self):
+        return repr(self.data)
+
+    def __str__(self):
+        return str(self.data)
+
+    def __iter__(self):
+        return iter(self.data)
+
+    def __len__(self):
+        return len(self.data)
 
 constants = json.loads(_read_text_resource(proto, "constants.json"))
 constants = __jsondict__(fromdict=constants)
@@ -62,7 +111,7 @@ constants = __jsondict__(fromdict=constants)
 UBII_SERVICE_URL = 'UBII_SERVICE_URL'
 
 def apply(fun, item):
-    if isinstance(item, dict):
+    if isinstance(item, Mapping):
         return {k: apply(fun, v) for k, v in item.items()}
     else:
         return fun(item)
@@ -126,3 +175,9 @@ def as_iterator(value):
         yield value
 
 
+class UbiiError(Exception):
+    def __init__(self, title=None, message=None, stack=None):
+        super().__init__(message)
+        self.title = title
+        self.message = message
+        self.stack = stack

@@ -1,45 +1,24 @@
+from __future__ import annotations
 import re
-
+import types
 from warnings import warn
-
 import asyncio
 import logging
-
-from typing import Any, Dict
-
-from ubii_interact.util import apply, as_iterator
-from ubii_interact.util.translators import ProtoMessages
+from typing import Any, Dict, Type, TypeVar, Generic, List, Callable, Tuple, Union, Optional, Awaitable
+from ubii_interact.util import as_iterator
 
 log = logging.getLogger(__name__)
 
-class MetaSignal(type):
-    __signal_types__ = {}
+T = TypeVar('T')
+C = Union['Signal.Connection[T, R]', Callable[[T], Awaitable]]
 
-    def __new__(mcs, name, bases, dct, **kwargs) -> Any:
-        dct['__getitem__'] = mcs.__getitem__
-        return super().__new__(mcs, name, bases, dct)
-
-    def __getitem__(self, item) -> type:
-        return MetaSignal.__signal_types__.setdefault(item, type(f"Signal[{item.__name__}]", (self,), {'_default_slot_signature': item}))
-
-
-class Signal(object, metaclass=MetaSignal):
-    _default_slot_signature = object
-
-    class _metaslot(type):
-        __slottypes__ = {}
-
-        def __new__(mcs, name, bases, dct, **kwargs) -> Any:
-            dct['__getitem__'] = mcs.__getitem__
-            return super().__new__(mcs, name, bases, dct)
-
-        def __getitem__(self, item) -> type:
-            klass = type(f"Slot[{item.__name__}]", (self,), {'signature': item})
-            return Signal._metaslot.__slottypes__.setdefault(item, klass)
+class Signal(Generic[T]):
+    __types__: Dict[str, Type[Signal]] = {}
+    _default_signature = object
 
     class Connection:
         def __init__(self, *callbacks):
-            self._hash = hash(callbacks)
+            self._hash = hash(tuple(sorted(callbacks)))
 
         def __str__(self):
             hashrepr = str(self._hash)
@@ -58,21 +37,15 @@ class Signal(object, metaclass=MetaSignal):
         def __hash__(self):
             return self._hash
 
-    class Slot(metaclass=_metaslot):
-        _signature = object
-
-        def __init_subclass__(cls, /, **kwargs):
-            cls._signature = kwargs.pop('signature', None) or cls._signature
-            super().__init_subclass__(**kwargs)
-
+    class Slot(Generic[T]):
         def __init__(self):
-            self._callback_dict = {}
+            self._callback_dict: Dict[Signal.Connection, Tuple[Callable[[T], Awaitable[Any]], ...]] = {}
 
         @property
-        def _callbacks(self):
+        def _callbacks(self) -> List[Callable[[T], Awaitable[Any]]]:
             return [n for nested in self._callback_dict.values() for n in nested]
 
-        def connect(self, *callbacks):
+        def connect(self, *callbacks: Callable[[T], Awaitable[Any]]):
             connection = Signal.Connection(*callbacks)
             if connection in self._callback_dict:
                 raise ValueError("Callbacks are already connected")
@@ -81,21 +54,28 @@ class Signal(object, metaclass=MetaSignal):
             log.debug(f"Connected {connection} to {self}")
             return connection
 
-        def disconnect(self, slot=None):
+        def disconnect(self, slot: Optional[C] = None):
             if not slot:
                 self._callback_dict.clear()
                 return
 
             connection = Signal.Connection(slot) if callable(slot) else slot
-            if not connection in self._callback_dict:
+            if connection not in self._callback_dict:
                 raise ValueError("Slot is not connected")
 
             del self._callback_dict[connection]
             log.debug(f"Disconnected {connection} from {self}")
 
-        async def emit(self, *args, **kwargs):
-            callbacks = [call(*args, **kwargs) for call in self._callbacks]
-            return await asyncio.gather(*callbacks)
+        async def emit(self, *args: T) -> Tuple:
+            callbacks = [call(*args) for call in self._callbacks]
+            g = asyncio.gather(*callbacks)
+            try:
+                results = await g
+            except:
+                g.cancel()
+                raise
+            else:
+                return results
 
         def __str__(self):
             return f"{self.__class__.__name__} -> {len(self._callbacks)} connections"
@@ -103,36 +83,59 @@ class Signal(object, metaclass=MetaSignal):
         def __repr__(self):
             return str(self)
 
-
-    def __init_subclass__(cls, **kwargs):
-        cls._default_slot_signature = kwargs.pop('_default_slot_signature', None) or cls._default_slot_signature
-        super().__init_subclass__(**kwargs)
-
     def __init__(self):
-        self._slots: Dict[Any, Signal.Slot] = {}
+        self.slots: Dict[Any, Signal.Slot[T]] = {}
 
-    def __getitem__(self, type_) -> 'Signal.Slot':
+    def __class_getitem__(cls, item):
+        kls = cls.__get_type(item)
+        alias = super(Signal, kls).__class_getitem__(item)
+        return alias
+
+    @classmethod
+    def __get_type(cls: Type[Signal], param: T) -> Type[Signal[T]]:
+        def _repr(_type):
+            return f"{_type.__module__}.{_type.__qualname__}" if hasattr(_type, '__qualname__') else repr(_type)
+
+        name = f"{cls.__name__}[{_repr(param)}]"
+        generic = super(Signal, cls).__class_getitem__(T)
+        return cls.__types__.setdefault(name, types.new_class(_repr(cls), (generic,), {'signature': param}))
+
+    def __init_subclass__(cls, /, signature=object, **kwargs):
+        super().__init_subclass__(**kwargs)
+        cls._default_signature = signature
+
+    def __getitem__(self, type_: T) -> Signal.Slot[T]:
         if not isinstance(type_, type):
             raise ValueError("Specify the overload by type, e.g. signal[str].connect(...)")
 
-        return self._slots.setdefault(type_, Signal.Slot[type_]())
+        return self.slots.setdefault(type_, Signal.Slot())
 
-    async def emit(self, *args):
-        calls = [slot.emit(*args) for sig, slot in self._slots.items()
+    async def emit(self, *args: T) -> Tuple:
+        calls = [slot.emit(*args) for sig, slot in self.slots.items()
                  if all(isinstance(t, s) for t, s in zip(args, as_iterator(sig)))]
         if not calls:
             argrepr = re.sub('\n', '', f"({', '.join(str(arg) for arg in args)})")
             warn(f"No slots found for emmitted arguments {argrepr}, maybe you are using the wrong datatype for the slots?")
 
-        return await asyncio.gather(*calls)
+        g = asyncio.gather(*calls)
+        try:
+            results = await g
+        except:
+            g.cancel()
+            raise
+        else:
+            return results
 
-    def connect(self, *slots):
-        default_slot = self._slots.setdefault(self._default_slot_signature, Signal.Slot[self._default_slot_signature]())
-        return default_slot.connect(*slots)
+    def connect(self, *callbacks: Callable[[T], Awaitable]):
+        default_slot = self.slots.setdefault(self._default_signature, Signal.Slot())
+        return default_slot.connect(*callbacks)
 
-    def disconnect(self, *slots):
-        default_slot = self._slots[self._default_slot_signature]
-        default_slot.disconnect(*slots)
+    def disconnect(self, *callbacks: Callable[[T], Awaitable]):
+        default_slot = self.slots[self._default_signature]
+        default_slot.disconnect(*callbacks)
 
+    def __repr__(self):
+        return str(self)
 
-ProtoSignals: Dict[str, type] = apply(lambda t: Signal[t.proto] if t else None, ProtoMessages)
+    def __str__(self):
+        return f"{self.__class__.__name__} -> {len(self.slots)} slot[s]"

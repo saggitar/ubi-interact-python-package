@@ -1,14 +1,17 @@
 import asyncio
 import logging
 import socket
+from functools import singledispatchmethod, singledispatch
 from typing import Dict, Tuple
+from collections.abc import Awaitable
 import aiohttp
+import sys
 from proto.services.serviceReply_pb2 import ServiceReply
 
 from .client.node import ClientNode
 from .client.rest import RESTClient
-from .util.translators import ProtoMessages
-from .util import constants
+from .util.proto import ProtoMessages, Translator
+from .util import constants, UbiiError
 
 log = logging.getLogger(__name__)
 
@@ -61,7 +64,10 @@ class UbiiSession(object):
         reply = await cls.instance.call_service({'topic': constants.DEFAULT_TOPICS.SERVICES.SESSION_RUNTIME_START,
                                                  'session': session})
 
-        session = reply.session
+        return reply.session
+
+    @classmethod
+    def _add_session(cls, session):
         cls.__ubii_sessions[session.id] = session
 
     @property
@@ -80,7 +86,7 @@ class UbiiSession(object):
                 timeout = aiohttp.ClientTimeout(total=5)
                 trace_configs = []
 
-            from .util.translators import serialize as proto_serialize
+            from .util.proto import serialize as proto_serialize
             self._client_session = aiohttp.ClientSession(raise_for_status=True,
                                                          json_serialize=proto_serialize,
                                                          trace_configs=trace_configs,
@@ -155,20 +161,19 @@ class UbiiSession(object):
     async def call_service(self, message) -> ServiceReply:
         request = ProtoMessages['SERVICE_REQUEST']
         if not isinstance(message, request.proto):
-            request = request.create(**message)
+            request = request.validate(message)
 
         reply = await self.service_client.send(request)
         try:
             reply = ProtoMessages['SERVICE_REPLY'].create(**reply)
-            if any([reply.error.title, reply.error.stack, reply.error.message]):
-                log.error(f"Server error: {reply.error}")
-                return
-
+            error = Translator.to_dict(reply.error)
+            if any([v for v in error.values()]):
+                raise UbiiError(**error)
         except Exception as e:
             log.exception(e)
-            return
-
-        return reply
+            raise
+        else:
+            return reply
 
     async def shutdown(self):
         for _, node in self.nodes.items():
@@ -179,8 +184,24 @@ class UbiiSession(object):
         if self.client_session:
             await self.client_session.close()
 
-    async def start_nodes(self, *names) -> Tuple[ClientNode]:
-        nodes = [ClientNode.create(name) for name in names]
+    @singledispatchmethod
+    async def start_nodes(self, *nodes) -> Tuple[ClientNode]:
+        raise NotImplementedError
+
+    @start_nodes.register
+    async def _(self, *nodes: str):
+        nodes = [ClientNode.create(name) for name in nodes]
+        return await self.start_nodes(*nodes)
+
+    @start_nodes.register(Awaitable[ClientNode] if sys.version_info >= (3, 9) else Awaitable)
+    async def _(self, *nodes):
         nodes = await asyncio.gather(*nodes)
+        return await self.start_nodes(*nodes)
+
+    @start_nodes.register
+    async def _(self, *nodes: ClientNode):
         self.nodes.update({node.id: node for node in nodes})
         return nodes
+
+
+

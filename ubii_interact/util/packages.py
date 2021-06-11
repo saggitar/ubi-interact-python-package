@@ -1,7 +1,7 @@
 import importlib
 import logging
 import pkgutil
-from typing import Optional
+from typing import Optional, Type
 from warnings import warn
 
 import proto
@@ -10,7 +10,7 @@ from google.protobuf.descriptor import Descriptor as gpd
 
 log = logging.getLogger(__name__)
 
-def import_proto(name) -> Optional[gpmt]:
+def import_proto(name) -> Optional[Type[gpmt]]:
     found = search(proto, name)
     if found:
         descriptor: gpd = found.DESCRIPTOR
