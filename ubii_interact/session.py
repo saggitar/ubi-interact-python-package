@@ -39,6 +39,7 @@ class UbiiSession(object):
         super().__init__()
         self.local_ip = socket.gethostbyname(socket.gethostname())
         self.nodes: Dict[str, ClientNode] = {}
+        self.initialized = asyncio.Event()
         self.server_config = None
         self._service_client = None
         self._client_session = None
@@ -76,7 +77,7 @@ class UbiiSession(object):
             if self.__debug:
                 trace_config = aiohttp.TraceConfig()
 
-                async def on_request_start(session, trace_config_ctx, params):
+                async def on_request_start(session, context, params):
                     logging.getLogger('aiohttp.client').debug(f'Starting request <{params}>')
 
                 trace_config.on_request_start.append(on_request_start)
@@ -97,22 +98,19 @@ class UbiiSession(object):
     def alive_nodes(self):
         return list(self.nodes.values())
 
-    @property
-    def initialized(self):
-        return bool(self.server_config)
-
     async def initialize(self):
-        while not self.initialized:
+        while not self.initialized.is_set():
             try:
                 log.info(f"{self} is initializing.")
                 self.server_config = await self.get_server_config()
+                self.initialized.set()
             except aiohttp.ClientConnectorError as e:
                 log.error(f"{e}. Trying again in 5 seconds ...")
                 await asyncio.sleep(5)
 
         log.info(f"{self} initialized successfully.")
 
-    async def get_server_config(self, timeout=5):
+    async def get_server_config(self):
         reply = await self.call_service({"topic": constants.DEFAULT_TOPICS.SERVICES.SERVER_CONFIG})
         return reply.server if reply else None
 
@@ -123,14 +121,13 @@ class UbiiSession(object):
     async def subscribe_topic(self, client_id, callback, *topics):
         node = self.nodes.get(client_id)
         if not node:
-            log.error(f"No node with id {client_id} found in session.")
-            return
+            raise ValueError(f"No node with id {client_id} found in session.")
 
-        return await node.subscribe_topic(callback, *topics)
+        return await node.topicdata_client.subscribe_topic(callback, *topics)
 
     async def register_session(self, session):
-        reply = await self.service_client.send({"topic": constants.DEFAULT_TOPICS.SERVICES})
-        return ProtoMessages['CLIENT_LIST'].create(**reply)
+        # TODO: Implement!
+        raise NotImplementedError
 
     async def register_device(self, device):
         log.debug(f"Registering device {device}")

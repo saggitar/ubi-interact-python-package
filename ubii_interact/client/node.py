@@ -14,13 +14,12 @@ class ClientNode(object):
     def __init__(self, name) -> None:
         super().__init__()
         self.server_config = None
-        self.client_config = ProtoMessages['CLIENT'].from_dict({})
-        self.client_config.name = name
-        self.topicdata_client: WebSocketClient = None
+        self.client_config = ProtoMessages['CLIENT'].create(name=name)
+        self.topicdata_client: WebSocketClient = WebSocketClient()
         from ..session import UbiiSession
         self.session = UbiiSession.instance
-        assert self.session.initialized
         self._signals: Dict[str, RecordSignal] = {}
+        self.registered = asyncio.Event()
 
     @property
     def signals(self):
@@ -45,18 +44,9 @@ class ClientNode(object):
     def devices(self):
         return self.client_config.devices
 
-    @property
-    def registered(self):
-        return bool(self.id)
-
-    @property
-    def initialized(self):
-        return self.registered and self.topicdata_client.connected
-
     @classmethod
     def create(cls, *args, **kwargs):
         node = cls(*args, **kwargs)
-        assert node.session.initialized
         return node.initialize()
 
     async def initialize(self):
@@ -67,14 +57,12 @@ class ClientNode(object):
         await self.register()
         await self.start_websocket()
 
-        self.signals.info.connect(print)
+        self.signals.info.connect_callbacks(print)
         return self
 
     async def start_websocket(self):
         # initialize Websocket Client (needs clientconf)
         assert self.registered
-        assert self.session.initialized
-
         ip = self.session.server_config.ip_ethernet or self.session.server_config.ip_wlan
         host = 'localhost' if ip == self.session.local_ip else ip
         port = self.session.server_config.port_topic_data_ws

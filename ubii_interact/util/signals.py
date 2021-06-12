@@ -139,3 +139,18 @@ class Signal(Generic[T]):
 
     def __str__(self):
         return f"{self.__class__.__name__} -> {len(self.slots)} slot[s]"
+
+
+class MultiEvent(asyncio.Event):
+    def __init__(self, *events):
+        super(MultiEvent, self).__init__()
+        self.events = set(events)
+
+    def add_event(self, event):
+        self.events.add(event)
+
+    def wait(self) -> bool:
+        return all(asyncio.gather(e.wait() for e in self.events))
+
+    def is_set(self) -> bool:
+        return all(e.is_set() for e in self.events)
