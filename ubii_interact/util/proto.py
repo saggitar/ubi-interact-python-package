@@ -1,3 +1,5 @@
+from dataclasses import asdict
+
 import json
 from abc import ABCMeta, abstractmethod
 from json import JSONEncoder
@@ -9,7 +11,7 @@ from google.protobuf.descriptor import FieldDescriptor
 from google.protobuf.json_format import ParseError, Parse, ParseDict, MessageToDict, MessageToJson
 from google.protobuf.reflection import GeneratedProtocolMessageType
 
-from . import packages, constants as __constants__, AliasDict, apply
+from . import packages, constants as __constants__, AliasDict
 
 log = logging.getLogger(__name__)
 
@@ -41,7 +43,7 @@ class ProtoMessageFactory(Generic[GPM], metaclass=ABCMeta):
         :return: a subclass of the class calling `get_type`, with `.proto` attribute set to the base parameter.
         """
         name = f"{cls.__name__}{base.__name__}"
-        return cls.__types__.setdefault(name, type(name, (cls,), {}, proto=base))()
+        return cls.__types__.setdefault(name, type(name, (cls,), {}, proto=base))
 
     def __init_subclass__(cls, proto=None, **kwargs):
         super().__init_subclass__(**kwargs)
@@ -52,6 +54,7 @@ class ProtoMessageFactory(Generic[GPM], metaclass=ABCMeta):
     def create(cls, *args, **kwargs) -> GPM:
         raise NotImplementedError("You need to overwrite the 'create' method to create objects"
                                   "of the type specified by the classes `.proto` attribute.")
+
 
 def serialize(*args, **kwargs):
     result = json.dumps(*args, cls=Translator.ProtoEncoder, **kwargs)
@@ -168,21 +171,21 @@ class Translator(ProtoMessageFactory):
             return cls.proto(*args, **kwargs)
 
     @staticmethod
-    def generate_type(datatype: str) -> 'Translator':
+    def generate_translator(datatype: str) -> 'Translator':
         # The .proto files declare a package name 'ubii', but this is not reflected in the python package.
         # Instead the package is named proto, since the name is defined by directory structure, see
         # https://developers.google.com/protocol-buffers/docs/reference/python-generated#package
         if not datatype.startswith('ubii.'):
             log.debug(f"Type {datatype} is not a protobuf type.")
         else:
-            return Translator.get_type(packages.import_proto(datatype))
+            return Translator.get_type(packages.import_proto(datatype))()
 
     @classmethod
     def validate(cls, message, *args, **kwargs):
         return cls.from_json(serialize(message), *args, **kwargs)
 
-_msgtypes_ = __constants__['MSG_TYPES']
-ProtoMessages: AliasDict[Translator] = AliasDict(data=apply(Translator.generate_type, _msgtypes_), aliases={v: k for k, v in _msgtypes_.items()})
+_msgtypes_ = asdict(__constants__.MSG_TYPES)
+ProtoMessages: AliasDict[Translator] = AliasDict(data={k: Translator.generate_translator(v) for k, v in _msgtypes_.items()}, aliases={v: k for k, v in _msgtypes_.items()})
 
 class Proto(Generic[GPM]):
     class ProtoProperty(Generic[GPM]):
@@ -279,16 +282,16 @@ class Proto(Generic[GPM]):
         else:
             self._proto = self.translator.from_dict(self.to_dict())
 
-    @property
-    def proto(self) -> Type[GPM]:
-        return self.translator.proto
-
     def to_dict(self, *args, **kwargs) -> Dict:
         """
         Representation as dictionary (compatible with wrapped proto message format)
         """
         message = self.translator.from_dict({k: getattr(self, k, None) for k in self.DESCRIPTOR.fields_by_name})
         return self.translator.to_dict(message, *args, **kwargs)
+
+    @classmethod
+    async def create(cls, *args, **kwargs):
+        return NotImplementedError("If you need asynchronous creation of instances, overwrite this Method")
 
 
 # Wrapper classes

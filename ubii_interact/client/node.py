@@ -1,36 +1,26 @@
 import asyncio
 import logging
-from typing import NamedTuple, Dict
-
+from typing import Dict
 from .websocket import WebSocketClient, RecordSignal
-from ..util import constants
+from ..util import async_helpers
 from ..util.proto import ProtoMessages
 
 log = logging.getLogger(__name__)
 
+
 class ClientNode(object):
-    __session__ = None
 
     def __init__(self, name) -> None:
         super().__init__()
         self.server_config = None
         self.client_config = ProtoMessages['CLIENT'].create(name=name)
-        self.topicdata_client: WebSocketClient = WebSocketClient()
-        from ..session import UbiiSession
-        self.session = UbiiSession.instance
+        self.topicdata_client: WebSocketClient = WebSocketClient(self)
         self._signals: Dict[str, RecordSignal] = {}
         self.registered = asyncio.Event()
-
-    @property
-    def signals(self):
-        if not self.topicdata_client:
-            return None
-
-        class Signals(NamedTuple):
-            topics: Dict[str, RecordSignal]
-            info = RecordSignal()
-
-        return Signals(topics=self.topicdata_client.topic_signals)
+        self.initialized = asyncio.Event()
+        from .. import Ubii
+        self.hub = Ubii.hub
+        self._tasks = [self.initialize()]
 
     @property
     def id(self):
@@ -44,55 +34,51 @@ class ClientNode(object):
     def devices(self):
         return self.client_config.devices
 
-    @classmethod
-    def create(cls, *args, **kwargs):
-        node = cls(*args, **kwargs)
-        return node.initialize()
-
-    async def initialize(self):
-        if self.initialized:
-            log.debug(f"{self} is already initialized.")
-            return
-
-        await self.register()
-        await self.start_websocket()
-
-        self.signals.info.connect_callbacks(print)
-        return self
-
-    async def start_websocket(self):
-        # initialize Websocket Client (needs clientconf)
-        assert self.registered
-        ip = self.session.server_config.ip_ethernet or self.session.server_config.ip_wlan
-        host = 'localhost' if ip == self.session.local_ip else ip
-        port = self.session.server_config.port_topic_data_ws
-        self.topicdata_client = WebSocketClient(self.id, host, port)
-
-
     async def shutdown(self):
-        await asyncio.gather(*[self.session.unregister_device(d) for d in self.devices])
+        for t in self._tasks:
+            t.cancel()
+
+        await asyncio.gather(*[self.hub.unregister_device(d) for d in self.devices])
         await self.topicdata_client.shutdown()
         await self.unregister()
         log.info(f"{self} shut down.")
 
-    async def register(self):
-        if self.registered:
+    @classmethod
+    def create(cls, name):
+        return cls(name).initialize()
+
+    @async_helpers.once
+    async def initialize(self):
+        if self.initialized.is_set():
+            log.debug(f"{self} is already initialized.")
+            return
+
+        await self._register()
+        await self.topicdata_client.connected.wait()
+        self.initialized.set()
+        return self
+
+    async def _register(self):
+        if self.registered.is_set():
             log.debug(f"Already registered {self}")
             return
 
-        self.client_config = await self.session.register_client(self.client_config)
+        self.client_config = await self.hub.register_client(self.client_config)
+        self.registered.set()
         log.debug(f"Registered {self}")
+        return self
 
     async def unregister(self):
-        success = await self.session.unregister_client(self.client_config)
+        success = await self.hub.unregister_client(self.client_config)
         if success:
             self.client_config.id = ''
+            self.registered.clear()
             log.debug(f"Unregistered {self}")
 
     async def register_device(self, device):
-        device = await self.session.register_device(device)
+        device = await self.hub.register_device(device)
         if device:
             self.devices.append(device)
 
     def __str__(self):
-        return f"Node {self.id}"
+        return f"Node: {self.id or 'No ID'}"
