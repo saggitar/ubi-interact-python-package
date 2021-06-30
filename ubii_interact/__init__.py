@@ -1,34 +1,52 @@
 import asyncio
+import dataclasses
 import logging
 import socket
 from functools import singledispatchmethod, cached_property
 from typing import Dict, Tuple
 from collections.abc import Awaitable
+from warnings import warn
+
 import aiohttp
 import sys
+from proto.servers.server_pb2 import Server
 from proto.services.serviceReply_pb2 import ServiceReply
+from proto.sessions.session_pb2 import Session
 
 from .client.node import ClientNode
 from .client.rest import RESTClient
-from .util.proto import ProtoMessages, Translator
+from .util.proto import Translators, Translator
 from .util import constants, UbiiError
 log = logging.getLogger(__name__)
 
 
 class Ubii(object):
+    """
+    This class provides most of the API to interact with the Ubi-Interact Master Node.
+    It is implemented as a singleton which is available from the `Ubii.hub`
+    """
+    @dataclasses.dataclass
+    class _Data:
+        sessions: Dict[str, Session] = dataclasses.field(default_factory=dict)
+
     class Instance(object):
         def __init__(self, create_key):
             self.create_key = create_key
 
         def __get__(self, instance, owner):
-            if not hasattr(owner, '__instance__'):
-                owner.__instance__ = owner(self.create_key)
-            return owner.__instance__
+            if instance:
+                warn(f"You are accessing the class variable {self} from {owner} from the instance {instance}."
+                     f" This is does not seem to be a good idea, since it will return the same instance {instance}.")
+            mangled_name = f'_{owner.__name__}__instance'
+            if not hasattr(owner, mangled_name):
+                setattr(owner, mangled_name, owner(self.create_key))
+            return getattr(owner, mangled_name)
 
     __debug = False
     __verbose = False
     __create_key = object()
     hub: 'Ubii' = Instance(__create_key)
+    data: _Data = _Data()
 
     @property
     def debug(self):
@@ -45,17 +63,15 @@ class Ubii(object):
 
     def __init__(self, create_key) -> None:
         assert (create_key == Ubii.__create_key), \
-            "The singleton Session object can be accessed using Session.get"
+            f"You can't create new instances of {self.__class__}. The singleton instance can be accessed using {Ubii.hub}"
 
         super().__init__()
         self.local_ip = socket.gethostbyname(socket.gethostname())
         self.nodes: Dict[str, ClientNode] = {}
         self.initialized = asyncio.Event()
-        self.server_config = None
+        self.server_config: Server = None
         self._service_client = None
-        self._client_session = None
-
-
+        self._aiohttp_session = None
 
     @cached_property
     def service_client(self):
@@ -63,16 +79,23 @@ class Ubii(object):
             self._service_client = RESTClient()
         return self._service_client
 
-    @classmethod
-    async def start_session(cls, session):
-        reply = await cls.hub.call_service({'topic': constants.DEFAULT_TOPICS.SERVICES.SESSION_RUNTIME_START,
-                                            'session': session})
+    async def start_session(self, session):
+        reply = await self.call_service({'topic': constants.DEFAULT_TOPICS.SERVICES.SESSION_RUNTIME_START,
+                                         'session': session})
 
-        return reply.session
+        return reply.hub
+
+    @property
+    def ip(self):
+        if not self.server_config:
+            return None
+
+        ip = self.server_config.ip_ethernet or self.server_config.ip_wlan
+        return 'localhost' if ip == self.local_ip else ip
 
     @cached_property
-    def client_session(self):
-        if not self._client_session:
+    def aiohttp_session(self):
+        if not self._aiohttp_session:
             if self.__debug:
                 trace_config = aiohttp.TraceConfig()
 
@@ -87,11 +110,11 @@ class Ubii(object):
                 trace_configs = []
 
             from .util.proto import serialize as proto_serialize
-            self._client_session = aiohttp.ClientSession(raise_for_status=True,
-                                                         json_serialize=proto_serialize,
-                                                         trace_configs=trace_configs,
-                                                         timeout=timeout)
-        return self._client_session
+            self._aiohttp_session = aiohttp.ClientSession(raise_for_status=True,
+                                                          json_serialize=proto_serialize,
+                                                          trace_configs=trace_configs,
+                                                          timeout=timeout)
+        return self._aiohttp_session
 
     @property
     def alive_nodes(self):
@@ -120,12 +143,9 @@ class Ubii(object):
     async def subscribe_topic(self, client_id, callback, *topics):
         node = self.nodes.get(client_id)
         if not node:
-            raise ValueError(f"No node with id {client_id} found in session.")
+            raise ValueError(f"No node with id {client_id} found.")
 
-        return await node.topicdata_client.subscribe_topic(callback, *topics)
-
-    async def register_session(self, session):
-        raise NotImplementedError
+        return await node.client.subscribe_topic(callback, *topics)
 
     async def register_device(self, device):
         log.debug(f"Registering device {device}")
@@ -138,7 +158,7 @@ class Ubii(object):
         result = await self.call_service({'topic': constants.DEFAULT_TOPICS.SERVICES.DEVICE_DEREGISTRATION,
                                           'device': device})
 
-        return not result.error
+        return result
 
     async def register_client(self, client):
         log.debug(f"Registering {client}")
@@ -151,16 +171,15 @@ class Ubii(object):
         log.debug(f"Unregistering {client}")
         result = await self.call_service({"topic": constants.DEFAULT_TOPICS.SERVICES.CLIENT_DEREGISTRATION,
                                           'client': client})
-        return not result.error
+        return result
 
     async def call_service(self, message) -> ServiceReply:
-        request = ProtoMessages['SERVICE_REQUEST']
-        if not isinstance(message, request.proto):
+        request = Translators.SERVICE_REQUEST
             request = request.validate(message)
 
         reply = await self.service_client.send(request)
         try:
-            reply = ProtoMessages['SERVICE_REPLY'].create(**reply)
+            reply = Translators.SERVICE_REPLY.create(**reply)
             error = Translator.to_dict(reply.error)
             if any([v for v in error.values()]):
                 raise UbiiError(**error)
@@ -176,8 +195,8 @@ class Ubii(object):
 
         await self.service_client.shutdown()
 
-        if self.client_session:
-            await self.client_session.close()
+        if self.aiohttp_session:
+            await self.aiohttp_session.close()
 
     @singledispatchmethod
     async def start_nodes(self, *nodes) -> Tuple[ClientNode]:
@@ -185,7 +204,7 @@ class Ubii(object):
 
     @start_nodes.register
     async def _(self, *nodes: str) -> Tuple[ClientNode]:
-        nodes = [ClientNode.create(name) for name in nodes]
+        nodes = [ClientNode.create(name=name) for name in nodes]
         return await self.start_nodes(*nodes)
 
     @start_nodes.register(Awaitable[ClientNode] if sys.version_info >= (3, 9) else Awaitable)
@@ -198,5 +217,5 @@ class Ubii(object):
         self.nodes.update({node.id: node for node in nodes})
         return nodes
 
-
-
+    def __str__(self):
+        return f"Ubii Hub" + f" ({self.server_config.name} at {self.ip})" if self.server_config else ''

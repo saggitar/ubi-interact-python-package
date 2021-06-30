@@ -25,7 +25,7 @@ def _wrapper(fun, logger: logging.Logger = None,  message='', message_args: Tupl
             task.result()
         except asyncio.CancelledError:
             pass
-        except Exception:
+        except Exception as e:
             logger.exception(message, *message_args)
 
     logger = logger or logging.getLogger()

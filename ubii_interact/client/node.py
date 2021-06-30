@@ -1,60 +1,41 @@
 import asyncio
 import logging
-from typing import Dict
-from .websocket import WebSocketClient, RecordSignal
-from ..util import async_helpers
-from ..util.proto import ProtoMessages
+from .websocket import WebSocketClient
+from ..util.async_helpers import once
+from ..util.proto import Client
 
 log = logging.getLogger(__name__)
 
 
-class ClientNode(object):
+class ClientNode(Client):
 
-    def __init__(self, name) -> None:
+    def __init__(self, *args, **kwargs) -> None:
         super().__init__()
-        self.server_config = None
-        self.client_config = ProtoMessages['CLIENT'].create(name=name)
-        self.topicdata_client: WebSocketClient = WebSocketClient(self)
-        self._signals: Dict[str, RecordSignal] = {}
+        self.client: WebSocketClient = WebSocketClient(self)
         self.registered = asyncio.Event()
         self.initialized = asyncio.Event()
         from .. import Ubii
         self.hub = Ubii.hub
-        self._tasks = [self.initialize()]
-
-    @property
-    def id(self):
-        return self.client_config.id
-
-    @property
-    def name(self):
-        return self.client_config.name
-
-    @property
-    def devices(self):
-        return self.client_config.devices
+        self._tasks = [self._async_init()]
 
     async def shutdown(self):
         for t in self._tasks:
             t.cancel()
 
         await asyncio.gather(*[self.hub.unregister_device(d) for d in self.devices])
-        await self.topicdata_client.shutdown()
-        await self.unregister()
+        await self.client.shutdown()
+        await self._unregister()
         log.info(f"{self} shut down.")
 
-    @classmethod
-    def create(cls, name):
-        return cls(name).initialize()
-
-    @async_helpers.once
-    async def initialize(self):
+    @once
+    async def _async_init(self, *args, **kwargs):
+        self.set(**kwargs)
         if self.initialized.is_set():
             log.debug(f"{self} is already initialized.")
             return
 
         await self._register()
-        await self.topicdata_client.connected.wait()
+        await self.client.connected.wait()
         self.initialized.set()
         return self
 
@@ -63,15 +44,15 @@ class ClientNode(object):
             log.debug(f"Already registered {self}")
             return
 
-        self.client_config = await self.hub.register_client(self.client_config)
+        await self.hub.register_client(self)
         self.registered.set()
         log.debug(f"Registered {self}")
         return self
 
-    async def unregister(self):
-        success = await self.hub.unregister_client(self.client_config)
+    async def _unregister(self):
+        success = await self.hub.unregister_client(self)
         if success:
-            self.client_config.id = ''
+            self.id = ''
             self.registered.clear()
             log.debug(f"Unregistered {self}")
 
@@ -79,6 +60,9 @@ class ClientNode(object):
         device = await self.hub.register_device(device)
         if device:
             self.devices.append(device)
+
+    def __del__(self):
+        self.shutdown()
 
     def __str__(self):
         return f"Node: {self.id or 'No ID'}"
