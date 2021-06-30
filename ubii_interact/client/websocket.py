@@ -10,12 +10,12 @@ import aiohttp
 from ..util.async_helpers import log_exceptions_in_background_tasks
 from ..util import constants
 from ..util.signals import Signal
-from ..util.proto import ProtoMessages
+from ..util.proto import Translators
 
 log = logging.getLogger(__name__)
 websocket_log = logging.getLogger(f"{__name__}.sock")
 
-TopicDataRecord = ProtoMessages['TOPIC_DATA_RECORD'].proto
+TopicDataRecord = Translators.TOPIC_DATA_RECORD.proto
 RecordSignal = Signal[TopicDataRecord]
 TopicDataConsumer = Callable[[TopicDataRecord], Any]
 
@@ -49,8 +49,7 @@ class WebSocketClient(object):
         from ubii_interact import Ubii
         await Ubii.hub.initialized.wait()
         await self.node.registered.wait()
-        ip = Ubii.hub.server_config.ip_ethernet or Ubii.hub.server_config.ip_wlan
-        self.server = 'localhost' if ip == Ubii.hub.local_ip else ip
+        self.server = Ubii.hub.ip
         self.port = Ubii.hub.server_config.port_topic_data_ws
         self._url_initialized.set()
         log.debug(f"Url of {self} initialized")
@@ -59,8 +58,8 @@ class WebSocketClient(object):
     def url(self):
         return "" if not self._url_initialized.is_set() else f"ws{'s' if self.https else ''}://{self.server}:{self.port}/?clientID={self.node.id}"
 
-    async def log(self, data):
-        log.debug(data)
+    async def _default_log(self, data):
+        log.info(data)
 
     def _init_info_signals(self):
         self.REGEX_ALL_INFOS = RecordSignal()
@@ -82,7 +81,9 @@ class WebSocketClient(object):
 
         from ubii_interact import Ubii
         if Ubii.hub.debug or Ubii.hub.verbose:
-            self.REGEX_ALL_INFOS.connect(self.log)
+            self.REGEX_ALL_INFOS.connect(self._default_log)
+
+        self.NEW_SESSION.connect(lambda record: Ubii.data.sessions.update({record.session.id: record.session}))
 
     def _init_tasks(self, num_tasks):
         with log_exceptions_in_background_tasks(logger=log):
@@ -98,7 +99,7 @@ class WebSocketClient(object):
                 await self._signals_changed.wait()
 
             data = await self._queue.get()
-            record = ProtoMessages['TOPIC_DATA'].convert_to_message(data)
+            record = Translators.TOPIC_DATA.convert_to_message(data)
             record_type = record.WhichOneof('type')
             record = getattr(record, record_type)
 
@@ -124,7 +125,7 @@ class WebSocketClient(object):
             await self.subscribe_regex(getattr(self, name).emit, regex)
 
         await self._url_initialized.wait()
-        async with self.node.hub.client_session.ws_connect(self.url) as ws:
+        async with self.node.hub.aiohttp_session.ws_connect(self.url) as ws:
             self._ws = ws
             self.connected.set()
             async for message in ws:
@@ -166,9 +167,9 @@ class WebSocketClient(object):
             raise ValueError(f"Called {self.publish} without TopicDataRecord message to publish")
 
         if len(records) == 1:
-            data = ProtoMessages['TOPIC_DATA'].create(topic_data_record=records[0])
+            data = Translators.TOPIC_DATA.create(topic_data_record=records[0])
         else:
-            data = ProtoMessages['TOPIC_DATA'].create(topic_data_record_list=records)
+            data = Translators.TOPIC_DATA.create(topic_data_record_list=records)
 
         await self.send(data.SerializeToString())
 

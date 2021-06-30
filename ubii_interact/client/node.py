@@ -1,9 +1,8 @@
 import asyncio
 import logging
-from typing import Dict
-from .websocket import WebSocketClient, RecordSignal
+from .websocket import WebSocketClient
 from ..util import async_helpers
-from ..util.proto import ProtoMessages
+from ..util.proto import Translators
 
 log = logging.getLogger(__name__)
 
@@ -12,10 +11,8 @@ class ClientNode(object):
 
     def __init__(self, name) -> None:
         super().__init__()
-        self.server_config = None
-        self.client_config = ProtoMessages['CLIENT'].create(name=name)
+        self.client_config = Translators.CLIENT.create(name=name)
         self.topicdata_client: WebSocketClient = WebSocketClient(self)
-        self._signals: Dict[str, RecordSignal] = {}
         self.registered = asyncio.Event()
         self.initialized = asyncio.Event()
         from .. import Ubii
