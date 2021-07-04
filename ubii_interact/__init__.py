@@ -1,34 +1,122 @@
 import asyncio
 import dataclasses
+import inspect
 import logging
 import socket
+from abc import ABC
 from functools import singledispatchmethod, cached_property
-from typing import Dict, Tuple
-from collections.abc import Awaitable
+from typing import Dict, Tuple, Type
+from collections.abc import Awaitable, Callable
 from warnings import warn
 
 import aiohttp
 import sys
 from proto.servers.server_pb2 import Server
 from proto.services.serviceReply_pb2 import ServiceReply
-from proto.sessions.session_pb2 import Session
+from proto.services.serviceRequest_pb2 import ServiceRequest
 
 from .client.node import ClientNode
 from .client.rest import RESTClient
-from .util.proto import Translators, Translator
+from .util.async_helpers import once
+from .util.proto import Translators, Translator, subclass_with_checks
 from .util import constants, UbiiError
+
 log = logging.getLogger(__name__)
+
+def _check_arguments(cls):
+    sig = inspect.signature(cls.__call__)
+    expected = set(f.name for f in ServiceRequest.DESCRIPTOR.oneofs_by_name['type'].fields)
+    actual = set(sig.parameters) - {'self'}
+    if actual != expected:
+        diff = expected.difference(actual)
+        error = ''
+        if diff:
+            error += f"Attributes {', '.join(diff)} from {ServiceRequest} are not part if the signature of {cls.__call__}. "
+
+        diff = actual.difference(expected)
+        if diff:
+            error += f"Arguments {', '.join(diff)} from {cls.__call__} are not attributes of {ServiceRequest}."
+        raise AttributeError(error)
+
+@subclass_with_checks(checks=[_check_arguments])
+class _ServiceCall(Callable, ABC):
+    def __init__(self, caller):
+        self.caller = caller
+
+    @classmethod
+    def generate_call(cls, topic):
+        args = ServiceRequest.DESCRIPTOR.oneofs_by_name['type'].fields
+        quotes = '"'
+        txt = f"async def __call__(self, {', '.join(f'{a.name}=None' for a in args)}) -> None:\n"\
+              f"  argmap = {{{','.join(f'{quotes}{a.name}{quotes}: {a.name}' for a in args)}}}\n" \
+              f"  if sum(a is not None for a in argmap.values()) > 1:\n" \
+              f"    raise AttributeError('Only one of arguments {', '.join(a.name for a in args)} can be used simultaneously')\n" \
+              f"  message = {{'topic': '{topic}'}}\n" \
+              f"  message.update({{k: v for k, v in argmap.items() if v is not None}})\n" \
+              f"  return await self.caller(message)"
+
+        ns = {}
+        exec(txt, ns)
+        return ns['__call__']
+
+class _ServiceCalls(constants.DEFAULT_TOPICS.SERVICES.__class__):
+    SERVER_CONFIG: Callable
+    CLIENT_REGISTRATION: Callable
+    CLIENT_DEREGISTRATION: Callable
+    CLIENT_GET_LIST: Callable
+    DEVICE_REGISTRATION: Callable
+    DEVICE_DEREGISTRATION: Callable
+    DEVICE_GET: Callable
+    DEVICE_GET_LIST: Callable
+    PM_DATABASE_SAVE: Callable
+    PM_DATABASE_DELETE: Callable
+    PM_DATABASE_GET: Callable
+    PM_DATABASE_GET_LIST: Callable
+    PM_DATABASE_ONLINE_GET_LIST: Callable
+    PM_DATABASE_LOCAL_GET_LIST: Callable
+    PM_RUNTIME_ADD: Callable
+    PM_RUNTIME_REMOVE: Callable
+    PM_RUNTIME_GET: Callable
+    PM_RUNTIME_GET_LIST: Callable
+    SESSION_DATABASE_SAVE: Callable
+    SESSION_DATABASE_DELETE: Callable
+    SESSION_DATABASE_GET: Callable
+    SESSION_DATABASE_GET_LIST: Callable
+    SESSION_DATABASE_ONLINE_GET_LIST: Callable
+    SESSION_DATABASE_LOCAL_GET_LIST: Callable
+    SESSION_RUNTIME_ADD: Callable
+    SESSION_RUNTIME_REMOVE: Callable
+    SESSION_RUNTIME_GET: Callable
+    SESSION_RUNTIME_GET_LIST: Callable
+    SESSION_RUNTIME_START: Callable
+    SESSION_RUNTIME_STOP: Callable
+    TOPIC_DEMUX_DATABASE_SAVE: Callable
+    TOPIC_DEMUX_DATABASE_DELETE: Callable
+    TOPIC_DEMUX_DATABASE_GET: Callable
+    TOPIC_DEMUX_DATABASE_GET_LIST: Callable
+    TOPIC_DEMUX_RUNTIME_GET: Callable
+    TOPIC_DEMUX_RUNTIME_GET_LIST: Callable
+    TOPIC_MUX_DATABASE_SAVE: Callable
+    TOPIC_MUX_DATABASE_DELETE: Callable
+    TOPIC_MUX_DATABASE_GET: Callable
+    TOPIC_MUX_DATABASE_GET_LIST: Callable
+    TOPIC_MUX_RUNTIME_GET: Callable
+    TOPIC_MUX_RUNTIME_GET_LIST: Callable
+    SERVICE_LIST: Callable
+    TOPIC_LIST: Callable
+    TOPIC_SUBSCRIPTION: Callable
+
+    def __init__(self, caller):
+        for field in dataclasses.fields(self):
+            call = type(f"{field.name}_ServiceCall", (_ServiceCall,), {'__call__': _ServiceCall.generate_call(field.default)})(caller=caller)
+            object.__setattr__(self, field.name, call)
 
 
 class Ubii(object):
     """
     This class provides most of the API to interact with the Ubi-Interact Master Node.
-    It is implemented as a singleton which is available from the `Ubii.hub`
+    It is implemented as a singleton which is available from `Ubii.hub`
     """
-    @dataclasses.dataclass
-    class _Data:
-        sessions: Dict[str, Session] = dataclasses.field(default_factory=dict)
-
     class Instance(object):
         def __init__(self, create_key):
             self.create_key = create_key
@@ -46,7 +134,6 @@ class Ubii(object):
     __verbose = False
     __create_key = object()
     hub: 'Ubii' = Instance(__create_key)
-    data: _Data = _Data()
 
     @property
     def debug(self):
@@ -72,6 +159,7 @@ class Ubii(object):
         self.server_config: Server = None
         self._service_client = None
         self._aiohttp_session = None
+        self.service_calls = _ServiceCalls(caller=self.call_service)
 
     @cached_property
     def service_client(self):
@@ -80,10 +168,10 @@ class Ubii(object):
         return self._service_client
 
     async def start_session(self, session):
-        reply = await self.call_service({'topic': constants.DEFAULT_TOPICS.SERVICES.SESSION_RUNTIME_START,
-                                         'session': session})
-
-        return reply.hub
+        nodes = getattr(session, 'nodes', [])
+        session = await self.service_calls.SESSION_RUNTIME_START(session=session)
+        await self.start_nodes(*nodes)
+        return session
 
     @property
     def ip(self):
@@ -116,15 +204,13 @@ class Ubii(object):
                                                           timeout=timeout)
         return self._aiohttp_session
 
-    @property
-    def alive_nodes(self):
-        return NotImplementedError
 
+    @once
     async def initialize(self):
         while not self.initialized.is_set():
             try:
                 log.info(f"{self} is initializing.")
-                self.server_config = await self.get_server_config()
+                self.server_config = await self.service_calls.SERVER_CONFIG()
                 self.initialized.set()
             except aiohttp.ClientConnectorError as e:
                 log.error(f"{e}. Trying again in 5 seconds ...")
@@ -132,51 +218,9 @@ class Ubii(object):
 
         log.info(f"{self} initialized successfully.")
 
-    async def get_server_config(self):
-        reply = await self.call_service({"topic": constants.DEFAULT_TOPICS.SERVICES.SERVER_CONFIG})
-        return reply.server if reply else None
-
-    async def get_client_list(self):
-        reply = await self.call_service({"topic": constants.DEFAULT_TOPICS.SERVICES.CLIENT_GET_LIST})
-        return reply.client_list if reply else None
-
-    async def subscribe_topic(self, client_id, callback, *topics):
-        node = self.nodes.get(client_id)
-        if not node:
-            raise ValueError(f"No node with id {client_id} found.")
-
-        return await node.client.subscribe_topic(callback, *topics)
-
-    async def register_device(self, device):
-        log.debug(f"Registering device {device}")
-        result = await self.call_service({'topic': constants.DEFAULT_TOPICS.SERVICES.DEVICE_REGISTRATION,
-                                          'device': device})
-        return result.device if result else None
-
-    async def unregister_device(self, device):
-        log.debug(f"Unregistering device {device}")
-        result = await self.call_service({'topic': constants.DEFAULT_TOPICS.SERVICES.DEVICE_DEREGISTRATION,
-                                          'device': device})
-
-        return result
-
-    async def register_client(self, client):
-        log.debug(f"Registering {client}")
-        reply = await self.call_service({"topic": constants.DEFAULT_TOPICS.SERVICES.CLIENT_REGISTRATION,
-                                         'client': client})
-
-        return reply.client if reply else None
-
-    async def unregister_client(self, client):
-        log.debug(f"Unregistering {client}")
-        result = await self.call_service({"topic": constants.DEFAULT_TOPICS.SERVICES.CLIENT_DEREGISTRATION,
-                                          'client': client})
-        return result
 
     async def call_service(self, message) -> ServiceReply:
-        request = Translators.SERVICE_REQUEST
-            request = request.validate(message)
-
+        request = Translators.SERVICE_REQUEST.validate(message)
         reply = await self.service_client.send(request)
         try:
             reply = Translators.SERVICE_REPLY.create(**reply)
@@ -187,7 +231,7 @@ class Ubii(object):
             log.exception(e)
             raise
         else:
-            return reply
+            return getattr(reply, reply.WhichOneof('type'), reply)
 
     async def shutdown(self):
         for _, node in self.nodes.items():

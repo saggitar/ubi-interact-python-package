@@ -1,3 +1,11 @@
+import dataclasses
+import inspect
+import re
+
+import sys
+from typing import Optional, Callable, Union
+import builtins
+
 def iterator(value):
     """
     Sometimes we need to have an iterator from something that can either be itself an iterator or a simple value

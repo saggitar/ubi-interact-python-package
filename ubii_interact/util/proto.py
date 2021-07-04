@@ -1,14 +1,18 @@
 import dataclasses
+import functools
 import json
 from abc import ABCMeta, abstractmethod, ABC
 from json import JSONEncoder
-from typing import Union, Dict, Any, Generic, TypeVar, Optional, Type, List, overload
+from types import MethodType
+from typing import Union, Dict, Any, Generic, TypeVar, Optional, Type, List, overload, Callable, Tuple, ClassVar
 from warnings import warn
 import logging
 
-from google.protobuf.descriptor import FieldDescriptor
+from google.protobuf.descriptor import FieldDescriptor, Descriptor
+from google.protobuf.internal.containers import UnknownFieldSet
+from google.protobuf.internal.enum_type_wrapper import EnumTypeWrapper
 from google.protobuf.json_format import ParseError, Parse, ParseDict, MessageToDict, MessageToJson
-from google.protobuf.reflection import GeneratedProtocolMessageType
+from google.protobuf.message import Message
 
 from proto.clients.client_pb2 import *
 from proto.devices.component_pb2 import *
@@ -46,11 +50,11 @@ from proto.topicData.topicDataRecord.timestamp_pb2 import *
 from proto.topicData.topicDataRecord.topicDataRecord_pb2 import *
 from proto.topicData.topicData_pb2 import *
 
-from . import packages, constants, async_helpers
+from . import packages, constants
 
 log = logging.getLogger(__name__)
 
-GPM = TypeVar('GPM', bound=GeneratedProtocolMessageType)
+GPM = TypeVar('GPM', bound=Message)
 PMF = TypeVar('PMF', bound='ProtoMessageFactory')
 CONVERTIBLE = Union[str, Dict[str, Any], bytes, 'Proto']
 
@@ -93,19 +97,18 @@ class ProtoMessageFactory(Generic[GPM], metaclass=ABCMeta):
 
 
 def serialize(*args, **kwargs):
-    result = json.dumps(*args, cls=Translator.ProtoEncoder, **kwargs)
-    return result
+    try:
+        result = json.dumps(*args, cls=Translator.ProtoEncoder, **kwargs)
+    except Exception as e:
+        log.exception(e)
+    else:
+        return result
 
 
 class Translator(ProtoMessageFactory[GPM]):
 
     class ProtoEncoder(JSONEncoder):
         def default(self, o):
-            try:
-                return o.to_dict()
-            except AttributeError:
-                pass
-
             try:
                 return Translator.to_dict(o)
             except Exception:
@@ -190,13 +193,13 @@ class Translator(ProtoMessageFactory[GPM]):
                 return cls.from_dict(obj, *args, **kwargs)
             elif isinstance(obj, str):
                 return cls.from_json(obj, *args, **kwargs)
-            elif isinstance(obj, Proto):
-                return cls.from_dict(obj.to_dict())
+            elif dataclasses.is_dataclass(obj) and not isinstance(obj, type):
+                return cls.from_dict(dataclasses.asdict(obj))
             elif isinstance(obj, list):
                 return [cls.convert_to_message(o, *args, **kwargs) for o in obj]
             else:
                 raise ParseError(f"Type {type(obj).__name__} is not supported. Use dictionaries or json formatted strings.")
-        except ParseError as e:
+        except Exception as e:
             log.exception(e)
             raise
 
@@ -225,7 +228,7 @@ class Translator(ProtoMessageFactory[GPM]):
             return cls.from_json(serialize(message))
 
 
-class _ProtoMessages(constants.MSG_TYPES.__class__):
+class _ProtoTranslators(constants.MSG_TYPES.__class__):
     ERROR: Translator[Error]
     SUCCESS: Translator[Success]
     SERVER: Translator[Server]
@@ -287,46 +290,86 @@ class _ProtoMessages(constants.MSG_TYPES.__class__):
                 object.__setattr__(self, field.name, translator)
 
 
-Translators = _ProtoMessages()
+Translators = _ProtoTranslators()
+
 
 T = TypeVar("T")
 
+def subclass_with_checks(cls=None, checks: List[Callable[[type], None]] = None):
+    checks = checks or []
+
+    def wrap(cls):
+        old_impl = cls.__dict__.get('__init_subclass__')
+        if old_impl:
+            setattr(cls, '__old_init_subclass__', old_impl)
+
+        @functools.wraps(cls.__init_subclass__)
+        def init_subclass(cls, **kwargs):
+            old = getattr(cls, '__old_init_subclass__', False)
+            if old:
+                old(**kwargs)
+            for check in checks:
+                check(cls)
+
+        setattr(cls, '__init_subclass__', classmethod(init_subclass))
+        return cls
+
+    if cls is None:
+        return wrap
+
+    return wrap(cls)
+
+def check_proto_fields(proto: Callable[[Any], Type[Message]]):
+    def _proto_field_check(cls):
+        _proto = proto(cls)
+        from google.protobuf.message import Message
+        missing_names = [name for name in Message.__dict__ if name not in dir(cls) if not name.startswith('_')]
+        if missing_names:
+            warn(f"Attribute[s] {', '.join(missing_names)} from {Message} are missing from {cls}")
+
+        missing_fields = [name for name in _proto.DESCRIPTOR.fields_by_name if name not in dir(cls)]
+        if missing_fields:
+            warn(f"Attribute[s] {', '.join(missing_fields)} from {_proto} are missing from {cls}")
+
+        missing_enums = [name for name in _proto.DESCRIPTOR.enum_types_by_name if name not in dir(cls)]
+        if missing_enums:
+            warn(f"Attribute[s] {', '.join(missing_enums)} from {_proto} are missing from {cls}")
+
+    return subclass_with_checks(checks=[_proto_field_check])
+
+
+@check_proto_fields(proto=lambda cls: cls.translator.proto)
 class Proto(Generic[GPM]):
-    class ProtoProperty(Generic[GPM]):
+    class ProtoProperty(Generic[T]):
+        mangled_proto_name = '_Proto__proto'
+
         def __set_name__(self, owner, name):
             self.name = name
-            self.translator = owner.translator
-            if self.translator:
-                print("")
+            if owner.translator:
+                descriptor: Descriptor = owner.translator.proto.DESCRIPTOR
+                self.descriptor = descriptor.enum_types_by_name.get(self.name, descriptor.fields_by_name.get(self.name))
+                if getattr(self.descriptor, 'message_type', False):
+                    self.translator = Translator.generate_translator(self.descriptor.message_type.full_name)
 
-        def __init__(self):
-            self.descriptor: Optional[FieldDescriptor] = None
-            self.translator: Optional[Translator] = None
-            self._initialized = False
-
-        def _init(self, instance):
-            field = instance.DESCRIPTOR.fields_by_name[self.name]
-            self.descriptor = field
-            self.translator = Translator.generate_translator(field.message_type.full_name) if field.message_type else None
-            self._initialized = True
+        def __init__(self, descriptor=None, translator=None, ):
+            self.descriptor: Optional[FieldDescriptor] = descriptor
+            self.translator: Optional[Translator] = translator
 
         @property
         def is_repeated(self):
             return self.descriptor.label == self.descriptor.LABEL_REPEATED
 
-        def __get__(self, instance, owner) -> Optional[GPM]:
+        def __get__(self, instance, owner) -> Optional[T]:
             if not instance:
                 return None
 
-            return getattr(instance._proto, self.name)
+            return getattr(getattr(instance, self.mangled_proto_name), self.name)
 
         def __set__(self, instance, value):
-            if not self._initialized:
-                self._init(instance)
-
             if self.name in dir(Proto):
                 raise AttributeError(f"{self.name} is read only.")
 
+            value = self.descriptor.default_value if value is None else value
             if self.is_repeated:
                 try:
                     value = list(value)
@@ -334,12 +377,13 @@ class Proto(Generic[GPM]):
                     raise TypeError(f"Can't initalize a repeated field with a non iterable value ({value})") from e
 
             if self.translator:
-                value = self.translator.convert_to_message(value)
+                value = value if value == self.descriptor.default_value else self.translator.convert_to_message(value)
 
+            proto = getattr(instance, self.mangled_proto_name)
             try:
-                setattr(instance._proto, self.name, value)
+                setattr(proto, self.name, value)
             except AttributeError:
-                field = getattr(instance._proto, self.name)
+                field = getattr(proto, self.name)
                 if self.is_repeated:
                     del field[:]
                     field.extend(value)
@@ -347,144 +391,108 @@ class Proto(Generic[GPM]):
                     field.CopyFrom(value)
 
     translator: Translator = None
-    DESCRIPTOR = ProtoProperty[FieldDescriptor]()
-    MergeFrom = ProtoProperty()
-    CopyFrom = ProtoProperty()
-    Clear = ProtoProperty()
-    SetInParent = ProtoProperty()
-    IsInitialized = ProtoProperty()
-    MergeFromString = ProtoProperty()
-    ParseFromString = ProtoProperty()
-    SerializeToString = ProtoProperty()
-    SerializePartialToString = ProtoProperty()
-    ListFields = ProtoProperty()
-    HasField = ProtoProperty()
-    ClearField = ProtoProperty()
-    WhichOneof = ProtoProperty()
-    HasExtension = ProtoProperty()
-    ClearExtension = ProtoProperty()
-    UnknownFields = ProtoProperty()
-    DiscardUnknownFields = ProtoProperty()
-    ByteSize = ProtoProperty()
+    DESCRIPTOR: FieldDescriptor = ProtoProperty()
+    MergeFrom: Callable[[GPM], None] = ProtoProperty()
+    CopyFrom: Callable[[GPM], None] = ProtoProperty()
+    Clear: Callable[[], None] = ProtoProperty()
+    SetInParent: Callable[[], None] = ProtoProperty()
+    IsInitialized: Callable[[], bool] = ProtoProperty()
+    MergeFromString: Callable[[bytes], None] = ProtoProperty()
+    ParseFromString: Callable[[bytes], None] = ProtoProperty()
+    SerializeToString: Callable[..., bytes] = ProtoProperty()
+    SerializePartialToString: Callable[..., bytes] = ProtoProperty()
+    ListFields: Callable[[], List[Tuple[FieldDescriptor, Any]]] = ProtoProperty()
+    HasField: Callable[[str], bool] = ProtoProperty()
+    ClearField: Callable[[str], None] = ProtoProperty()
+    WhichOneof: Callable[[str], Optional[str]] = ProtoProperty()
+    HasExtension: Callable[[str], bool] = ProtoProperty()
+    ClearExtension: Callable[[str], None] = ProtoProperty()
+    UnknownFields: Callable[[], UnknownFieldSet] = ProtoProperty()
+    DiscardUnknownFields: Callable[[], None] = ProtoProperty()
+    ByteSize: Callable[[], int] = ProtoProperty()
 
-    def __init_subclass__(cls, /, translator: Translator, **kwargs):
-        super().__init_subclass__(**kwargs)
-        cls.translator = translator
-
-        from google.protobuf.message import Message
-        missing_names = [name for name in Message.__dict__ if name not in dir(cls) if not name.startswith('_')]
-        if missing_names:
-            warn(f"Attribute[s] {', '.join(missing_names)} from {Message} are missing from {cls}")
-
-        missing_fields = [name for name in translator.proto.DESCRIPTOR.fields_by_name if name not in dir(cls)]
-        if missing_fields:
-            warn(f"Attribute[s] {', '.join(missing_fields)} from {translator.proto} are missing from {cls}")
-
-        missing_enums = [name for name in translator.proto.DESCRIPTOR.enum_types_by_name if name not in dir(cls)]
-        if missing_enums:
-            warn(f"Attribute[s] {', '.join(missing_enums)} from {translator.proto} are missing from {cls}")
+    def __init_subclass__(cls, *args, **kwargs):
+        super().__init_subclass__(*args, **kwargs)
+        if not cls.translator:
+            raise AttributeError(f"When you subclass {Proto} in {cls} you need to define {f'{cls.__name__}.translator'}")
 
     def __new__(cls, *bases, **attributes):
         instance = super().__new__(cls)
-        instance._proto = cls.translator.create()
+        setattr(instance, Proto.ProtoProperty.mangled_proto_name, cls.translator.create())
         return instance
-
-    def __init__(self, **kwargs):
-        self.set(**kwargs)
 
     @classmethod
     async def create(cls, **kwargs):
         instance = cls(**kwargs)
-        try:
-            await instance._async_init()
-        except NotImplementedError:
-            pass
-        finally:
-            return instance
+        return await instance._async_init()
 
     @abstractmethod
     async def _async_init(self):
         raise NotImplementedError("Override this method for asynchronous initialization")
 
-    def to_dict(self, *args, **kwargs) -> Dict:
-        """
-        Representation as dictionary (compatible with wrapped proto message format)
-        """
-        message = self.translator.from_dict({k: getattr(self, k, None) for k in self.DESCRIPTOR.fields_by_name})
-        return self.translator.to_dict(message, *args, **kwargs)
-
-    def set(self, **kwargs):
-        for k, v in kwargs.items():
-            setattr(self, k, v)
-
-
 # ------------------ Wrapper classes -------------------------
-class ProcessingModule(Proto, ABC, translator=Translators.PM):
-    Status = Proto.ProtoProperty()
-    Language = Proto.ProtoProperty()
-    id = Proto.ProtoProperty()
-    name = Proto.ProtoProperty()
-    authors = Proto.ProtoProperty()
-    tags = Proto.ProtoProperty()
-    description = Proto.ProtoProperty()
-    node_id = Proto.ProtoProperty()
-    session_id = Proto.ProtoProperty()
-    status = Proto.ProtoProperty()
-    processing_mode = Proto.ProtoProperty()
-    inputs = Proto.ProtoProperty()
-    outputs = Proto.ProtoProperty()
-    language = Proto.ProtoProperty()
-    on_processing_stringified = Proto.ProtoProperty()
-    on_created_stringified = Proto.ProtoProperty()
-    on_halted_stringified = Proto.ProtoProperty()
-    on_destroyed_stringified = Proto.ProtoProperty()
-
-    def __init_subclass__(cls, **kwargs):
-        super().__init_subclass__(translator=Translators.PM, **kwargs)
-
-
-class Session(Proto, ABC, translator=Translators.SESSION):
-    id = Proto.ProtoProperty()
-    name = Proto.ProtoProperty()
-    processing_modules = Proto.ProtoProperty()
-    io_mappings = Proto.ProtoProperty()
-    tags = Proto.ProtoProperty()
-    description = Proto.ProtoProperty()
-    authors = Proto.ProtoProperty()
-    status = Proto.ProtoProperty()
-    editable = Proto.ProtoProperty()
-
-    def __init_subclass__(cls, **kwargs):
-        super().__init_subclass__(translator=Translators.SESSION, **kwargs)
+@dataclasses.dataclass
+class ProcessingModule(Proto, ABC):
+    translator = Translators.PM
+    Status: ClassVar[EnumTypeWrapper] = Proto.ProtoProperty()
+    Language: ClassVar[EnumTypeWrapper] = Proto.ProtoProperty()
+    id: str = Proto.ProtoProperty()
+    name: str = Proto.ProtoProperty()
+    authors: List[str] = Proto.ProtoProperty()
+    tags: List[str] = Proto.ProtoProperty()
+    description: str = Proto.ProtoProperty()
+    node_id: str = Proto.ProtoProperty()
+    session_id: str = Proto.ProtoProperty()
+    status: Status = Proto.ProtoProperty()
+    processing_mode: ProcessingMode = Proto.ProtoProperty()
+    inputs: List[ModuleIO] = Proto.ProtoProperty()
+    outputs: List[ModuleIO] = Proto.ProtoProperty()
+    language: Language = Proto.ProtoProperty()
+    on_processing_stringified: str = Proto.ProtoProperty()
+    on_created_stringified: str = Proto.ProtoProperty()
+    on_halted_stringified: str = Proto.ProtoProperty()
+    on_destroyed_stringified: str = Proto.ProtoProperty()
 
 
-class Component(Proto, ABC, translator=Translators.COMPONENT):
-    IOType = Proto.ProtoProperty()
-    topic = Proto.ProtoProperty()
-    message_format = Proto.ProtoProperty()
-    io_type = Proto.ProtoProperty()
-    device_id = Proto.ProtoProperty()
-    tags = Proto.ProtoProperty()
-    description = Proto.ProtoProperty()
-    id = Proto.ProtoProperty()
-    name = Proto.ProtoProperty()
+@dataclasses.dataclass
+class Session(Proto, ABC):
+    translator = Translators.SESSION
+    id: str = Proto.ProtoProperty()
+    name: str = Proto.ProtoProperty()
+    processing_modules: List[ProcessingModule] = Proto.ProtoProperty()
+    io_mappings: List[IOMapping] = Proto.ProtoProperty()
+    tags: List[str] = Proto.ProtoProperty()
+    description: str = Proto.ProtoProperty()
+    authors: List[str] = Proto.ProtoProperty()
+    status: SessionStatus = Proto.ProtoProperty()
+    editable: bool = Proto.ProtoProperty()
 
-    def __init_subclass__(cls, **kwargs):
-        super().__init_subclass__(translator=Translators.COMPONENT, **kwargs)
+
+@dataclasses.dataclass
+class Component(Proto, ABC):
+    translator = Translators.COMPONENT
+    IOType: ClassVar[EnumTypeWrapper] = Proto.ProtoProperty()
+    topic: str = Proto.ProtoProperty()
+    message_format: str = Proto.ProtoProperty()
+    io_type: IOType = Proto.ProtoProperty()
+    device_id: str = Proto.ProtoProperty()
+    tags: List[str] = Proto.ProtoProperty()
+    description: str = Proto.ProtoProperty()
+    id: str = Proto.ProtoProperty()
+    name: str = Proto.ProtoProperty()
 
 
-class Client(Proto, ABC, translator=Translators.CLIENT):
-    State = Proto.ProtoProperty()
-    id = Proto.ProtoProperty()
-    name = Proto.ProtoProperty()
-    devices = Proto.ProtoProperty()
-    tags = Proto.ProtoProperty()
-    description = Proto.ProtoProperty()
-    processing_modules = Proto.ProtoProperty()
-    is_dedicated_processing_node = Proto.ProtoProperty()
-    host_ip = Proto.ProtoProperty()
-    metadata_json = Proto.ProtoProperty()
-    state = Proto.ProtoProperty()
-
-    def __init_subclass__(cls, **kwargs):
-        super().__init_subclass__(translator=Translators.CLIENT, **kwargs)
+@dataclasses.dataclass
+class Client(Proto, ABC):
+    translator = Translators.CLIENT
+    State: ClassVar[EnumTypeWrapper] = Proto.ProtoProperty()
+    id: str = Proto.ProtoProperty()
+    name: str = Proto.ProtoProperty()
+    devices: List[Device] = Proto.ProtoProperty()
+    tags: List[str] = Proto.ProtoProperty()
+    description: str = Proto.ProtoProperty()
+    processing_modules: List[ProcessingModule] = Proto.ProtoProperty()
+    is_dedicated_processing_node: bool = Proto.ProtoProperty()
+    host_ip: str = Proto.ProtoProperty()
+    metadata_json: str = Proto.ProtoProperty()
+    state: State = Proto.ProtoProperty()

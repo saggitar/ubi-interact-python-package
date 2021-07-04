@@ -120,11 +120,11 @@ class WebSocketClient(object):
 
     async def run(self):
         log.info(f"Starting {self}")
+        await self._url_initialized.wait()
 
         for name, regex in constants.DEFAULT_TOPICS.INFO_TOPICS.items():
             await self.subscribe_regex(getattr(self, name).emit, regex)
 
-        await self._url_initialized.wait()
         async with self.node.hub.aiohttp_session.ws_connect(self.url) as ws:
             self._ws = ws
             self.connected.set()
@@ -146,7 +146,7 @@ class WebSocketClient(object):
         log.info(f"{self} closing.")
 
     def __str__(self):
-        return f"Websocket Client {f'({self.url})' or '(url not initialized)'}"
+        return f"Websocket Client ({self.url or 'url not initialized'})"
 
     @property
     def websocket_connected(self):
@@ -195,34 +195,30 @@ class WebSocketClient(object):
         self._signals_changed.set()
 
     async def subscribe_regex(self, callback, *topicregexes: str):
-        reply = await self._handle_subscribe(topics=topicregexes, as_regex=True)
-        if reply and reply.success:
-            return self.connect_callbacks(topicregexes, callback)
+        await self._handle_subscribe(topics=topicregexes, as_regex=True)
+        return self.connect_callbacks(topicregexes, callback)
 
     async def subscribe_topic(self, callback, *topics: str):
-        reply = await self._handle_subscribe(topics=topics, as_regex=False)
-        if reply and reply.success:
-            return self.connect_callbacks(topics, callback)
+        await self._handle_subscribe(topics=topics, as_regex=False)
+        return self.connect_callbacks(topics, callback)
 
     async def unsubscribe_regex(self, *topicregexes: str):
-        reply = await self._handle_subscribe(topics=topicregexes, as_regex=True, unsubscribe=True)
-        if reply and reply.success:
-            return reply
+        await self._handle_subscribe(topics=topicregexes, as_regex=True, unsubscribe=True)
 
     async def unsubscribe_topic(self, *topics: str):
-        reply = await self._handle_subscribe(topics=topics, as_regex=False, unsubscribe=True)
-        if reply and reply.success:
-            return reply
+        await self._handle_subscribe(topics=topics, as_regex=False, unsubscribe=True)
 
     async def _handle_subscribe(self, topics=None, as_regex=False, unsubscribe=False):
         await self.node.registered.wait()
-        message = {'topic': constants.DEFAULT_TOPICS.SERVICES.TOPIC_SUBSCRIPTION,
-                   'topic_subscription': {
-                       'client_id': self.node.id,
-                       f"{'un' if unsubscribe else ''}"
-                       f"{'subscribe_topic_regexp' if as_regex else 'subscribe_topics' }": topics
-                   }}
-        return await self.node.hub.call_service(message)
+        message = {
+            'client_id': self.node.id,
+            f"{'un' if unsubscribe else ''}"
+            f"{'subscribe_topic_regexp' if as_regex else 'subscribe_topics' }": topics
+        }
+        result = await self.node.hub.service_calls.TOPIC_SUBSCRIPTION(topic_subscription=message)
+        return result
+
+
 
     async def shutdown(self):
         for task in self.tasks:
