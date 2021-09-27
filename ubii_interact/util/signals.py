@@ -1,3 +1,23 @@
+"""
+We need a nice way to provide callbacks for topic data.
+The idea was to use an API similar to Qt to add "Slots" and "Signals".
+Sadly, one of the main benefits of doing this generic approach can not reliably be achieved since
+pycharm uses it's own buggy type checker which (in contrast to mypy) is unable to deduce the
+types for the attached callbacks correctly.
+
+Try to do the following in pycharm:
+
+T = TypeVar('T')
+Alias = Callable[[T], Any]
+
+class A(Generic[T]):
+    def foo(self, arg: Alias[T]):
+        pass
+
+Pycharm deduces the type of arg to be `Any`, instead of Callable[[T], Any]
+Good game, well played.
+"""
+
 from __future__ import annotations
 
 import types
@@ -11,6 +31,60 @@ log = logging.getLogger(__name__)
 
 T = TypeVar('T')
 D = TypeVar('D')
+
+
+class Slot(Generic[T]):
+    def __init__(self):
+        self._callback_dict: Dict[Signal.Connection, Tuple[Callable[[T], ...], ...]] = {}
+
+    @property
+    def _callbacks(self) -> List[Callable[[T], ...]]:
+        yield from (n for nested in self._callback_dict.values() for n in nested)
+
+    def connect(self, *callbacks: Callable[[T], ...]) -> Optional['Signal.Connection']:
+        if not callbacks:
+            return
+
+        connection = Signal.Connection(*callbacks)
+        if connection in self._callback_dict:
+            raise ValueError(f"Callbacks {callbacks} are already connected")
+
+        connected = [c for c in self._callbacks if c in callbacks]
+        if connected:
+            raise ValueError(f"Callback[s] {connected} are already connected")
+
+        log.debug(f"Connected {callbacks} to {self}")
+        self._callback_dict[connection] = callbacks
+        return connection
+
+    def disconnect(self, connection: Optional[Union[Callable[[T], ...], 'Signal.Connection']] = None):
+        if not connection:
+            self._callback_dict.clear()
+            return
+
+        if connection not in self._callback_dict:
+            contained = [c for c in self._callback_dict if connection in c]
+            if not contained:
+                raise ValueError(f"{connection} is not connected to {self}")
+            else:
+                raise ValueError(
+                    f"{connection} is part of connection[s] {contained}, disconnect with a reference to the connection.")
+
+        del self._callback_dict[connection]
+        log.debug(f"Disconnected {connection if connection else 'all connections'} from {self}")
+
+    async def emit(self, arg: T) -> Tuple:
+        callbacks = [
+            c(arg) if asyncio.iscoroutinefunction(c) else asyncio.get_running_loop().run_in_executor(None, c, arg) for c
+            in self._callbacks]
+        g = asyncio.gather(*callbacks)
+        try:
+            results = await g
+        except Exception:
+            g.cancel()
+            raise
+        else:
+            return results
 
 
 class Signal(Generic[T]):
@@ -44,58 +118,8 @@ class Signal(Generic[T]):
 
             return hash(item) in self._hashes
 
-    class Slot(Generic[T]):
-        def __init__(self):
-            self._callback_dict: Dict[Signal.Connection, Tuple[Callable[[T], ...], ...]] = {}
-
-        @property
-        def _callbacks(self) -> List[Callable[[T], ...]]:
-            yield from (n for nested in self._callback_dict.values() for n in nested)
-
-        def connect(self, *callbacks: Callable[[T], ...]) -> Optional['Signal.Connection']:
-            if not callbacks:
-                return
-
-            connection = Signal.Connection(*callbacks)
-            if connection in self._callback_dict:
-                raise ValueError(f"Callbacks {callbacks} are already connected")
-
-            connected = [c for c in self._callbacks if c in callbacks]
-            if connected:
-                raise ValueError(f"Callback[s] {connected} are already connected")
-
-            log.debug(f"Connected {callbacks} to {self}")
-            self._callback_dict[connection] = callbacks
-            return connection
-
-        def disconnect(self, connection: Optional[Union[Callable[[T], ...], 'Signal.Connection']] = None):
-            if not connection:
-                self._callback_dict.clear()
-                return
-
-            if connection not in self._callback_dict:
-                contained = [c for c in self._callback_dict if connection in c]
-                if not contained:
-                    raise ValueError(f"{connection} is not connected to {self}")
-                else:
-                    raise ValueError(f"{connection} is part of connection[s] {contained}, disconnect with a reference to the connection.")
-
-            del self._callback_dict[connection]
-            log.debug(f"Disconnected {connection if connection else 'all connections'} from {self}")
-
-        async def emit(self, arg: T) -> Tuple:
-            callbacks = [c(arg) if asyncio.iscoroutinefunction(c) else asyncio.get_running_loop().run_in_executor(None, c, arg) for c in self._callbacks]
-            g = asyncio.gather(*callbacks)
-            try:
-                results = await g
-            except Exception:
-                g.cancel()
-                raise
-            else:
-                return results
-
     def __init__(self, *callbacks: Callable[[T], Awaitable]):
-        self.slots: Dict[Any, Signal.Slot[T]] = {}
+        self.slots: Dict[Any, Slot[T]] = {}
         self.connect(*callbacks)
 
     def __class_getitem__(cls, item: D):
@@ -116,11 +140,11 @@ class Signal(Generic[T]):
         super().__init_subclass__(**kwargs)
         cls._default_signature = signature
 
-    def __getitem__(self, type_: T) -> Signal.Slot[T]:
+    def __getitem__(self, type_: T) -> Slot[T]:
         if not isinstance(type_, type):
             raise ValueError("Specify the overload by type, e.g. signal[str].connect(...)")
 
-        return self.slots.setdefault(type_, Signal.Slot())
+        return self.slots.setdefault(type_, Slot())
 
     async def emit(self, arg: T) -> Tuple:
         calls = [slot.emit(arg) for sig, slot in self.slots.items() if isinstance(arg, sig)]
@@ -137,7 +161,7 @@ class Signal(Generic[T]):
             return results
 
     def connect(self, *callbacks: Callable[[T], ...]):
-        default_slot = self.slots.setdefault(self._default_signature, Signal.Slot())
+        default_slot = self.slots.setdefault(self._default_signature, Slot())
         return default_slot.connect(*callbacks)
 
     def disconnect(self, *callbacks: Callable[[T], ...]):
