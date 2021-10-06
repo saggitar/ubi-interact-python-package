@@ -2,13 +2,27 @@ import dataclasses
 from dataclasses import dataclass
 from warnings import warn
 import json
-import proto
 from importlib.resources import read_text as _read_text_resource
+import proto
 
+# This is the name of the environment variable for the url of the Hub request backend
 UBII_SERVICE_URL: str = 'UBII_SERVICE_URL'
+
 
 @dataclass(frozen=True)
 class _DefaultTopics:
+    """
+    This is a nested dataclass that contains all defined constants for Ubi Interact Default
+    Topics. When loading the module, the same constants are dynamically loaded from the
+    constants.json file of the installed ubii-msg-formats package which supplies the `proto` module.
+    If there is a mismatch between constants defined in this class and constants loaded from
+    `constants.json` the module will not load and give an error message.
+
+    The dataclass is frozen, so you are not allowed to change the constants.
+    It also implements the iterable interface, thus calling `iter` on the class (e.g. implicitly
+    when using it in a loop) will work correctly.
+    It also implements an `items` method, which is just a wrapper to call dataclasses.asdict(cls).items()
+    """
 
     @dataclass(frozen=True)
     class Services:
@@ -18,7 +32,7 @@ class _DefaultTopics:
         CLIENT_GET_LIST: str = '/services/client/get_list'
         DEVICE_REGISTRATION: str = '/services/device/registration'
         DEVICE_DEREGISTRATION: str = '/services/device/deregistration'
-        DEVICE_GET: str= '/services/device/get'
+        DEVICE_GET: str = '/services/device/get'
         DEVICE_GET_LIST: str = '/services/device/get_list'
         PM_DATABASE_SAVE: str = '/services/processing_module/database/save'
         PM_DATABASE_DELETE: str = '/services/processing_module/database/delete'
@@ -94,10 +108,27 @@ class _DefaultTopics:
     def items(self):
         yield from dataclasses.asdict(self).items()
 
+
 DEFAULT_TOPICS = _DefaultTopics()
+
 
 @dataclass(frozen=True)
 class _MsgTypes:
+    """
+    This is a dataclass that contains all defined constants for Ubi Interact Message Types.
+    These can be used as paths for imports relative to the `proto` module, see `ProtoTranslators`.
+
+    When loading the module, the same constants are dynamically loaded from the
+    constants.json file of the installed ubii-msg-formats package which supplies the `proto` module.
+    If there is a mismatch between constants defined in this class and constants loaded from
+    `constants.json` the module will not load and give an error message.
+
+    The dataclass is frozen, so you are not allowed to change the constants.
+    It also implements the iterable interface, thus calling `iter` on the class (e.g. implicitly
+    when using it in a loop) will work correctly.
+    It also implements an `items` method, which is just a wrapper to call dataclasses.asdict(cls).items()
+    """
+
     ERROR: str = 'ubii.general.Error'
     SUCCESS: str = 'ubii.general.Success'
     SERVER: str = 'ubii.servers.Server'
@@ -127,15 +158,10 @@ class _MsgTypes:
     TOPIC_DATA_RECORD: str = 'ubii.topicData.TopicDataRecord'
     TOPIC_DATA_RECORD_LIST: str = 'ubii.topicData.TopicDataRecordList'
     TOPIC_DATA_TIMESTAMP: str = 'ubii.topicData.Timestamp'
-    DATASTRUCTURE_BOOL: str = 'bool'
     DATASTRUCTURE_BOOL_LIST: str = 'ubii.dataStructure.BoolList'
-    DATASTRUCTURE_INT32: str = 'int32'
     DATASTRUCTURE_INT32_LIST: str = 'ubii.dataStructure.Int32List'
-    DATASTRUCTURE_STRING: str = 'string'
     DATASTRUCTURE_STRING_LIST: str = 'ubii.dataStructure.StringList'
-    DATASTRUCTURE_FLOAT: str = 'float'
     DATASTRUCTURE_FLOAT_LIST: str = 'ubii.dataStructure.FloatList'
-    DATASTRUCTURE_DOUBLE: str = 'double'
     DATASTRUCTURE_DOUBLE_LIST: str = 'ubii.dataStructure.DoubleList'
     DATASTRUCTURE_COLOR: str = 'ubii.dataStructure.Color'
     DATASTRUCTURE_IMAGE: str = 'ubii.dataStructure.Image2D'
@@ -168,11 +194,19 @@ MSG_TYPES = _MsgTypes()
 
 
 def _check_constants():
+    """
+    Loads 'constants.json' (additional file in the ubi-msg-formats python package) and checks the values of
+    constants defined in the .json file vs. constants defined in this module.
+
+    Issues a warning if there are mismatches.
+    """
     __constants__ = json.loads(_read_text_resource(proto, "constants.json"))
-    __current__ = {k: dataclasses.asdict(v) for k, v in globals().items() if dataclasses.is_dataclass(v) and not isinstance(v, type)}
-    from .testing import diff_dicts
+    __current__ = {k: dataclasses.asdict(v)
+                   for k, v in globals().items() if dataclasses.is_dataclass(v) and not isinstance(v, type)}
+    from ubii_interact.util import diff_dicts
     diff = diff_dicts(compare=__current__, expected=__constants__, fromfile=__name__, tofile=str(proto))
     if diff:
         warn(f"Constants mismatch: \n{diff}")
+
 
 _check_constants()

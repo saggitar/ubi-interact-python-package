@@ -1,12 +1,21 @@
+import aiohttp
+
 import asyncio
 import logging
 import os
+
+from ..interfaces import IHttpClient
 from ..util.constants import UBII_SERVICE_URL
+from .. import HttpClientSession
 
 log = logging.getLogger(__name__)
 
 
-class RESTClient(object):
+class RESTClient(IHttpClient):
+    @property
+    def http_session(self) -> aiohttp.ClientSession:
+        return HttpClientSession.instance
+
     def __init__(self, https=False, **kwargs) -> None:
         super().__init__()
         url = kwargs.get('url')
@@ -29,15 +38,12 @@ class RESTClient(object):
             self.endpoint = kwargs.get('endpoint', '')
             self.url = f"http{'s' if self.https else ''}://{self.server}:{self.port}/{self.endpoint}"
 
-        from .. import Ubii
-        self.hub = Ubii.hub
-
     async def send(self, message):
         try:
-            async with self.hub.aiohttp_session.post(self.url, json=message) as resp:
+            async with self.http_session.post(self.url, json=message) as resp:
                 result = await resp.json()
         except asyncio.TimeoutError:
-            log.error(f"Timeout, REST Backend did not reply with {self.hub.aiohttp_session.timeout}!")
+            log.error(f"Timeout, REST Backend did not reply with {self.http_session.timeout}!")
             raise
         else:
             return result
