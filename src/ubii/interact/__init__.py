@@ -93,7 +93,7 @@ class Ubii(IUbiiHub):
 
     @cached_property
     def services(self):
-        from ubii_interact.client.proxy import ServiceProxy
+        from ubii.client.proxy import ServiceProxy
         return ServiceProxy()
 
     @cached_property

@@ -1,8 +1,0 @@
-{
-    "bytes": "\n\u000berror title\u0012\rerror message\u001a\u000berror stack",
-    "dict": {
-        "message": "error message",
-        "stack": "error stack",
-        "title": "error title"
-    }
-}

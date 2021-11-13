@@ -29,7 +29,7 @@ class WebSocketClient(object):
         if self._url_initialized.is_set():
             log.debug(f"Reinitializing url for {self}")
 
-        from ubii_interact import Ubii
+        from ubii import Ubii
         await Ubii.hub.initialized.wait()
         self.server = Ubii.hub.ip
         self.port = Ubii.hub.server_config.port_topic_data_ws
@@ -41,7 +41,7 @@ class WebSocketClient(object):
         return "" if not self._url_initialized.is_set() else f"ws{'s' if self.https else ''}://{self.server}:{self.port}"
 
     async def run(self):
-        from ubii_interact import Ubii
+        from ubii import Ubii
         log.info(f"Starting {self}")
         await self._url_initialized.wait()
 
