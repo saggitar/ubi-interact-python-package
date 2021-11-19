@@ -129,6 +129,6 @@ dmypy.json
 .pyre/
 
 # Pycharm Stuff
-.idea
-.run
+.idea/
+.run/
 
