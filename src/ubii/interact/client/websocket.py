@@ -4,6 +4,8 @@ from asyncio import Task
 import logging
 import aiohttp
 
+from ubii.interact import once
+
 log = logging.getLogger(__name__)
 websocket_log = logging.getLogger(f"{__name__}.sock")
 
@@ -22,17 +24,17 @@ class WebSocketClient(object):
 
         self._ws = None
         self._queue = asyncio.Queue()
-        self.tasks: List[Task] = [asyncio.create_task(self.set_url(), name=f"{self} set_url"),
-                                  asyncio.create_task(self.run(), name=f"{self}")]
+        self.tasks: List[Task] = [self.set_url(), self.run()]
 
+    @once
     async def set_url(self):
         if self._url_initialized.is_set():
             log.debug(f"Reinitializing url for {self}")
 
-        from ubii import Ubii
-        await Ubii.hub.initialized.wait()
-        self.server = Ubii.hub.ip
-        self.port = Ubii.hub.server_config.port_topic_data_ws
+        from ubii.interact import Ubii
+        await Ubii.instance.initialized.wait()
+        self.server = Ubii.instance.ip
+        self.port = Ubii.instance.server.port_topic_data_ws
         self._url_initialized.set()
         log.debug(f"Url of {self} initialized")
 
@@ -40,12 +42,13 @@ class WebSocketClient(object):
     def url(self):
         return "" if not self._url_initialized.is_set() else f"ws{'s' if self.https else ''}://{self.server}:{self.port}"
 
+    @once
     async def run(self):
-        from ubii import Ubii
+        from ubii.interact import client_session
         log.info(f"Starting {self}")
         await self._url_initialized.wait()
 
-        async with Ubii.hub.aiohttp_session.ws_connect(self.url) as ws:
+        async with client_session().ws_connect(self.url) as ws:
             self._ws = ws
             self.connected.set()
             async for message in ws:

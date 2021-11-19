@@ -1,16 +1,12 @@
 from __future__ import annotations
 
-from typing import Dict
+from typing import Dict, Tuple
 from abc import ABC, abstractmethod
 
 import aiohttp
 import asyncio
 
-from ubii.proto.clients.client_pb_plus import Client, ClientList
-from ubii.proto.devices.device_pb_plus import Device, DeviceList
-from ubii.proto.general.success_pb_plus import Success
-from ubii.proto.servers.server_pb_plus import Server
-from ubii.proto.sessions.session_pb_plus import Session
+from ubii.proto import DeviceList, Device, Client, Server, Success, ClientList, Session
 
 
 class IDeviceManager(ABC):
@@ -22,7 +18,7 @@ class IDeviceManager(ABC):
     async def register_device(self, device: Device): ...
 
     @abstractmethod
-    async def unregister_device(self, device: Device): ...
+    async def deregister_device(self, device: Device): ...
 
 
 class IClientNode(IDeviceManager, ABC):
@@ -31,10 +27,14 @@ class IClientNode(IDeviceManager, ABC):
     def registered(self) -> asyncio.Event: ...
 
     @abstractmethod
-    async def register(self: 'Client'): ...
+    async def register(self: Client): ...
 
     @abstractmethod
-    async def deregister(self: 'Client') -> str: ...
+    async def deregister(self: Client) -> str: ...
+
+    @property
+    @abstractmethod
+    def hub(self) -> IServerCommunicator: ...
 
 
 class IHttpClient(ABC):
@@ -184,3 +184,6 @@ class IUbiiHub(ISessionManager, IClientManager, IServerCommunicator, ABC):
     @property
     @abstractmethod
     def services(self) -> IServiceProvider: ...
+
+    @abstractmethod
+    async def start_sessions(self, *sessions: Session) -> Tuple[Session]: ...

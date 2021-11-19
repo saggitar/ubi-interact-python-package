@@ -2,48 +2,50 @@ from functools import cached_property
 
 import asyncio
 import logging
-from proto import Device
 
-from . import RegisterClientMixin
-from .. import ServiceProvider
-from ..interfaces import RegisterDeviceMixin
 from .proxy import TopicProxy
 from ..util import once
-from ..util.proto import Client
+from ..interfaces import IClientNode
+from ubii.proto import Client, Device, ProtoMeta
 
 log = logging.getLogger(__name__)
 
 
-class ClientNode(Client, RegisterDeviceMixin, RegisterClientMixin):
-    def unregister_device(self, device: Device):
-        pass
-
-    def register_device(self, device: Device):
-        pass
-
+class ClientNode(Client, metaclass=ProtoMeta):
     def __init__(self, **kwargs) -> None:
         super().__init__(**kwargs)
-        self.client = TopicProxy(self)
-        self.registered = asyncio.Event()
-
 
     @cached_property
-    def services(self) -> ServiceProvider:
+    def client(self):
+        return TopicProxy(self)
+
+    @cached_property
+    def hub(self):
         from .. import Ubii
-        return Ubii.hub
+        return Ubii.instance
+
+    async def register_device(self, device: Device):
+        pass
+
+    async def deregister_device(self, device: Device):
+        pass
+
+    @cached_property
+    def registered(self) -> asyncio.Event:
+        return asyncio.Event()
 
     async def shutdown(self):
         for t in self._tasks:
             t.cancel()
 
-        await asyncio.gather(*[self.services.device_deregistration(device=d) for d in self.devices])
+        await asyncio.gather(*[self.deregister_device(device=d) for d in self.devices.elements])
         await self.client.shutdown()
-        await self._unregister()
+        await self.deregister()
         log.info(f"{self} shut down.")
 
     @once
-    async def async_init(self):
-        await self._register()
+    async def init(self):
+        await self.register()
         await self.client.connected.wait()
         return self
 
@@ -52,16 +54,16 @@ class ClientNode(Client, RegisterDeviceMixin, RegisterClientMixin):
             log.debug(f"Already registered {self}")
             return
 
-        await self.services.initialized.wait()
-        response = await self.services.client_registration(client=self)
-        self.MergeFrom(response)
+        await self.hub.initialized.wait()
+        response = await self.hub.services.client_registration(client=self)
+        Client.copy_from(self, response)
         self.registered.set()
         log.debug(f"Registered {self}")
         return self
 
-    async def unregister(self):
-        success = await Ubii.hub.services.client_deregistration(client=self)
+    async def deregister(self):
+        success = await self.services.client_deregistration(client=self)
         if success:
-            self.id = ''
+            self.id = None
             self.registered.clear()
             log.debug(f"Unregistered {self}")

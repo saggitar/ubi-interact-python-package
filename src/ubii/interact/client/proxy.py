@@ -5,17 +5,17 @@ import logging
 
 from functools import partialmethod as partialm, wraps
 
-from proto import ServiceReply, TopicDataRecord
 from typing import Any, Callable
 
 from .rest import RESTClient
 from .websocket import WebSocketClient
 from .. import UbiiError
 from ..interfaces import IServiceProvider
-from ..util.constants import DEFAULT_TOPICS
-from ..util.proto import Translators
 from ..util.signals import Topic
 from ..util.topictree import TopicTree
+
+from ubii.util.constants import DEFAULT_TOPICS
+from ubii.proto import TopicDataRecord, TopicData, ServiceRequest, ServiceReply
 
 log = logging.getLogger(__name__)
 
@@ -67,27 +67,27 @@ class TopicProxy(WebSocketClient):
             raise ValueError(f"Called {self.publish} without TopicDataRecord message to publish")
 
         if len(records) == 1:
-            data = Translators.TOPIC_DATA.create(topic_data_record=records[0])
+            data = TopicData(topic_data_record=records[0])
         else:
-            data = Translators.TOPIC_DATA.create(topic_data_record_list=records)
+            data = TopicData(topic_data_record_list={'elements': records})
 
-        await self.send(data.SerializeToString())
+        await self.send(data)
 
 
 class ServiceProxy(RESTClient, IServiceProvider):
-    async def call(self, **message) -> ServiceReply:
-        request = Translators.SERVICE_REQUEST.validate(message)
-        reply = await self.send(request)
+    async def call(self, **message):
+        request = ServiceRequest(message)
         try:
-            reply = Translators.SERVICE_REPLY.create(**reply)
-            error = Translators.SERVICE_REPLY.to_dict(reply.error)
-            if any([v for v in error.values()]):
-                raise UbiiError(**error)
+            reply = await self.send(request)
+            reply = ServiceReply.from_json(reply)
+            if reply.error:
+                raise UbiiError(reply.error)
+
         except Exception as e:
             log.exception(e)
             raise
         else:
-            return getattr(reply, reply.WhichOneof('type'), reply)
+            return getattr(reply, ServiceReply.pb(reply).WhichOneof('type'))
 
     server_config = partialm(call, topic=DEFAULT_TOPICS.SERVICES.SERVER_CONFIG)
     client_registration = partialm(call, topic=DEFAULT_TOPICS.SERVICES.CLIENT_REGISTRATION)

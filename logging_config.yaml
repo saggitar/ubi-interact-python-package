@@ -1,0 +1,36 @@
+version: 1
+formatters:
+  brief:
+    format: '%(message)s'
+  precise:
+    format: '%(asctime)s - %(name)s - %(levelname)s - %(message)s'
+    datefmt: '%Y-%m-%d %H:%M:%S'
+  socket:
+    format: '%(asctime)s - %(levelname)s - %(message)s'
+    datefmt: '%Y-%m-%d %H:%M:%S'
+handlers:
+  console:
+    class : logging.StreamHandler
+    formatter: brief
+    level   : ERROR
+    stream  : ext://sys.stdout
+  log:
+    class : logging.FileHandler
+    formatter: precise
+    level: DEBUG
+    filename: ubii.log
+    mode: w
+  websocket:
+    class : logging.FileHandler
+    formatter: socket
+    level: DEBUG
+    filename: websocket.log
+    mode: w
+loggers:
+  ubii_interact:
+    propagate: yes
+  ubii_interact.client.websocket.sock:
+    propagate: no
+    handlers: [websocket]
+root:
+  handlers: [console, log]

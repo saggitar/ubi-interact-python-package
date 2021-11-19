@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from warnings import warn
 
-from typing import Dict
+from typing import Dict, Tuple
 
 import asyncio
 
@@ -10,30 +10,37 @@ import logging
 import aiohttp
 
 from functools import cached_property
-from proto import Server, Session
 
 from .interfaces import IUbiiHub, IClientNode
 from .util import once
+from ubii.proto import Server, Session, Error
 
 log = logging.getLogger(__name__)
 
 _DEBUG = False
-_VERBOSE = False
 
 
-def enable_debug(enabled=True):
+def debug(enabled: bool = None):
+    """
+    Call without arguments to get current debug state, pass truthy value to set debug mode.
+
+    :param enabled: If passed, turns debog mode on or off
+    :return:
+    """
     global _DEBUG, _VERBOSE
-    _DEBUG = enabled
-    _VERBOSE = enabled
+    if enabled is not None:
+        _DEBUG = bool(enabled)
+
+    return _DEBUG
 
 
-__client_session__ = None
+_client_session = None
 
 
 def client_session():
-    global __client_session__
-    if __client_session__:
-        return __client_session__
+    global _client_session
+    if _client_session:
+        return _client_session
 
     if _DEBUG:
         trace_config = aiohttp.TraceConfig()
@@ -48,11 +55,12 @@ def client_session():
         timeout = aiohttp.ClientTimeout(total=5)
         trace_configs = []
 
-    from .util.proto import serialize as proto_serialize
-    __client_session__ = aiohttp.ClientSession(raise_for_status=True,
-                                               json_serialize=proto_serialize,
-                                               trace_configs=trace_configs,
-                                               timeout=timeout)
+    from ubii.proto import serialize as proto_serialize
+    _client_session = aiohttp.ClientSession(raise_for_status=True,
+                                            json_serialize=proto_serialize,
+                                            trace_configs=trace_configs,
+                                            timeout=timeout)
+    return _client_session
 
 
 class Ubii(IUbiiHub):
@@ -60,6 +68,7 @@ class Ubii(IUbiiHub):
     This class provides most of the API to interact with the Ubi-Interact Master Node.
     It is implemented as a singleton which is available from `Ubii.hub`
     """
+
     class Instance(object):
         def __init__(self, create_key):
             self.create_key = create_key
@@ -75,30 +84,31 @@ class Ubii(IUbiiHub):
             return getattr(owner, mangled_name)
 
     __create_key = object()
-    instance = Instance(__create_key)
+    instance: 'Ubii' = Instance(__create_key)
 
     def __init__(self, key, **kwargs):
         assert (key == self.__create_key), \
             f"You can't create new instances of {type(self).__qualname__}. " \
             f"The singleton instance can be accessed using {type(self).__qualname__}.instance"
         super().__init__(**kwargs)
+        self.initialize()
 
     @property
     def debug(self):
         return _DEBUG
 
-    @property
-    def verbose(self):
-        return _VERBOSE
-
     @cached_property
     def services(self):
-        from ubii.client.proxy import ServiceProxy
+        from ubii.interact.client.proxy import ServiceProxy
         return ServiceProxy()
 
     @cached_property
     def server(self):
         return Server()
+
+    @cached_property
+    def ip(self):
+        return self.server.ip_ethernet or self.server.ip_wlan
 
     @cached_property
     def initialized(self):
@@ -110,21 +120,26 @@ class Ubii(IUbiiHub):
             try:
                 log.info(f"{self} is initializing.")
                 response = await self.services.server_config()
-                self.server.MergeFrom(response)
+                type(self.server).copy_from(self.server, response)
                 self.initialized.set()
             except aiohttp.ClientConnectorError as e:
-                log.error(f"{e}. Trying again in 5 seconds ...")
-                await asyncio.sleep(5)
+                log.error(f"{e}" + "Trying again in 5 seconds ..." if self.debug else '')
+                if self.debug:
+                    raise
+                else:
+                    await asyncio.sleep(5)
         log.info(f"{self} initialized successfully.")
 
     @cached_property
     def sessions(self) -> Dict[str, Session]:
         return {}
 
-    async def start_sessions(self, *sessions: Session) -> None:
+    async def start_sessions(self, *sessions: Session) -> Tuple[Session]:
         start = [self.services.session_runtime_start(session=session) for session in sessions]
-        started = await asyncio.gather(*start)
+        # noinspection PyTypeChecker
+        started: Tuple[Session] = await asyncio.gather(*start)
         self.sessions.update({session.id: session for session in started})
+        return started
 
     async def stop_sessions(self, *sessions: Session) -> None:
         stop = [self.services.session_runtime_stop(session=session) for session in sessions]
@@ -150,11 +165,10 @@ class Ubii(IUbiiHub):
     async def shutdown(self):
         await self.stop_clients(*self.clients.values())
         await self.stop_sessions(*self.sessions.values())
+        await client_session().close()
 
 
 class UbiiError(Exception):
-    def __init__(self, title=None, message=None, stack=None):
-        super().__init__(message)
-        self.title = title
-        self.message = message
-        self.stack = stack
+    def __init__(self, error: Error):
+        self.message, self.title, self.stack = error.message, error.title, error.stack
+        super().__init__(self.message)
