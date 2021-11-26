@@ -3,22 +3,21 @@ import asyncio
 import pytest
 
 import ubii.proto
-from ubii.interact import once
 from ubii.interact.client.node import ClientNode
-from ubii.proto_v1 import ProcessingModule
+from ubii.proto import ProcessingModule
 
 pytestmark = pytest.mark.asyncio
 __protobuf__ = ubii.proto.__protobuf__
 
+
 class TestBasic:
-    async def test_debug_settings(self, ubii_instance, enable_debug):
-        assert ubii_instance.debug
+    async def test_debug_settings(self, enable_debug):
+        assert enable_debug
 
     async def test_server(self, ubii_instance):
         assert ubii_instance.server.name == "master-node"
 
     async def test_initialized(self, ubii_instance):
-        assert ubii_instance.initialized.is_set() == await ubii_instance.initialized.wait() is True
         assert ubii_instance.server, "Initialized but server is empty"
 
     async def test_iheritance(self):
@@ -63,10 +62,9 @@ class TestBasic:
         assert False
 
     async def test_clients(self):
-        node: ClientNode = await ClientNode(name="Ubii Node").init()
-        assert node.id and node.name == "Ubii Node"
-        await asyncio.sleep(300)
-        print()
+        async with ClientNode(name="Ubii Node").initialize() as node:
+            assert node.id and node.name == "Ubii Node"
+            await asyncio.sleep(10)  # hold connection for 10 seconds without failure
 
     def test_start_clients(self):
         assert False

@@ -37,4 +37,4 @@ class ExampleSession(Session, metaclass=ubii.proto.ProtoMeta):
         self.name = "Example"
 
     async def async_init(self):
-        self.processing_modules
+        pass

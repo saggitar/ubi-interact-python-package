@@ -1,29 +1,15 @@
 from functools import cached_property
 
-import asyncio
 import logging
+from ubii.interact.types import IClientNode
+from ubii.proto import Client, Device
+from ubii.interact.client.topic import TopicClient
+import ubii.proto
 
-from .proxy import TopicProxy
-from ..util import once
-from ..interfaces import IClientNode
-from ubii.proto import Client, Device, ProtoMeta
-
-log = logging.getLogger(__name__)
+__protobuf__ = ubii.proto.__protobuf__
 
 
-class ClientNode(Client, metaclass=ProtoMeta):
-    def __init__(self, **kwargs) -> None:
-        super().__init__(**kwargs)
-
-    @cached_property
-    def client(self):
-        return TopicProxy(self)
-
-    @cached_property
-    def hub(self):
-        from .. import Ubii
-        return Ubii.instance
-
+class ClientNode(IClientNode):
     async def register_device(self, device: Device):
         pass
 
@@ -31,39 +17,22 @@ class ClientNode(Client, metaclass=ProtoMeta):
         pass
 
     @cached_property
-    def registered(self) -> asyncio.Event:
-        return asyncio.Event()
+    def log(self) -> logging.Logger:
+        return logging.getLogger(__name__)
 
-    async def shutdown(self):
-        for t in self._tasks:
-            t.cancel()
+    @cached_property
+    def topic_client(self):
+        return TopicClient(self)
 
-        await asyncio.gather(*[self.deregister_device(device=d) for d in self.devices.elements])
-        await self.client.shutdown()
-        await self.deregister()
-        log.info(f"{self} shut down.")
+    @cached_property
+    def hub(self):
+        from ubii.interact.hub import Ubii
+        return Ubii.instance
 
-    @once
-    async def init(self):
-        await self.register()
-        await self.client.connected.wait()
-        return self
-
-    async def register(self):
-        if self.registered.is_set():
-            log.debug(f"Already registered {self}")
-            return
-
-        await self.hub.initialized.wait()
-        response = await self.hub.services.client_registration(client=self)
-        Client.copy_from(self, response)
-        self.registered.set()
-        log.debug(f"Registered {self}")
-        return self
-
-    async def deregister(self):
-        success = await self.services.client_deregistration(client=self)
-        if success:
-            self.id = None
-            self.registered.clear()
-            log.debug(f"Unregistered {self}")
+    def __str__(self):
+        values = {
+            'cls': self.__class__.__name__,
+            'content': type(self).pb(self),
+        }
+        fmt = '|'.join('{' + k + '}' for k, v in values.items() if v)
+        return fmt.format(**values)

@@ -1,32 +1,46 @@
-import importlib
+import logging
 
 import pytest
 import ubii.interact
-from ubii.interact import Ubii
+import ubii.interact.hub
+from ubii.interact.hub import Ubii
+
+__verbosity__ = None
+
+
+def pytest_configure(config):
+    global __verbosity__
+    __verbosity__ = logging.INFO - 10 * config.getoption('verbose')
+
+    from ubii.interact.util.logging import set_logging
+    set_logging(verbosity=__verbosity__)
+
+    import ubii.proto
+    assert ubii.proto.__proto_package__ is not None, "No proto package set, aborting test setup."
+
 
 @pytest.fixture(scope='session', autouse=True)
 def service_url_env():
     import os
     from ubii.interact.util.constants import UBII_URL_ENV
     old = os.environ.get(UBII_URL_ENV)
-    os.environ[UBII_URL_ENV] = 'localhost:8102/services'
+    os.environ[UBII_URL_ENV] = 'http://localhost:8102/services'
     yield
     if old:
         os.environ[UBII_URL_ENV] = old
 
 
-@pytest.fixture
+@pytest.fixture(autouse=True)
 def enable_debug():
     previous = ubii.interact.debug()
     ubii.interact.debug(enabled=True)
-    yield
+    yield ubii.interact.debug()
     ubii.interact.debug(enabled=previous)
 
 
 @pytest.fixture
-async def ubii_instance(event_loop, enable_debug) -> 'Ubii':
-    instance = ubii.interact.Ubii.instance
-    await instance.initialize()
-    yield instance
-    await instance.shutdown()
+async def ubii_instance(event_loop) -> 'Ubii':
+    from ubii.interact.hub import Ubii
+    async with Ubii.instance.initialize() as instance:
+        yield instance
 

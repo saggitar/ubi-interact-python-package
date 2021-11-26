@@ -4,7 +4,7 @@ import pytest
 class TestServices:
     @pytest.fixture
     def services(self, ubii_instance):
-        from ubii.interact.interfaces import IServiceProvider
+        from ubii.interact.types import IServiceProvider
 
         calls = [name for name in dir(IServiceProvider) if not name.startswith('_')]
         return [getattr(ubii_instance.services, call) for call in calls]
