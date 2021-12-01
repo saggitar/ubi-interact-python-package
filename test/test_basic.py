@@ -1,9 +1,10 @@
 import asyncio
+from functools import cached_property
+from typing import Any
 
 import pytest
 
 import ubii.proto
-from ubii.interact.client.node import ClientNode
 from ubii.proto import ProcessingModule
 
 pytestmark = pytest.mark.asyncio
@@ -52,22 +53,48 @@ class TestBasic:
         assert processing.process() == "Bar"
 
     async def test_start_sessions(self, ubii_instance):
+        from ubii.interact.client.node import ClientNode
         from .data.demo_one import ExampleSession
-        session, = await ubii_instance.start_sessions(ExampleSession())
-        assert session.name == "Example"
-        assert session.id in ubii_instance.sessions
-        assert session in ubii_instance.sessions.values()
+        async with ExampleSession().initialize(ClientNode(name="Python Node")) as session:
+            assert session.name == "Example Session"
+            assert session.id in ubii_instance.sessions
+            assert session in ubii_instance.sessions.values()
+
+        print("")
 
     def test_stop_sessions(self):
         assert False
 
     async def test_clients(self):
-        async with ClientNode(name="Ubii Node").initialize() as node:
-            assert node.id and node.name == "Ubii Node"
+        from ubii.interact.client.node import ClientNode
+        name = 'Ubii Python Test Node'
+        node_id = None
+        async with ClientNode(name=name).initialize() as node:
+            assert node.id and node.name == name
+            node_id = node.id
             await asyncio.sleep(10)  # hold connection for 10 seconds without failure
 
-    def test_start_clients(self):
-        assert False
+        # we explicitly don't request the ubii instance, so that we can test if deregistering
+        # the node on context exit works if there is no additional reference to the Ubii instance
+        # to keep the http session from closing prematurely.
+        # the session should be closed now
+        from ubii.interact.hub import Ubii
+        hub = Ubii.instance
+        assert hub.client_session.closed
+
+        # we want to ask the server if the node is still registered, so we have to reset the client session.
+        del hub.client_session  # this clears the cached property
+        async with hub.initialize():
+            clients = await hub.services.client_get_list()
+            assert not any(n.id == node_id for n in clients.elements), \
+                f"Client with id {node_id} was not deregistered successfully"
+
+    async def test_device(self):
+        from data.mouse_pointer_demo import FancyNode as DemoNode
+        node: DemoNode
+        async with DemoNode(name="Python Test Node 1").initialize() as demo:
+            await asyncio.sleep(10)
+
 
     def test_stop_clients(self):
         assert False

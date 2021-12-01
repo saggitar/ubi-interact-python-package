@@ -2,43 +2,48 @@ from __future__ import annotations
 import asyncio
 import typing as t
 from asyncio import Task
-from functools import wraps
+from functools import cached_property, partial, wraps
 
 T = t.TypeVar('T')
 
 
 # noinspection PyPep8Naming
-class once(t.Callable[[t.Any], t.Awaitable[T]]):
+class task(cached_property):
     """
-    Wraps a function using the async await syntax and returns a future.
-    This makes sure that when the function is awaited, it is only running once.
+    Wraps a function to make sure that when the function is awaited, it is only running once.
 
     :param func: typically an async defined method / function
     :return: a callable returning the Task running `func`
     """
-    def __init__(self, func: t.Callable[..., t.Coroutine[t.Any, t.Any, T]]):
-        self.__func__ = func
-        self.__self__ = None
-        self.task: Task[T] | None = None
-        wraps(func)(self)
+    class once(t.Callable):
+        def __init__(self, value, instance=None, coro=None):
+            self.value = value
+            self.coro = coro
+            self.__self__ = instance
 
-    def __call__(self, *args, **kwargs) -> Task[T]:
-        if self.__self__:
-            args = (self.__self__, ) + args
+        def __call__(self):
+            return self.value
 
-        if not self.task:
-            self.task = asyncio.create_task(self.__func__(*args, **kwargs), name=str(self.__func__))
-        return self.task
+        def rerun(self):
+            if self.coro is None or self.__self__ is None:
+                raise NotImplementedError(f"rerun not allowed for {self}")
 
-    def __get__(self, instance, owner):
-        self.__self__ = instance
-        return self
+            return self.coro(self.__self__)
 
-    async def rerun(self, *args, **kwargs) -> t.Coroutine[t.Any, t.Any, T]:
-        if self.__self__:
-            args = (self.__self__, ) + args
+    def __init__(self, func):
+        super().__init__(func)
+        self.func = partial(self._task_create, self.func)
 
-        return self.__func__(*args, **kwargs)
+    def __set_name__(self, owner, name):
+        super().__set_name__(owner, name)
+        self.attrname = f"{self.attrname}__task"
 
-    def __new__(cls, *args: t.Callable[..., t.Coroutine[t.Any, t.Any, T]], **kwargs) -> once[T]:
-        return super().__new__(cls, *args, **kwargs)
+    def __get__(self, instance, owner=None):
+        value = super().__get__(instance, owner)
+        return self.once(value, coro=self.func)
+
+    def __call__(self):
+        return self.func()
+
+    def _task_create(self, func, *args):
+        return asyncio.create_task(func(*args), name=f"{self.attrname} for {args}")

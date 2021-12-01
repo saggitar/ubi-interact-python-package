@@ -6,7 +6,7 @@
     <envs>
       <env name="PYTHONUNBUFFERED" value="1" />
     </envs>
-    <option name="SDK_HOME" value="$PROJECT_DIR$/../ubii-msg-formats/venv/bin/python" />
+    <option name="SDK_HOME" value="C:\Users\manau\Code\ubii-interact\ma-ss21_maximilian-schmidt_ubi-interact-python\ubii-msg-formats\venv\Scripts\python.exe" />
     <option name="WORKING_DIRECTORY" value="$PROJECT_DIR$/../ubii-msg-formats" />
     <option name="IS_MODULE_SDK" value="false" />
     <option name="ADD_CONTENT_ROOTS" value="true" />

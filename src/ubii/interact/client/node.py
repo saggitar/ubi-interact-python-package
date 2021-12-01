@@ -1,21 +1,13 @@
+import logging
 from functools import cached_property
 
-import logging
-from ubii.interact.types import IClientNode
-from ubii.proto import Client, Device
-from ubii.interact.client.topic import TopicClient
-import ubii.proto
-
-__protobuf__ = ubii.proto.__protobuf__
+from .topic import TopicClient
+from ..types import (
+    IClientNode,
+)
 
 
 class ClientNode(IClientNode):
-    async def register_device(self, device: Device):
-        pass
-
-    async def deregister_device(self, device: Device):
-        pass
-
     @cached_property
     def log(self) -> logging.Logger:
         return logging.getLogger(__name__)

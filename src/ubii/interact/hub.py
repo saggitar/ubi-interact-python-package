@@ -1,10 +1,10 @@
 import logging
-from _warnings import warn
+from warnings import warn
 from functools import cached_property
 
 import ubii.proto
-from ubii.interact import debug
-from ubii.interact.types import IUbiiHub, IRequestClient, AIOHTTPSessionManager
+from . import debug
+from .types import IUbiiHub, IRequestClient, AIOHTTPSessionManager
 
 
 __protobuf__ = ubii.proto.__protobuf__

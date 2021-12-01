@@ -1,10 +1,14 @@
 import asyncio
+import logging
 from collections import defaultdict, UserDict
 from contextlib import asynccontextmanager, AsyncExitStack
-from functools import wraps, partial
-from typing import Dict, Set, TypeVar, Generator, Any
+from functools import wraps, partial, cached_property
+from itertools import chain
+from typing import Dict, TypeVar, Generator, Any
 
 _C = TypeVar('_C', bound='InitContextManager')
+
+log = logging.getLogger(__name__)
 
 
 # noinspection PyPep8Naming
@@ -21,31 +25,42 @@ class InitContextManager:
                 self.data[key] = value
 
     _registered_contexts = _contexts()
-    _stacks: Dict[int, AsyncExitStack] = {}
+
+    @cached_property
+    def _init_ctx_stack(self):
+        return AsyncExitStack()
+
+    @cached_property
+    def _init_ctx_lock(self):
+        return asyncio.Lock()
 
     @asynccontextmanager
     async def initialize(self: _C) -> Generator[_C, Any, None]:
         InitContextManager._registered_contexts.frozen = True
-        key = id(self)
-        stack: AsyncExitStack = InitContextManager._stacks.get(key)
-        if stack:
-            async with stack:
-                yield self
+
+        lock = self._init_ctx_lock
+        if lock.locked():
+            yield self
         else:
-            stack = InitContextManager._stacks[key] = AsyncExitStack()
-            async with stack as ctx:
-                for t, contexts in InitContextManager._registered_contexts.items():
-                    if not isinstance(self, t):
-                        continue
-                    for cm in contexts:
-                        await ctx.enter_async_context(cm(self))
-                yield self
+            async with lock:
+                stack = self._init_ctx_stack
+                async with stack as ctx:
+                    log.debug(f"acquiring {self.__class__.__name__}")
+                    contexts = chain.from_iterable(init_ctx
+                                                   for t, init_ctx in InitContextManager._registered_contexts.items()
+                                                   if isinstance(self, t))
+                    for init_ctx in sorted(contexts, key=lambda c: c.priority, reverse=True):
+                        await ctx.enter_async_context(init_ctx(self))
+
+                    yield self
+                    log.debug(f"releasing {self.__class__.__name__}")
 
     class _init_ctx:
-        def __init__(self, func, owner=None):
+        def __init__(self, func, owner=None, priority=0):
             self.ctx_manager = asynccontextmanager(func)
             self.name = None
             self.owner = owner
+            self.priority = priority
             wraps(func)(self)
 
         def __set_name__(self, owner, name):
@@ -67,10 +82,8 @@ class InitContextManager:
             return f"<init_ctx for {self.owner}.{self.name or '__unknown__'}>"
 
     @classmethod
-    def init_ctx(cls, func):
-        return cls._init_ctx(func, owner=cls)
-
-    def __del__(self):
-        # id is only guaranteed to be unique for the lifetime of the object
-        del InitContextManager._stacks[id(self)]
-        pass
+    def init_ctx(cls, fun=None, priority=None):
+        if fun is None:
+            return partial(cls._init_ctx, owner=cls, priority=priority or 0)
+        else:
+            return cls._init_ctx(func=fun, owner=cls, priority=priority or 0)
