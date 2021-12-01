@@ -1,22 +1,25 @@
+import typing as t
 from abc import ABC, abstractmethod
-from typing import AsyncGenerator, AsyncContextManager, Tuple, AsyncIterator, Awaitable
 
-from ubii.proto import TopicData, TopicDataRecord
+from ubii.proto import (
+    TopicData,
+    TopicDataRecord,
+)
 
 
 class IDataConnection(ABC):
     @property
     @abstractmethod
-    def stream(self) -> AsyncGenerator[TopicData, None]: ...
+    def stream(self) -> t.AsyncGenerator[TopicData, None]: ...
 
     @abstractmethod
     async def asend(self, data: TopicData): ...
 
     @abstractmethod
-    async def initialize(self) -> AsyncContextManager['IDataConnection']: ...
+    async def initialize(self) -> t.AsyncContextManager['IDataConnection']: ...
 
 
-class ITopic(AsyncIterator[TopicDataRecord]):
+class ITopic(t.AsyncIterator[TopicDataRecord]):
     @abstractmethod
     async def apush(self, record: TopicDataRecord): ...
 
@@ -29,7 +32,7 @@ class ITopicStore(ABC):
     def setdefault(self, topic: str) -> ITopic: ...
 
     @abstractmethod
-    def get(self, topic: str) -> Tuple[ITopic]: ...
+    def get(self, topic: str) -> t.Tuple[ITopic]: ...
 
     @abstractmethod
     def __contains__(self, item: str): ...

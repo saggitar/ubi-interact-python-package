@@ -1,6 +1,6 @@
 import logging
+import typing as t
 from abc import ABC, abstractmethod
-from typing import AsyncContextManager
 
 from ubii.proto import (
     ServiceRequest,
@@ -12,7 +12,6 @@ from ubii.proto import (
     Device,
 )
 from ubii.util.constants import DEFAULT_TOPICS
-
 from .meta import InitContextManager as _InitContextManager
 
 
@@ -20,7 +19,7 @@ class IRequestConnection(ABC):
     def asend(self, request: ServiceRequest) -> ServiceReply: ...
 
     @abstractmethod
-    async def initialize(self) -> AsyncContextManager['IRequestConnection']: ...
+    async def initialize(self) -> t.AsyncContextManager['IRequestConnection']: ...
 
 
 class IServiceProvider(ABC):

@@ -3,12 +3,14 @@ import os
 from contextlib import asynccontextmanager
 from functools import cached_property
 
+from ubii.proto import (
+    ServiceRequest,
+    ServiceReply,
+)
 from ..hub import Ubii
 from ..types import (
     IRequestConnection,
     IRequestClient,
-    ServiceRequest,
-    ServiceReply,
 )
 from ..util.constants import UBII_URL_ENV
 

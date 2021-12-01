@@ -2,17 +2,17 @@ import asyncio
 import fnmatch
 import logging
 import re
+import typing as t
 from functools import cached_property
-from typing import Dict, Tuple, Awaitable
 from warnings import warn
 
+from ubii.proto import TopicDataRecord
 from .websocket import WebSocketConnection
 from ..types import (
     IClientNode,
     ITopicStore,
     ITopic,
     ITopicClient,
-    TopicDataRecord,
 )
 
 
@@ -43,9 +43,9 @@ class TopicStore(ITopicStore):
         return any(r.match(topic) for r in self.data)
 
     def __init__(self):
-        self.data: Dict[re.Pattern, ITopic] = {}
+        self.data: t.Dict[re.Pattern, ITopic] = {}
 
-    def get(self, topic: str) -> Tuple[ITopic]:
+    def __getitem__(self, topic: str) -> t.Tuple[ITopic]:
         return tuple(t for pattern, t in self.data.items() if pattern.match(topic))
 
 

@@ -3,19 +3,15 @@ from __future__ import annotations
 import asyncio
 import logging
 import socket
+import typing as t
 from abc import abstractmethod, ABC
 from functools import cached_property, partialmethod as partial
-from typing import (
-    Dict,
-    Tuple,
-    AsyncGenerator
-)
 from warnings import warn
 
-import ubii.proto
-from ubii.util.constants import DEFAULT_TOPICS
 from proto.marshal import Marshal
 from proto.marshal.rules.message import MessageRule
+
+import ubii.proto
 from ubii.proto import (
     Session,
     Server,
@@ -27,12 +23,13 @@ from ubii.proto import (
     TopicDataRecord,
     Error
 )
-
+from ubii.util.constants import DEFAULT_TOPICS
 from .meta import InitContextManager as _InitContextManager
 from .services import IRequestClient as _IRequestClient
 from .topics import (
     IDataConnection as _IDataConnection,
     ITopicStore as _ITopicStore,
+    ITopic as _ITopic
 )
 from ..util.helper import task
 
@@ -43,7 +40,6 @@ class UbiiError(Error, Exception, metaclass=ProtoMeta):
     @property
     def args(self):
         return self.title, self.message, self.stack
-
 
 
 Marshal(name=__protobuf__.marshal).register(Error.pb(), MessageRule(Error.pb(), UbiiError))  # type: ignore
@@ -66,10 +62,10 @@ class IClientManager(_InitContextManager):
             assert not self.clients
 
     @cached_property
-    def clients(self) -> Dict[str, IClientNode]:
+    def clients(self) -> t.Dict[str, IClientNode]:
         return {}
 
-    async def register(self, *clients: IClientNode) -> Tuple[Client]:
+    async def register(self, *clients: IClientNode) -> t.Tuple[Client]:
         register = [self.services.client_registration(client=client) for client in clients]
         registered = await asyncio.gather(*register)
         self.clients.update({client.id: client for client in registered})
@@ -86,13 +82,14 @@ class IClientManager(_InitContextManager):
 class ISessionManager(_InitContextManager):
     @property
     @abstractmethod
-    def services(self) -> _IRequestClient: ...
+    def services(self) -> _IRequestClient:
+        ...
 
     @cached_property
-    def sessions(self) -> Dict[str, Session]:
+    def sessions(self) -> t.Dict[str, Session]:
         return {}
 
-    async def start_sessions(self, *sessions: Session) -> Tuple[Session]:
+    async def start_sessions(self, *sessions: Session) -> t.Tuple[Session]:
         for session in sessions:
             started = await self.services.session_runtime_start(session=session)
             Session.copy_from(session, started)
@@ -109,7 +106,7 @@ class ISessionManager(_InitContextManager):
     async def _manage_sessions(self):
         async with self.services.initialize():
             yield self
-            await self.stop_sessions(*(session for session in self.sessions.values() if session.status == SessionStatus)
+            await self.stop_sessions(*self.sessions.values())
 
 
 class IServerCommunicator(_InitContextManager):
@@ -153,7 +150,8 @@ class IUbiiHub(ISessionManager, IClientManager, IServerCommunicator, ABC):
 class IDeviceManager(Client, _InitContextManager, metaclass=ProtoMeta):
     @property
     @abstractmethod
-    def hub(self) -> IServerCommunicator: ...
+    def hub(self) -> IServerCommunicator:
+        ...
 
     @cached_property
     def _device_lock(self):
@@ -223,9 +221,10 @@ class IClientNode(IDeviceManager):
                 await self.deregister()
 
 
-
-
 class ITopicClient(_InitContextManager, ABC):
+    SubscribeCall = t.Callable[[t.Tuple[str, ...], bool, bool],
+                               t.Coroutine[t.Any, t.Any, t.Tuple[_ITopic, ...]]]
+
     @property
     @abstractmethod
     def node(self) -> IClientNode:
@@ -261,10 +260,18 @@ class ITopicClient(_InitContextManager, ABC):
         streams = tuple(self.store.setdefault(topic) for topic in topics)
         return streams
 
-    subscribe_regex = partial(_handle_subscribe, as_regex=True, unsubscribe=False)
-    subscribe_topic = partial(_handle_subscribe, as_regex=False, unsubscribe=False)
-    unsubscribe_regex = partial(_handle_subscribe, as_regex=True, unsubscribe=True)
-    unsubscribe_topic = partial(_handle_subscribe, as_regex=False, unsubscribe=True)
+    subscribe_regex: SubscribeCall = partial(_handle_subscribe,
+                                             as_regex=True,
+                                             unsubscribe=False)
+    subscribe_topic: SubscribeCall = partial(_handle_subscribe,
+                                             as_regex=False,
+                                             unsubscribe=False)
+    unsubscribe_regex: SubscribeCall = partial(_handle_subscribe,
+                                               as_regex=True,
+                                               unsubscribe=True)
+    unsubscribe_topic: SubscribeCall = partial(_handle_subscribe,
+                                               as_regex=False,
+                                               unsubscribe=True)
 
     async def publish(self, *records: TopicDataRecord):
         if len(records) < 1:
@@ -281,7 +288,7 @@ class ITopicClient(_InitContextManager, ABC):
     async def _make_processing(self):
         connection: _IDataConnection
         async with self.connection.initialize() as connection:
-            async def make_record() -> AsyncGenerator[TopicDataRecord]:
+            async def make_record() -> t.AsyncGenerator[TopicDataRecord]:
                 async for data in connection.stream:
                     if data.topic_data_record_list:
                         for record in data.topic_data_record_list:
@@ -291,7 +298,7 @@ class ITopicClient(_InitContextManager, ABC):
                     else:
                         yield data.error
 
-            await self.subscribe_regex(*[t for _, t in DEFAULT_TOPICS.INFO_TOPICS.items()])
+            await self.subscribe_regex(*[topic for _, topic in DEFAULT_TOPICS.INFO_TOPICS.items()])
             processing = asyncio.Queue()
             not_matching = asyncio.Queue()
             lock = asyncio.Lock()

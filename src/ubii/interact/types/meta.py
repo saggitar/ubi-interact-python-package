@@ -1,12 +1,13 @@
 import asyncio
 import logging
-from collections import defaultdict, UserDict
+import typing as t
+from collections import UserDict
 from contextlib import asynccontextmanager, AsyncExitStack
 from functools import wraps, partial, cached_property
-from itertools import chain
-from typing import Dict, TypeVar, Generator, Any
 
-_C = TypeVar('_C', bound='InitContextManager')
+from itertools import chain
+
+_C = t.TypeVar('_C', bound='InitContextManager')
 
 log = logging.getLogger(__name__)
 
@@ -35,7 +36,7 @@ class InitContextManager:
         return asyncio.Lock()
 
     @asynccontextmanager
-    async def initialize(self: _C) -> Generator[_C, Any, None]:
+    async def initialize(self: _C) -> t.Generator[_C, t.Any, None]:
         InitContextManager._registered_contexts.frozen = True
 
         lock = self._init_ctx_lock

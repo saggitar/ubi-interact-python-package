@@ -2,9 +2,7 @@ import logging
 from functools import cached_property
 
 from .topic import TopicClient
-from ..types import (
-    IClientNode,
-)
+from ..types import IClientNode
 
 
 class ClientNode(IClientNode):

@@ -1,15 +1,15 @@
 import logging
+import typing as t
 from contextlib import asynccontextmanager
 from functools import cached_property
-from typing import Optional, AsyncGenerator
 
 import aiohttp
 from aiohttp.web_ws import WebSocketResponse
 
+from ubii.proto import TopicData
 from ..types import (
     IDataConnection,
     IClientNode,
-    TopicData,
 )
 
 log = logging.getLogger(f"{__name__}.sock")
@@ -17,7 +17,7 @@ log = logging.getLogger(f"{__name__}.sock")
 
 class WebSocketConnection(IDataConnection):
     @cached_property
-    def stream(self) -> AsyncGenerator[TopicData, None]:
+    def stream(self) -> t.AsyncGenerator[TopicData, None]:
         if self._ws is None:
             raise AttributeError(f"You can't use `stream` if {self} is not initialized")
 
@@ -49,7 +49,7 @@ class WebSocketConnection(IDataConnection):
     def __init__(self, node: IClientNode, https=False):
         self._node = node
         self.https = https
-        self._ws: Optional[WebSocketResponse] = None
+        self._ws: t.Optional[WebSocketResponse] = None
 
     @asynccontextmanager
     async def initialize(self):
