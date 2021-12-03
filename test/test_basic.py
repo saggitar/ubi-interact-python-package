@@ -1,10 +1,10 @@
 import asyncio
-from functools import cached_property
-from typing import Any
+from functools import partial
 
 import pytest
 
 import ubii.proto
+from ubii.interact.types import SessionRuntimeStopServiceError
 from ubii.proto import ProcessingModule
 
 pytestmark = pytest.mark.asyncio
@@ -52,15 +52,22 @@ class TestBasic:
         assert type(inherited).serialize(inherited) == type(basic).serialize(basic)
         assert processing.process() == "Bar"
 
+    @pytest.mark.xfail(raises=SessionRuntimeStopServiceError, reason="Node does not let me stop the session.")
     async def test_start_sessions(self, ubii_instance):
-        from ubii.interact.client.node import ClientNode
+        from ubii.util.constants import DEFAULT_TOPICS
         from .data.demo_one import ExampleSession
-        async with ExampleSession().initialize(ClientNode(name="Python Node")) as session:
+        session: ExampleSession
+        async with ExampleSession().initialize() as session:
             assert session.name == "Example Session"
             assert session.id in ubii_instance.sessions
             assert session in ubii_instance.sessions.values()
 
-        print("")
+            start_session = session.client.topic_client.topics[DEFAULT_TOPICS.INFO_TOPICS.START_SESSION]
+            records = []
+            start_session.register_callback(records.append)
+            async for record in start_session.wait(timeout=5):
+                assert record in records
+
 
     def test_stop_sessions(self):
         assert False
@@ -68,7 +75,6 @@ class TestBasic:
     async def test_clients(self):
         from ubii.interact.client.node import ClientNode
         name = 'Ubii Python Test Node'
-        node_id = None
         async with ClientNode(name=name).initialize() as node:
             assert node.id and node.name == name
             node_id = node.id
@@ -94,7 +100,6 @@ class TestBasic:
         node: DemoNode
         async with DemoNode(name="Python Test Node 1").initialize() as demo:
             await asyncio.sleep(10)
-
 
     def test_stop_clients(self):
         assert False

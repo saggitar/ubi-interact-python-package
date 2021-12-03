@@ -8,6 +8,10 @@ from .client import (
     IClientNode,
     ITopicClient,
 )
+from .errors import (
+    UbiiError,
+    SessionRuntimeStopServiceError,
+)
 from .meta import InitContextManager
 from .services import (
     IRequestConnection,
@@ -36,4 +40,6 @@ __all__ = (
     "IDataConnection",
     "ITopicStore",
     "ITopic",
+    "UbiiError",
+    "SessionRuntimeStopServiceError"
 )

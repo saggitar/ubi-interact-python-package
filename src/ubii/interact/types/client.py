@@ -8,8 +8,6 @@ from abc import abstractmethod, ABC
 from functools import cached_property, partialmethod as partial
 from warnings import warn
 
-from proto.marshal import Marshal
-from proto.marshal.rules.message import MessageRule
 
 import ubii.proto
 from ubii.proto import (
@@ -20,8 +18,7 @@ from ubii.proto import (
     Device,
     ProtoMeta,
     TopicData,
-    TopicDataRecord,
-    Error
+    TopicDataRecord
 )
 from ubii.util.constants import DEFAULT_TOPICS
 from .meta import InitContextManager as _InitContextManager
@@ -33,16 +30,8 @@ from .topics import (
 )
 from ..util.helper import task
 
+
 __protobuf__ = ubii.proto.__protobuf__
-
-
-class UbiiError(Error, Exception, metaclass=ProtoMeta):
-    @property
-    def args(self):
-        return self.title, self.message, self.stack
-
-
-Marshal(name=__protobuf__.marshal).register(Error.pb(), MessageRule(Error.pb(), UbiiError))  # type: ignore
 
 
 class IClientManager(_InitContextManager):
@@ -89,6 +78,9 @@ class ISessionManager(_InitContextManager):
     def sessions(self) -> t.Dict[str, Session]:
         return {}
 
+    async def _update_session(self, session):
+        pass
+
     async def start_sessions(self, *sessions: Session) -> t.Tuple[Session]:
         for session in sessions:
             started = await self.services.session_runtime_start(session=session)
@@ -105,7 +97,10 @@ class ISessionManager(_InitContextManager):
     @_InitContextManager.init_ctx
     async def _manage_sessions(self):
         async with self.services.initialize():
+
+
             yield self
+            # TODO: Find out why stopping sessions returns an error although the sessions stop?
             await self.stop_sessions(*self.sessions.values())
 
 
@@ -148,6 +143,11 @@ class IUbiiHub(ISessionManager, IClientManager, IServerCommunicator, ABC):
 
 
 class IDeviceManager(Client, _InitContextManager, metaclass=ProtoMeta):
+    def __init__(self, **kwargs):
+        super().__init__(**kwargs)
+        if not self.name:
+            self.name = self.__class__.__name__
+
     @property
     @abstractmethod
     def hub(self) -> IServerCommunicator:
@@ -158,21 +158,26 @@ class IDeviceManager(Client, _InitContextManager, metaclass=ProtoMeta):
         return asyncio.Lock()
 
     @property
-    def device_map(self):
+    def device_map(self) -> t.Dict[str, Device]:
         return {device.id: device for device in self.devices}
 
     async def register_device(self, device: Device):
         async with self._device_lock:
-            managed = self.device_map.setdefault(device.id, Device())
-            if not managed.id:
+            managed = self.device_map.get(device.id)
+            if not managed or not managed.id:
                 registered = await self.hub.services.device_registration(device=device)
+            else:
+                raise RuntimeError(f"Trying to register already managed device {device}")
+            if managed:
                 Device.copy_from(managed, registered)
             else:
-                warn(f"Trying to register already managed device {device}")
+                self.devices += [registered]
+
 
     async def deregister_device(self, device: Device):
-        result = await self.hub.services.device_deregistration(device=device)
-        print(result)
+        await self.hub.services.device_deregistration(device=device)
+        removed: Device = self.device_map[device.id]
+        self.devices.remove(removed)
 
     @_InitContextManager.init_ctx
     async def _init_device_manager(self):
@@ -212,7 +217,7 @@ class IClientNode(IDeviceManager):
     @abstractmethod
     def hub(self) -> IUbiiHub: ...
 
-    @_InitContextManager.init_ctx
+    @_InitContextManager.init_ctx(priority=1)
     async def _initalize_node(self):
         async with self.hub.initialize():
             await self.register()
@@ -241,7 +246,7 @@ class ITopicClient(_InitContextManager, ABC):
 
     @property
     @abstractmethod
-    def store(self) -> _ITopicStore:
+    def topics(self) -> _ITopicStore:
         ...
 
     @property
@@ -257,7 +262,7 @@ class ITopicClient(_InitContextManager, ABC):
             f"{'subscribe_topic_regexp' if as_regex else 'subscribe_topics'}": topics
         }
         await self.node.hub.services.topic_subscription(topic_subscription=message)
-        streams = tuple(self.store.setdefault(topic) for topic in topics)
+        streams = tuple(self.topics.setdefault(topic) for topic in topics)
         return streams
 
     subscribe_regex: SubscribeCall = partial(_handle_subscribe,
@@ -310,7 +315,8 @@ class ITopicClient(_InitContextManager, ABC):
             async def split_to_topics():
                 while True:
                     record = await processing.get()
-                    topics = self.store.get(record.topic)
+                    topics = self.topics.matching(record.topic)
+                    self.log.debug(f"Record Topic: {record.topic} -> matching: {','.join(map(str, topics))}")
                     if not topics:
                         async with lock:
                             await not_matching.put(record)

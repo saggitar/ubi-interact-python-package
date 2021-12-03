@@ -3,7 +3,7 @@ import logging
 import typing as t
 from collections import UserDict
 from contextlib import asynccontextmanager, AsyncExitStack
-from functools import wraps, partial, cached_property
+from functools import wraps, partial, cached_property, lru_cache
 
 from itertools import chain
 
@@ -11,17 +11,16 @@ _C = t.TypeVar('_C', bound='InitContextManager')
 
 log = logging.getLogger(__name__)
 
-
 # noinspection PyPep8Naming
 class InitContextManager:
     class _contexts(UserDict):
         def __init__(self, **kwargs):
             super().__init__(**kwargs)
-            self.frozen = False
+            self.frozen = {}
 
         def __setitem__(self, key, value):
-            if self.frozen:
-                raise RuntimeError(f"You can't register an new context after the first call to `initialize`")
+            if self.frozen.get(key):
+                raise RuntimeError(f"You can't register an new context for {key} after the first call to `initialize`")
             else:
                 self.data[key] = value
 
@@ -37,7 +36,7 @@ class InitContextManager:
 
     @asynccontextmanager
     async def initialize(self: _C) -> t.Generator[_C, t.Any, None]:
-        InitContextManager._registered_contexts.frozen = True
+        self._registered_contexts.frozen.setdefault(type(self), True)
 
         lock = self._init_ctx_lock
         if lock.locked():
@@ -48,8 +47,8 @@ class InitContextManager:
                 async with stack as ctx:
                     log.debug(f"acquiring {self.__class__.__name__}")
                     contexts = chain.from_iterable(init_ctx
-                                                   for t, init_ctx in InitContextManager._registered_contexts.items()
-                                                   if isinstance(self, t))
+                                                   for type_, init_ctx in self._registered_contexts.items()
+                                                   if isinstance(self, type_))
                     for init_ctx in sorted(contexts, key=lambda c: c.priority, reverse=True):
                         await ctx.enter_async_context(init_ctx(self))
 
@@ -60,7 +59,7 @@ class InitContextManager:
         def __init__(self, func, owner=None, priority=0):
             self.ctx_manager = asynccontextmanager(func)
             self.name = None
-            self.owner = owner
+            self.owner: t.Type[InitContextManager] = owner
             self.priority = priority
             wraps(func)(self)
 
