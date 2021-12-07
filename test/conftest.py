@@ -1,3 +1,4 @@
+import asyncio
 import logging
 
 import pytest
@@ -38,9 +39,14 @@ def enable_debug():
     ubii.interact.debug(enabled=previous)
 
 
-@pytest.fixture
-async def ubii_instance(event_loop) -> 'Ubii':
+@pytest.fixture(scope='class')
+async def ubii_instance() -> Ubii:
     from ubii.interact.hub import Ubii
     async with Ubii.instance.initialize() as instance:
         yield instance
 
+@pytest.fixture(scope='class')
+def event_loop():
+    loop = asyncio.get_event_loop()
+    yield loop
+    loop.close()

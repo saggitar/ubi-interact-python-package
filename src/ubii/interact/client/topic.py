@@ -9,7 +9,7 @@ from warnings import warn
 from ubii.proto import TopicDataRecord
 from .websocket import WebSocketConnection
 from ..types import (
-    IClientNode,
+    IClient,
     ITopicStore,
     ITopic,
     ITopicClient,
@@ -114,10 +114,10 @@ class TopicClient(ITopicClient):
         return self._connection
 
     @property
-    def node(self) -> IClientNode:
+    def node(self) -> IClient:
         return self._node
 
-    def __init__(self, node: IClientNode):
+    def __init__(self, node: IClient):
         super().__init__()
         self._node = node
         self._connection = WebSocketConnection(self.node)

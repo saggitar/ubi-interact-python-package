@@ -9,7 +9,7 @@ from aiohttp.web_ws import WebSocketResponse
 from ubii.proto import TopicData
 from ..types import (
     IDataConnection,
-    IClientNode,
+    IClient,
 )
 
 log = logging.getLogger(f"{__name__}.sock")
@@ -46,7 +46,7 @@ class WebSocketConnection(IDataConnection):
 
         await self._ws.send_bytes(TopicData.serialize(data))
 
-    def __init__(self, node: IClientNode, https=False):
+    def __init__(self, node: IClient, https=False):
         self._node = node
         self.https = https
         self._ws: t.Optional[WebSocketResponse] = None
@@ -55,10 +55,10 @@ class WebSocketConnection(IDataConnection):
     async def initialize(self):
         from ubii.interact.hub import Ubii
         hub = Ubii.instance
-        node: IClientNode
-        async with self.node.initialize() as node:
-            ip = node.hub.server.ip
-            url = f"ws{'s' if self.https else ''}://{ip}:{node.hub.server.port_topic_data_ws}/?clientID={node.id}"
+        client: IClient
+        async with self.node.initialize() as client:
+            ip = client.hub.server.ip
+            url = f"ws{'s' if self.https else ''}://{ip}:{client.hub.server.port_topic_data_ws}/?clientID={client.id}"
             ws: WebSocketResponse
             async with hub.client_session.ws_connect(url) as ws:
                 self._ws = ws

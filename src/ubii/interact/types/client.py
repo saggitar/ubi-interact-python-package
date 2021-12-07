@@ -20,7 +20,6 @@ from ubii.proto import (
     TopicData,
     TopicDataRecord
 )
-from ubii.util.constants import DEFAULT_TOPICS
 from .meta import InitContextManager as _InitContextManager
 from .services import IRequestClient as _IRequestClient
 from .topics import (
@@ -51,16 +50,16 @@ class IClientManager(_InitContextManager):
             assert not self.clients
 
     @cached_property
-    def clients(self) -> t.Dict[str, IClientNode]:
+    def clients(self) -> t.Dict[str, IClient]:
         return {}
 
-    async def register(self, *clients: IClientNode) -> t.Tuple[Client]:
+    async def register(self, *clients: IClient) -> t.Tuple[Client]:
         register = [self.services.client_registration(client=client) for client in clients]
         registered = await asyncio.gather(*register)
         self.clients.update({client.id: client for client in registered})
         return registered  # type: ignore
 
-    async def deregister(self, *clients: IClientNode) -> None:
+    async def deregister(self, *clients: IClient) -> None:
         deregister = [self.services.client_deregistration(client=client) for client in clients]
         results = await asyncio.gather(*deregister)
         for client, result in zip(clients, results):
@@ -97,11 +96,9 @@ class ISessionManager(_InitContextManager):
     @_InitContextManager.init_ctx
     async def _manage_sessions(self):
         async with self.services.initialize():
-
-
             yield self
             # TODO: Find out why stopping sessions returns an error although the sessions stop?
-            await self.stop_sessions(*self.sessions.values())
+            # await self.stop_sessions(*self.sessions.values())
 
 
 class IServerCommunicator(_InitContextManager):
@@ -185,7 +182,7 @@ class IDeviceManager(Client, _InitContextManager, metaclass=ProtoMeta):
         await asyncio.gather(*[self.deregister_device(d) for d in self.devices])
 
 
-class IClientNode(IDeviceManager):
+class IClient(IDeviceManager):
     @property
     @abstractmethod
     def log(self) -> logging.Logger: ...
@@ -232,7 +229,7 @@ class ITopicClient(_InitContextManager, ABC):
 
     @property
     @abstractmethod
-    def node(self) -> IClientNode:
+    def node(self) -> IClient:
         ...
 
     @property
@@ -278,7 +275,7 @@ class ITopicClient(_InitContextManager, ABC):
                                                as_regex=False,
                                                unsubscribe=True)
 
-    async def publish(self, *records: TopicDataRecord):
+    async def publish(self, *records: t.Union[TopicDataRecord, t.Dict]):
         if len(records) < 1:
             raise ValueError(f"Called {self.publish} without TopicDataRecord message to publish")
 
@@ -303,7 +300,6 @@ class ITopicClient(_InitContextManager, ABC):
                     else:
                         yield data.error
 
-            await self.subscribe_regex(*[topic for _, topic in DEFAULT_TOPICS.INFO_TOPICS.items()])
             processing = asyncio.Queue()
             not_matching = asyncio.Queue()
             lock = asyncio.Lock()

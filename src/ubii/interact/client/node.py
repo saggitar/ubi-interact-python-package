@@ -3,10 +3,10 @@ import re
 from functools import cached_property, partial
 
 from .topic import TopicClient
-from ..types import IClientNode
+from ..types import IClient
 
 
-class ClientNode(IClientNode):
+class Client(IClient):
     @cached_property
     def log(self) -> logging.Logger:
         return logging.getLogger(__name__)

@@ -5,7 +5,7 @@ from .client import (
     IClientManager,
     ISessionManager,
     IDeviceManager,
-    IClientNode,
+    IClient,
     ITopicClient,
 )
 from .errors import (
@@ -31,7 +31,7 @@ __all__ = (
     "IClientManager",
     "ISessionManager",
     "IDeviceManager",
-    "IClientNode",
+    "IClient",
     "ITopicClient",
     "InitContextManager",
     "IRequestConnection",

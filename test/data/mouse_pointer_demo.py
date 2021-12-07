@@ -1,11 +1,11 @@
 import ubii.proto
-from ubii.interact.client.node import ClientNode
+from ubii.interact.client.node import Client
 from ubii.proto import Device, Component, ProcessingModule
 
 __protobuf__ = ubii.proto.__protobuf__
 
 
-class FancyNode(ClientNode):
+class FancyNode(Client):
     def __init__(self, **kwargs) -> None:
         super().__init__(**kwargs)
         self.devices = [self.device]
