@@ -1,4 +1,5 @@
 import logging
+import socket
 from functools import cached_property
 
 import aiohttp
@@ -6,8 +7,15 @@ import aiohttp
 from ubii.interact import debug
 from .meta import InitContextManager as _InitContextManager
 
+log = logging.getLogger(__name__)
+
 
 class AIOHTTPSessionManager(_InitContextManager):
+    @cached_property
+    def local_ip(self):
+        host = socket.gethostbyname(socket.gethostname())
+        return host
+
     @cached_property
     def client_session(self) -> aiohttp.ClientSession:
         if debug():
@@ -18,7 +26,7 @@ class AIOHTTPSessionManager(_InitContextManager):
 
             trace_config.on_request_start.append(on_request_start)
             trace_configs = [trace_config]
-            timeout = aiohttp.ClientTimeout(total=5)
+            timeout = aiohttp.ClientTimeout(total=1)
         else:
             timeout = aiohttp.ClientTimeout(total=300)
             trace_configs = []
@@ -31,5 +39,6 @@ class AIOHTTPSessionManager(_InitContextManager):
 
     @_InitContextManager.init_ctx(priority=10)
     async def _init_client_session(self):
+        log.debug("Established AIOHTTP Session.")
         yield self
         await self.client_session.close()

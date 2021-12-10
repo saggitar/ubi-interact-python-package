@@ -9,7 +9,7 @@ from aiohttp.web_ws import WebSocketResponse
 from ubii.proto import TopicData
 from ..types import (
     IDataConnection,
-    IClient,
+    IUbiiClient,
 )
 
 log = logging.getLogger(f"{__name__}.sock")
@@ -32,7 +32,7 @@ class WebSocketConnection(IDataConnection):
                     log.error(message)
                 elif message.type == aiohttp.WSMsgType.BINARY:
                     data = TopicData.deserialize(message.data)
-                    log.debug(data)
+                    log.debug(f"Received {data}")
                     yield data
                 else:
                     log.warning(f"Unknown message Type for message: {message}")
@@ -41,12 +41,14 @@ class WebSocketConnection(IDataConnection):
         return _stream()
 
     async def asend(self, data: TopicData):
+        log.debug(f"Sending {data}")
+
         if self._ws is None:
             raise AttributeError(f"You can't use `asend` if {self} is not initialized")
 
         await self._ws.send_bytes(TopicData.serialize(data))
 
-    def __init__(self, node: IClient, https=False):
+    def __init__(self, node: IUbiiClient, https=False):
         self._node = node
         self.https = https
         self._ws: t.Optional[WebSocketResponse] = None
@@ -55,13 +57,14 @@ class WebSocketConnection(IDataConnection):
     async def initialize(self):
         from ubii.interact.hub import Ubii
         hub = Ubii.instance
-        client: IClient
+        client: IUbiiClient
         async with self.node.initialize() as client:
-            ip = client.hub.server.ip
+            ip = client.hub.server.ip_wlan or client.hub.server.ip_ethernet or 'localhost'
             url = f"ws{'s' if self.https else ''}://{ip}:{client.hub.server.port_topic_data_ws}/?clientID={client.id}"
             ws: WebSocketResponse
-            async with hub.client_session.ws_connect(url) as ws:
+            async with hub.client_session.ws_connect(url, origin=hub.local_ip) as ws:
                 self._ws = ws
+                log.debug(f"Websocket for {url} opened.")
                 yield self
 
     @property

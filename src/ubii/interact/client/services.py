@@ -14,6 +14,8 @@ from ..types import (
 )
 from ..util.constants import UBII_URL_ENV
 
+log = logging.getLogger(__name__)
+
 
 class RESTConnection(IRequestConnection):
     def __init__(self, http=False):
@@ -25,7 +27,7 @@ class RESTConnection(IRequestConnection):
 
     @property
     def ip(self):
-        return self.hub.server.ip
+        return self.hub.server.ip_wlan or self.hub.server.ip_ethernet or 'localhost'
 
     @property
     def port(self):
@@ -45,13 +47,15 @@ class RESTConnection(IRequestConnection):
         return os.environ.get(UBII_URL_ENV, server_url)
 
     async def asend(self, request: ServiceRequest) -> ServiceReply:
-        async with self.hub.client_session.post(self.url, json=request) as resp:
+        cors = {'origin': f"http{'s' if self.https else ''}://{self.hub.local_ip}:8080"}
+        async with self.hub.client_session.post(self.url, headers=cors, json=request) as resp:
             json = await resp.text()
             return ServiceReply.from_json(json, ignore_unknown_fields=True)  # ignore unknown since master node is kill
 
     @asynccontextmanager
     async def initialize(self):
         async with self.hub.initialize():
+            log.debug(f"Service Backend with url {self.url} is ready.")
             yield self
 
 

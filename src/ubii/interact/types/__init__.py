@@ -5,7 +5,7 @@ from .client import (
     IClientManager,
     ISessionManager,
     IDeviceManager,
-    IClient,
+    IUbiiClient,
     ITopicClient,
 )
 from .errors import (
@@ -20,8 +20,7 @@ from .services import (
 )
 from .topics import (
     IDataConnection,
-    ITopicStore,
-    ITopic
+    TopicStore
 )
 
 __all__ = (
@@ -31,15 +30,14 @@ __all__ = (
     "IClientManager",
     "ISessionManager",
     "IDeviceManager",
-    "IClient",
+    "IUbiiClient",
     "ITopicClient",
     "InitContextManager",
     "IRequestConnection",
     "IServiceProvider",
     "IRequestClient",
     "IDataConnection",
-    "ITopicStore",
-    "ITopic",
+    "TopicStore",
     "UbiiError",
     "SessionRuntimeStopServiceError"
 )

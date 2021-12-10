@@ -2,11 +2,34 @@ import logging
 import re
 from functools import cached_property, partial
 
-from .topic import TopicClient
-from ..types import IClient
+from ..types import (
+    IUbiiClient,
+    ITopicClient
+)
+
+from .websocket import WebSocketConnection
 
 
-class Client(IClient):
+class TopicClient(ITopicClient):
+    @cached_property
+    def log(self) -> logging.Logger:
+        return logging.getLogger(__name__)
+
+    @cached_property
+    def connection(self) -> WebSocketConnection:
+        return self._connection
+
+    @property
+    def node(self) -> IUbiiClient:
+        return self._node
+
+    def __init__(self, node: IUbiiClient):
+        super().__init__()
+        self._node = node
+        self._connection = WebSocketConnection(self.node)
+
+
+class UbiiClient(IUbiiClient):
     @cached_property
     def log(self) -> logging.Logger:
         return logging.getLogger(__name__)

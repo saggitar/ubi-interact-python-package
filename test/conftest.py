@@ -31,11 +31,11 @@ def service_url_env():
         os.environ[UBII_URL_ENV] = old
 
 
-@pytest.fixture(autouse=True)
+@pytest.fixture(autouse=True, scope='session')
 def enable_debug():
     previous = ubii.interact.debug()
     ubii.interact.debug(enabled=True)
-    yield ubii.interact.debug()
+    yield
     ubii.interact.debug(enabled=previous)
 
 

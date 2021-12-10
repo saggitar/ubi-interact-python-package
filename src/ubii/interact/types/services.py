@@ -16,6 +16,11 @@ from .meta import InitContextManager as _InitContextManager
 
 
 class IRequestConnection(ABC):
+    @property
+    @abstractmethod
+    def url(self) -> str: ...
+
+    @abstractmethod
     def asend(self, request: ServiceRequest) -> ServiceReply: ...
 
     @abstractmethod
@@ -185,6 +190,7 @@ class IRequestClient(_InitContextManager, IServiceProvider, ABC):
     @_InitContextManager.init_ctx
     async def _open_connection(self):
         async with self.connection.initialize():
+
             yield self
 
     # this would be a lot cleaner with `functools.partialmethod` but PyCharm does not

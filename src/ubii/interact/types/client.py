@@ -1,13 +1,14 @@
 from __future__ import annotations
 
+import json
+
 import asyncio
+import dataclasses
 import logging
-import socket
 import typing as t
 from abc import abstractmethod, ABC
 from functools import cached_property, partialmethod as partial
 from warnings import warn
-
 
 import ubii.proto
 from ubii.proto import (
@@ -20,20 +21,25 @@ from ubii.proto import (
     TopicData,
     TopicDataRecord
 )
+from ubii.util.constants import DEFAULT_TOPICS
+
 from .meta import InitContextManager as _InitContextManager
 from .services import IRequestClient as _IRequestClient
 from .topics import (
     IDataConnection as _IDataConnection,
-    ITopicStore as _ITopicStore,
-    ITopic as _ITopic
+    TopicStore as _TopicStore,
 )
-from ..util.helper import task
-
+from .. import debug
 
 __protobuf__ = ubii.proto.__protobuf__
 
 
 class IClientManager(_InitContextManager):
+    @property
+    @abstractmethod
+    def log(self) -> logging.Logger:
+        ...
+
     @property
     @abstractmethod
     def services(self) -> _IRequestClient:
@@ -50,16 +56,22 @@ class IClientManager(_InitContextManager):
             assert not self.clients
 
     @cached_property
-    def clients(self) -> t.Dict[str, IClient]:
+    def clients(self) -> t.Dict[str, IUbiiClient]:
         return {}
 
-    async def register(self, *clients: IClient) -> t.Tuple[Client]:
-        register = [self.services.client_registration(client=client) for client in clients]
+    async def register(self, *clients: Client) -> t.Tuple[IUbiiClient]:
+        registered = [c for c in clients if c.id in self.clients]
+        if registered:
+            warn(f"Client[s] with id[s] {', '.join(c.id for c in registered)} already registered!")
+
+        register = [self.services.client_registration(client=client)
+                    for client in filter(lambda c: c not in registered, clients)]
+
         registered = await asyncio.gather(*register)
         self.clients.update({client.id: client for client in registered})
         return registered  # type: ignore
 
-    async def deregister(self, *clients: IClient) -> None:
+    async def deregister(self, *clients: Client) -> None:
         deregister = [self.services.client_deregistration(client=client) for client in clients]
         results = await asyncio.gather(*deregister)
         for client, result in zip(clients, results):
@@ -70,6 +82,11 @@ class IClientManager(_InitContextManager):
 class ISessionManager(_InitContextManager):
     @property
     @abstractmethod
+    def log(self) -> logging.Logger:
+        ...
+
+    @property
+    @abstractmethod
     def services(self) -> _IRequestClient:
         ...
 
@@ -77,14 +94,13 @@ class ISessionManager(_InitContextManager):
     def sessions(self) -> t.Dict[str, Session]:
         return {}
 
-    async def _update_session(self, session):
-        pass
-
     async def start_sessions(self, *sessions: Session) -> t.Tuple[Session]:
         for session in sessions:
             started = await self.services.session_runtime_start(session=session)
             Session.copy_from(session, started)
             self.sessions[started.id] = started
+            self.log.info(f"Started session {session}")
+
         return sessions
 
     async def stop_sessions(self, *sessions: Session) -> None:
@@ -102,20 +118,13 @@ class ISessionManager(_InitContextManager):
 
 
 class IServerCommunicator(_InitContextManager):
-    class UbiiServer(Server, metaclass=ProtoMeta):
-        @property
-        def ip(self):
-            local_ip = socket.gethostbyname(socket.gethostname())
-            server_ip = self.ip_wlan or self.ip_ethernet
-            return 'localhost' if server_ip and local_ip == server_ip else server_ip
-
     @property
     @abstractmethod
     def services(self) -> _IRequestClient: ...
 
     @cached_property
-    def server(self) -> UbiiServer:
-        return self.UbiiServer()
+    def server(self) -> Server:
+        return Server()
 
     @property
     @abstractmethod
@@ -132,6 +141,8 @@ class IServerCommunicator(_InitContextManager):
     async def _get_config_once(self):
         async with self.services.initialize():
             await self.get_config()
+            from ubii.util.constants import check_constants
+            check_constants(json.loads(self.server.constants_json))
             yield
 
 
@@ -139,7 +150,7 @@ class IUbiiHub(ISessionManager, IClientManager, IServerCommunicator, ABC):
     pass
 
 
-class IDeviceManager(Client, _InitContextManager, metaclass=ProtoMeta):
+class IUbiiClient(Client, _InitContextManager, metaclass=ProtoMeta):
     def __init__(self, **kwargs):
         super().__init__(**kwargs)
         if not self.name:
@@ -147,9 +158,32 @@ class IDeviceManager(Client, _InitContextManager, metaclass=ProtoMeta):
 
     @property
     @abstractmethod
-    def hub(self) -> IServerCommunicator:
-        ...
+    def log(self) -> logging.Logger: ...
 
+    @property
+    @abstractmethod
+    def topic_client(self) -> ITopicClient: ...
+
+    async def register(self):
+        await self.hub.register(self)
+
+    async def deregister(self):
+        await self.hub.deregister(self)
+
+    @property
+    @abstractmethod
+    def hub(self) -> IUbiiHub: ...
+
+    @_InitContextManager.init_ctx(priority=1)
+    async def _initalize_node(self):
+        async with self.hub.initialize():
+            await self.register()
+            async with self.topic_client.initialize():
+                yield self
+                await self.deregister()
+
+
+class IDeviceManager(IUbiiClient):
     @cached_property
     def _device_lock(self):
         return asyncio.Lock()
@@ -170,66 +204,24 @@ class IDeviceManager(Client, _InitContextManager, metaclass=ProtoMeta):
             else:
                 self.devices += [registered]
 
-
     async def deregister_device(self, device: Device):
         await self.hub.services.device_deregistration(device=device)
         removed: Device = self.device_map[device.id]
         self.devices.remove(removed)
 
     @_InitContextManager.init_ctx
-    async def _init_device_manager(self):
+    async def _manage_devices(self):
         yield self
         await asyncio.gather(*[self.deregister_device(d) for d in self.devices])
 
 
-class IClient(IDeviceManager):
-    @property
-    @abstractmethod
-    def log(self) -> logging.Logger: ...
-
-    @property
-    @abstractmethod
-    def topic_client(self) -> ITopicClient: ...
-
-    @task
-    async def register(self):
-        response, = await self.hub.register(self)
-        Client.copy_from(self, response)
-        self.log.debug(f"Registered {self}")
-
-        # TODO: Response könnte client_ids setzen, oder nicht?
-        for device in self.devices:
-            device.client_id = self.id
-            await self.register_device(device)
-
-        return self
-
-    async def deregister(self):
-        await self.hub.deregister(self)
-        self.id = None
-        self.log.debug(f"Unregistered {self}")
-        return self
-
-    @property
-    @abstractmethod
-    def hub(self) -> IUbiiHub: ...
-
-    @_InitContextManager.init_ctx(priority=1)
-    async def _initalize_node(self):
-        async with self.hub.initialize():
-            await self.register()
-            async with self.topic_client.initialize():
-                yield self
-                await self.deregister()
-
-
 class ITopicClient(_InitContextManager, ABC):
     SubscribeCall = t.Callable[[t.Tuple[str, ...], bool, bool],
-                               t.Coroutine[t.Any, t.Any, t.Tuple[_ITopic, ...]]]
+                               t.Coroutine[t.Any, t.Any, t.Tuple[_TopicStore.Topic, ...]]]
 
     @property
     @abstractmethod
-    def node(self) -> IClient:
+    def node(self) -> IUbiiClient:
         ...
 
     @property
@@ -238,13 +230,8 @@ class ITopicClient(_InitContextManager, ABC):
         ...
 
     @cached_property
-    def subscriptions_changed(self):
-        return asyncio.Event()
-
-    @property
-    @abstractmethod
-    def topics(self) -> _ITopicStore:
-        ...
+    def topics(self) -> _TopicStore:
+        return _TopicStore()
 
     @property
     @abstractmethod
@@ -252,14 +239,22 @@ class ITopicClient(_InitContextManager, ABC):
         ...
 
     async def _handle_subscribe(self, *topics, as_regex=False, unsubscribe=False):
+        if debug():
+            # We don't need to enforce this, but check in debug mode since the master node does not care.
+            default_regexes = [pattern for pattern in topics if pattern in DEFAULT_TOPICS.INFO_TOPICS.regexes]
+            if default_regexes and not as_regex:
+                raise ValueError(f"You are using a subscription as normal topic (non regex) "
+                                 f"with regex topic[s] {', '.join(default_regexes)}")
+
         await self.node.register()
         message = {
             'client_id': self.node.id,
             f"{'un' if unsubscribe else ''}"
             f"{'subscribe_topic_regexp' if as_regex else 'subscribe_topics'}": topics
         }
+        self.log.info(f"{self} subscribed to topic[s] {','.join(topics)}")
         await self.node.hub.services.topic_subscription(topic_subscription=message)
-        streams = tuple(self.topics.setdefault(topic) for topic in topics)
+        streams = tuple(self.topics[topic] for topic in topics)
         return streams
 
     subscribe_regex: SubscribeCall = partial(_handle_subscribe,
@@ -300,37 +295,17 @@ class ITopicClient(_InitContextManager, ABC):
                     else:
                         yield data.error
 
-            processing = asyncio.Queue()
-            not_matching = asyncio.Queue()
-            lock = asyncio.Lock()
-
-            async def enqueue():
-                async for record in make_record():
-                    await processing.put(record)
-
             async def split_to_topics():
-                while True:
-                    record = await processing.get()
+                async for record in make_record():
                     topics = self.topics.matching(record.topic)
                     self.log.debug(f"Record Topic: {record.topic} -> matching: {','.join(map(str, topics))}")
                     if not topics:
-                        async with lock:
-                            await not_matching.put(record)
+                        raise RuntimeError(f"No topics found for record with topic {record.topic}")
                     else:
-                        await asyncio.gather(*[t.apush(record) for t in topics or ()])
-                    processing.task_done()
-
-            async def process_no_matching():
-                while True:
-                    await self.subscriptions_changed.wait()
-                    while not not_matching.empty():
-                        async with lock:
-                            record = await not_matching.get()
-                            await processing.put(record)
-                    self.subscriptions_changed.clear()
+                        await asyncio.gather(*[topic.publish(record) for topic in topics or ()])
 
             try:
-                tasks = asyncio.gather(enqueue(), split_to_topics(), process_no_matching())
+                split = asyncio.create_task(split_to_topics())
                 yield self
             finally:
-                tasks.cancel()
+                split.cancel()
