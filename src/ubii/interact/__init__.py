@@ -14,3 +14,7 @@ def debug(enabled: bool = None):
 
     return __DEBUG__
 
+
+__all__ = [
+    "debug",
+]

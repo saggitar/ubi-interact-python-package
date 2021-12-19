@@ -1,138 +1,68 @@
-import asyncio
+import abc
 import typing as t
-from abc import ABC, abstractmethod
-from asyncio import Task
-from collections import defaultdict
-from contextlib import suppress
-from fnmatch import fnmatch
-from functools import wraps
-from warnings import warn
-from .meta import InitContextManager as _InitContextManager
+from abc import ABC
+from collections import Mapping
 
-from ubii.proto import (
-    TopicData,
-    TopicDataRecord,
-)
+import ubii.proto as ub
+
+_Token = t.TypeVar('_Token')
 
 
-class IDataConnection(ABC):
-    @property
-    @abstractmethod
-    def stream(self) -> t.AsyncGenerator[TopicData, None]: ...
+class IDataConnection(abc.ABC):
+    @abc.abstractmethod
+    def stream(self) -> t.AsyncIterator[ub.TopicData]: ...
 
-    @abstractmethod
-    async def asend(self, data: TopicData): ...
-
-    @abstractmethod
-    async def initialize(self) -> t.AsyncContextManager['IDataConnection']: ...
+    @abc.abstractmethod
+    async def send(self, data: ub.TopicData): ...
 
 
-class TopicStore(ABC, _InitContextManager):
-    class Topic:
-        TopicDataConsumer = t.Callable[[TopicDataRecord], None]
+class ITopic(t.Generic[_Token]):
+    TopicDataConsumer = t.Callable[[ub.TopicDataRecord], None]
 
-        class Token:
-            __id__ = -1
+    @abc.abstractmethod
+    def register_callback(self, callback: TopicDataConsumer) -> _Token: ...
 
-            @classmethod
-            def create(cls):
-                cls.__id__ += 1
-                return cls.__id__
+    @abc.abstractmethod
+    async def unregister_callback(self, token: _Token) -> bool: ...
 
-        def __init__(self, pattern):
-            self._pattern = pattern
-            self._buffer = None
-            self.callbacks: t.Dict[int, Task] = {}
-            self.published = asyncio.Condition()
+    @abc.abstractmethod
+    async def publish(self, record: ub.TopicDataRecord): ...
 
-        def _make_async_callback(self, sync_callback: TopicDataConsumer):
-            @wraps(sync_callback)
-            async def _callback(record):
-                loop = asyncio.get_running_loop()
-                await loop.run_in_executor(None, sync_callback, record)
+    @abc.abstractmethod
+    async def get_data(self, **kwargs) -> ub.TopicDataRecord: ...
 
-            return _callback
+    @abc.abstractmethod
+    async def stream(self, **kwargs) -> t.AsyncIterator[ub.TopicDataRecord]: ...
 
-        def _make_task(self, callback: TopicDataConsumer):
-            if not asyncio.iscoroutinefunction(callback):
-                callback = self._make_async_callback(callback)
 
-            async def _run():
-                while True:
-                    async with self.published:
-                        await self.published.wait()
-                        await callback(self.buffer)
+class ITopicMatcher(abc.ABC):
+    @abc.abstractmethod
+    def match_topic(self, topic: str) -> t.Tuple[ITopic, ...]: ...
 
-            return asyncio.create_task(_run(), name=callback.__name__)
+    @abc.abstractmethod
+    def match_pattern(self, pattern: str) -> t.Tuple[ITopic, ...]: ...
 
-        def register_callback(self, callback: TopicDataConsumer) -> int:
-            token = self.Token.create()
-            self.callbacks[token] = self._make_task(callback)
-            return token
 
-        def unregister_callback(self, token: int) -> bool:
-            removed = self.callbacks.pop(token, None)
-            if removed is None:
-                warn(f"No callback for {token} found in {self}")
-                return False
+class ITopicStore(ITopicMatcher, Mapping[str, ITopic], ABC):
+    pass
 
-            return True
 
-        async def publish(self, record: TopicDataRecord):
-            async with self.published:
-                self.buffer = record
-                self.published.notify_all()
+class ITopicClient(abc.ABC):
+    @abc.abstractmethod
+    def subscribe_regex(self, topic: str) -> ITopic:
+        ...
 
-        @property
-        def buffer(self) -> TopicDataRecord:
-            return self._buffer
+    @abc.abstractmethod
+    def subscribe_topic(self, topic: str) -> ITopic:
+        ...
 
-        @buffer.setter
-        def buffer(self, value):
-            self._buffer = value
+    @abc.abstractmethod
+    def unsubscribe_regex(self, topic: str) -> bool:
+        ...
 
-        async def get_data(self) -> TopicDataRecord:
-            async with self.published:
-                await self.published.wait()
-                return self.buffer
+    @abc.abstractmethod
+    def unsubscribe_topic(self, topic: str) -> bool:
+        ...
 
-        async def stream(self, timeout=None):
-            with suppress(asyncio.exceptions.TimeoutError):
-                while True:
-                    record = await asyncio.wait_for(self.get_data(), timeout=timeout)
-                    yield record
-
-        def __str__(self):
-            return f"Topic {self._pattern}"
-
-    def __init__(self):
-        self.data = {}
-
-    def __getitem__(self, topic: str) -> Topic:
-        return self.data.setdefault(topic, self.Topic(pattern=topic))
-
-    def values(self) -> t.Iterable[Topic]:
-        return self.data.values()
-
-    def __contains__(self, topic: str) -> bool:
-        return topic in self.data
-
-    def matching(self, topic: str = None, pattern=None) -> t.Tuple[Topic, ...]:
-        if topic is None and pattern is None:
-            raise ValueError("You need to specify `topic` or `pattern`")
-        if topic is not None and pattern is not None:
-            raise ValueError("You can't specify both `topic` and `pattern`")
-
-        if topic:
-            return tuple(top for topic_pattern, top in self.data.items()
-                         if fnmatch(name=topic, pat=topic_pattern))
-        if pattern:
-            return tuple(top for topic_pattern, top in self.data.items()
-                         if fnmatch(name=topic_pattern, pat=pattern))
-
-    @_InitContextManager.init_ctx
-    async def _handle_topic_callback_tasks(self):
-        yield
-        for topic in self.values():
-            for task in topic.callbacks.values():
-                task.cancel()
+    @abc.abstractmethod
+    async def publish(self, *records: t.Union[ub.TopicDataRecord, t.Dict]): ...

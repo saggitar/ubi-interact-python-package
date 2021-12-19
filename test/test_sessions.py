@@ -1,11 +1,13 @@
-import typing as t
 import asyncio
 import logging
+import typing as t
 
 import pytest
+
 import ubii.proto
+from ubii.interact.lib.node import UbiiClient
 from ubii.interact.types import SessionRuntimeStopServiceError, TopicStore
-from ubii.proto import ProcessingModule, Session, TopicDataRecord, Component, Device, Client
+from ubii.proto import ProcessingModule, Session, TopicDataRecord, Component, Device
 
 __protobuf__ = ubii.proto.__protobuf__
 
@@ -21,7 +23,7 @@ class TestSessions:
 
     @pytest.fixture(scope='class')
     async def test_client(self):
-        class ExampleClient(Client):
+        class ExampleClient(UbiiClient):
             @property
             def example_device(self) -> Device:
                 return self.devices[0]
@@ -34,9 +36,23 @@ class TestSessions:
             def server_bool(self) -> Component:
                 return self.example_device.components[1]
 
-
-
         async with ExampleClient().initialize() as client:
+            device_name = 'python-example-device'
+            prefix = f"/{client.id}/{device_name}"
+            client_bool = Component(io_type=Component.IOType.PUBLISHER,
+                                    topic=f'{prefix}/client_bool',
+                                    message_format='bool')
+
+            server_bool = Component(io_type=Component.IOType.SUBSCRIBER,
+                                    topic=f'{prefix}/server_bool',
+                                    message_format='bool')
+
+            device = Device(name=device_name,
+                            client_id=client.id,
+                            device_type=Device.DeviceType.PARTICIPANT,
+                            components=[client_bool, server_bool])
+
+            await client.register_device(device)
             yield client
 
     @pytest.fixture(scope='class')
@@ -105,9 +121,8 @@ class TestSessions:
         yield server_bool.get_data
 
     @pytest.mark.xfail(raises=SessionRuntimeStopServiceError, reason='Stopping sessions does not seem to work.')
-    @pytest.mark.parametrize('value', [True, False, True, False, True, True, True, False, False])
+    @pytest.mark.parametrize('value', [False, True, False, True, False, True, True, True, False, False])
     async def test_set_boolean(self, value, topic_subscription, example_session, test_client):
-        await asyncio.sleep(2)
         await test_client.topic_client.publish({'topic': test_client.client_bool.topic, 'bool': value})
         result = await asyncio.wait_for(topic_subscription(), timeout=2)
         assert result != value

@@ -1,19 +1,18 @@
 from functools import lru_cache
 
-from proto.marshal import Marshal
 from proto.marshal.rules.message import MessageRule
 
-import ubii.proto
-from ubii.proto import Error, ProtoMeta
+from proto.marshal import Marshal
+import ubii.proto as ub
 
-__protobuf__ = ubii.proto.__protobuf__
+__protobuf__ = ub.__protobuf__
 
 
-class UbiiError(Error, Exception, metaclass=ProtoMeta):
+class UbiiError(ub.Error, Exception, metaclass=ub.ProtoMeta):
     @classmethod
     @lru_cache
     def rule(cls):
-        return MessageRule(Error.pb(), cls)
+        return MessageRule(ub.Error.pb(), cls)
 
     @property
     def args(self):
@@ -46,4 +45,4 @@ class ErrorRule(MessageRule):
         return super().to_proto(value)
 
 
-Marshal(name=__protobuf__.marshal).register(Error.pb(), ErrorRule(Error.pb(), UbiiError))  # type: ignore
+Marshal(name=__protobuf__.marshal).register(ub.Error.pb(), ErrorRule(ub.Error.pb(), UbiiError))  # type: ignore

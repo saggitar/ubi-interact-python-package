@@ -1,1 +1,0 @@
-UBII_URL_ENV: str = 'UBII_SERVICE_URL'

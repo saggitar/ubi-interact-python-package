@@ -2,14 +2,14 @@ import asyncio
 
 import pytest
 
-from ubii.interact.client.node import Client
+from ubii.interact.lib.node import Client
 from ubii.interact.hub import Ubii
 
 pytestmark = pytest.mark.asyncio
 
 class TestClients:
     async def test_registration(self):
-        from ubii.interact.client.node import Client
+        from ubii.interact.lib.node import Client
         name = 'Ubii Python Test Node'
         async with Client(name=name).initialize() as node:
             assert node.id and node.name == name
