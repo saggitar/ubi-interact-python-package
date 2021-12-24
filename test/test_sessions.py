@@ -4,8 +4,9 @@ import typing as t
 
 import pytest
 
+import ubii.interact.topics
 import ubii.proto
-from ubii.interact.lib.node import UbiiClient
+from ubii.interact.node.node import UbiiClient
 from ubii.interact.types import SessionRuntimeStopServiceError, TopicStore
 from ubii.proto import ProcessingModule, Session, TopicDataRecord, Component, Device
 
@@ -18,7 +19,7 @@ log = logging.getLogger(__name__)
 class TestSessions:
     class SessionTestObject(t.NamedTuple):
         started: asyncio.Event
-        topic: TopicStore.Topic
+        topic: ubii.interact.topics.Topic
         publish: t.Callable
 
     @pytest.fixture(scope='class')

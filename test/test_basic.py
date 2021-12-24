@@ -1,36 +1,26 @@
-import asyncio
-
 import pytest
 
-import ubii.proto
+import ubii.proto as ub
 from ubii.proto import ProcessingModule
 
 pytestmark = pytest.mark.asyncio
-__protobuf__ = ubii.proto.__protobuf__
+__protobuf__ = ub.__protobuf__
 
 
 class TestBasic:
     async def test_debug_settings(self, enable_debug):
         assert enable_debug
 
-    async def test_server(self, ubii_instance):
-        assert ubii_instance.server.name == "master-node"
-
-    async def test_initialized(self, ubii_instance):
-        assert ubii_instance.server, "Initialized but server is empty"
-
     async def test_iheritance(self):
-        from ubii.proto import Session
-
-        class Empty(Session, metaclass=ubii.proto.ProtoMeta):
+        class Empty(ub.Session, metaclass=ub.ProtoMeta):
             pass
 
         inherited = Empty()
-        basic = Session()
+        basic = ub.Session()
 
         assert type(inherited).serialize(inherited) == type(basic).serialize(basic)
 
-        class WithAttributes(Session, metaclass=ubii.proto.ProtoMeta):
+        class WithAttributes(ub.Session, metaclass=ub.ProtoMeta):
             def foo(self):
                 return "Foo"
 
@@ -39,7 +29,7 @@ class TestBasic:
         assert type(fancy).serialize(fancy) == type(basic).serialize(basic)
         assert fancy.foo() == "Foo"
 
-        class WeirdProcessing(ProcessingModule, metaclass=ubii.proto.ProtoMeta):
+        class WeirdProcessing(ProcessingModule, metaclass=ub.ProtoMeta):
             def process(self):
                 return "Bar"
 

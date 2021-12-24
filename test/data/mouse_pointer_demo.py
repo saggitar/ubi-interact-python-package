@@ -1,5 +1,5 @@
 import ubii.proto
-from ubii.interact.lib.node import Client
+from ubii.interact.node.node import Client
 from ubii.proto import Device, Component, ProcessingModule
 
 __protobuf__ = ubii.proto.__protobuf__
