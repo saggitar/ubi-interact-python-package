@@ -35,7 +35,7 @@ class TopicCoroutine(t.Generic[T], CoroutineWrapper[t.Any, t.Any, None]):
     def __init__(self, *,
                  shared_resource_accessor: util.accessor[T],
                  callback: t.Callable[[T], t.Optional[t.Coroutine[t.Any, t.Any, None]]]):
-        self._get = shared_resource_accessor.get
+        self._get = shared_resource_accessor.next
         self._set = shared_resource_accessor.set
         if not asyncio.iscoroutinefunction(callback):
             callback = util.make_async(callback)
@@ -79,7 +79,7 @@ class Topic(t.AsyncIterator[ub.TopicDataRecord], t.Generic[T_Token, T_Buffer]):
 
     async def __anext__(self) -> T_Buffer:
         # (see e.g. https://youtrack.jetbrains.com/issue/PY-38030)
-        return self.buffer.get()  # noqa
+        return self.buffer.next()  # noqa
 
     @t.overload
     def __init__(self: 'Topic[int, T_Buffer]', *,
