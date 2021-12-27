@@ -29,7 +29,7 @@ class ServiceCall(ub.Service):
     """
     A ServiceCall is a callable that can be represented as a Service protobuf message.
     """
-    ErrorCallback = t.Callable[[ub.Error], t.Coroutine[...]]
+    ErrorCallback = t.Callable[[ub.Error], t.Coroutine[t.Any, t.Any, None]]
 
     def __init__(self, *, transport: ServiceConnection, **kwargs):
         super().__init__(**kwargs)

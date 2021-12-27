@@ -32,7 +32,7 @@ class StandardProtocol(protocol.UbiiProtocol[UbiiStates]):
         return self.config.CONSTANTS
 
     def _update_config(self, service: services.ServiceCall):
-        response =
+        response = ...
         server: ub.Server = response.server
         ub.Server.copy_from(self.server, server)
         ub.Constants.copy_from(self.constants, ub.Constants.from_json(server.constants_json))
@@ -50,9 +50,10 @@ class StandardProtocol(protocol.UbiiProtocol[UbiiStates]):
 
         response = await service_map[self.config.CONSTANTS.DEFAULT_TOPICS.SERVICES.SERVICE_LIST]()
 
-        client = UbiiClient()
+        client = ...
 
     async def _on_connect(self, context):
+        pass
 
     state_changes = {
         (None, starting_state): _on_start,

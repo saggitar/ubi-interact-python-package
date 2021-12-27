@@ -1,3 +1,6 @@
+from __future__ import annotations
+
+import sys
 import abc
 import asyncio
 import logging
@@ -5,10 +8,15 @@ import typing as t
 from collections import UserDict
 from contextlib import AsyncExitStack, suppress
 from fnmatch import fnmatch
-from functools import cache
 
-from _warnings import warn
+if sys.version_info >= (3, 9):
+    from functools import cache
+else:
+    from functools import lru_cache
 
+    cache = lru_cache(None, True)
+
+from warnings import warn
 from ubii import proto as ub
 from ubii.interact import util
 from ubii.interact.util import CoroutineWrapper
@@ -35,7 +43,7 @@ class TopicCoroutine(t.Generic[T], CoroutineWrapper[t.Any, t.Any, None]):
     def __init__(self, *,
                  shared_resource_accessor: util.accessor[T],
                  callback: t.Callable[[T], t.Optional[t.Coroutine[t.Any, t.Any, None]]]):
-        self._get = shared_resource_accessor.next
+        self._get = shared_resource_accessor.get
         self._set = shared_resource_accessor.set
         if not asyncio.iscoroutinefunction(callback):
             callback = util.make_async(callback)
@@ -82,12 +90,12 @@ class Topic(t.AsyncIterator[ub.TopicDataRecord], t.Generic[T_Token, T_Buffer]):
         return self.buffer.next()  # noqa
 
     @t.overload
-    def __init__(self: 'Topic[int, T_Buffer]', *,
+    def __init__(self: Topic[int, T_Buffer], *,
                  token_factory: None,
                  task_manager: AsyncExitStack = None) -> None: ...
 
     @t.overload
-    def __init__(self: 'Topic[T_Token, T_Buffer]', *,
+    def __init__(self: Topic[T_Token, T_Buffer], *,
                  token_factory: TokenFactory[T_Token],
                  task_manager: AsyncExitStack = None) -> None: ...
 
@@ -187,14 +195,14 @@ class Topic(t.AsyncIterator[ub.TopicDataRecord], t.Generic[T_Token, T_Buffer]):
         self._exit_stack = manager
 
 
-class TopicContainer(UserDict[str, Topic], t.Generic[T_Buffer]):
-    def match_topic(self: 'TopicContainer[T_Buffer]', topic) -> t.Tuple[Topic[T_Buffer], ...]:
+class TopicContainer(UserDict, t.Mapping[str, Topic[T_Token, T_Buffer]]):
+    def match_topic(self, topic) -> t.Tuple[Topic[T_Token, T_Buffer], ...]:
         return tuple(top for topic_pattern, top in self.data.items() if fnmatch(name=topic, pat=topic_pattern))
 
-    def match_pattern(self: 'TopicContainer[T_Buffer]', pattern) -> t.Tuple[Topic[T_Buffer], ...]:
+    def match_pattern(self, pattern) -> t.Tuple[Topic[T_Token, T_Buffer], ...]:
         return tuple(top for topic_pattern, top in self.data.items() if fnmatch(name=topic_pattern, pat=pattern))
 
-    def __init__(self: 'TopicContainer[T_Buffer]', default_factory: t.Callable[[str], Topic[T_Buffer]]):
+    def __init__(self: TopicContainer[T_Token, T_Buffer], default_factory: t.Callable[[str], Topic[T_Token, T_Buffer]]):
         super().__init__()
         self._default_factory = default_factory
 

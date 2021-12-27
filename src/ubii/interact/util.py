@@ -1,12 +1,15 @@
 from __future__ import annotations
 
+from itertools import chain, repeat
+
 import asyncio
 import typing as t
 from dataclasses import dataclass
-from functools import wraps, cached_property
+from functools import wraps, cached_property, partial
 
 _T = t.TypeVar('_T')
 _S = t.TypeVar('_S')
+_R = t.TypeVar('_R')
 _SimpleCoroutine = t.Coroutine[t.Any, t.Any, _T]
 
 
@@ -30,7 +33,7 @@ class accessor(t.Generic[_S]):
         def __call__(self: 'accessor.getter_t[_T]', predicate: t.Callable[[], bool]) -> _SimpleCoroutine[_T]: ...
 
         @t.overload
-        def __call__(self: 'accessor.getter_t[_T]', predicate: None) -> t.Callable[[], _T]: ...
+        def __call__(self: 'accessor.getter_t[_T]', predicate: None) -> _T: ...
 
         def __call__(self: 'accessor.getter_t[_T]', predicate: t.Callable[[], bool] | None): ...
 
@@ -49,10 +52,16 @@ class condition_property(cached_property, t.Generic[_T]):
     be an ``accessor`` with coroutine attributes to handle safely setting and getting the value (from the objects
     methods passed via ``setter`` and ``getter`` , like in normal properties) by means of a condition.
 
-    The ``next`` coroutine of the accessor always blocks until the ``set`` coroutine of the same accessor sets the value.
-    The ``get`` coroutine of the accessor uses the lock of the condition for exclusive access, but does not block
-    until a value is set.
-    The ``set`` coroutine of the accessor sets the value and notifies all waiting tasks (every ``next``)
+    The ``get`` coroutine of the accessor takes an optional predicate callable (or boolean, see below),
+    and waits for the predicate result to be truthy, then returns the result of the getter. (see the ``wait_for``
+    documentation of asyncio.Condition for more info on the predicate callable).
+    The default predicate returns [False, True, True, ...], so ``get`` blocks once, until it is notified
+    from a ``set`` and then does not block again.
+    Passing actual booleans as predicate triggers one of two default behaviours:
+        * ``predicate=False`` will make ``get`` not block at all.
+        * ``predicate=True`` is the default and uses the aforementioned default predicate, which blocks only once.
+
+    The ``set`` coroutine of the accessor sets the value and notifies every ``get``.
     """
     func: t.Callable[[t.Any], accessor[_T]]
 
@@ -73,19 +82,24 @@ class condition_property(cached_property, t.Generic[_T]):
         raise AttributeError(f"can't set attribute directly, use set()")
 
     def _create_accessor(self: 'condition_property[_T]', obj: object) -> accessor[_T]:
+        print("Creating Accessor")
         condition = asyncio.Condition()
+
         return accessor(
-            get=lambda predicate=(lambda: True): (
-                self._get(condition=condition, obj=obj, predicate=predicate)
-                if predicate else
-                self.fget(obj)
-            ),
-            set=lambda value: self._set(condition=condition, obj=obj, value=value),
+            get=partial(self._get, condition=condition, obj=obj),
+            set=partial(self._set, condition=condition, obj=obj),
         )
 
-    async def _set(self, *,
+    def _make_default_predicate(self):
+        iter = chain(repeat(False, 1), repeat(True))
+        return iter.__next__
+
+    async def _set(self,
+                   value: _T,
+                   *,
                    condition: asyncio.Condition,
-                   obj: object, value: _T):
+                   obj: object):
+        print("async set")
         if self.fset is None:
             raise AttributeError(f"can't set attribute {self.attrname}")
         async with condition:
@@ -93,10 +107,15 @@ class condition_property(cached_property, t.Generic[_T]):
             if should_notify is None or should_notify:
                 condition.notify_all()
 
-    async def _get(self, *,
+    async def _get(self,
+                   *,
+                   predicate: t.Callable[[], bool] | bool = True,
                    condition: asyncio.Condition,
-                   obj: object,
-                   predicate: t.Callable[[], bool] = (lambda: True)):
+                   obj: object):
+        print(f"async get")
+        if not callable(predicate):
+            predicate = self._make_default_predicate() if predicate else (lambda: True)
+
         if self.fget is None:
             raise AttributeError(f'unreadable attribute {self.attrname}')
 
@@ -135,7 +154,7 @@ class condition_property(cached_property, t.Generic[_T]):
         return prop
 
 
-class CoroutineWrapper(t.Coroutine):
+class CoroutineWrapper(t.Coroutine[_T, _S, _R]):
     """
     Complex Coroutines are easy to implement with native ``def async`` coroutine syntax, but often require
     some smaller coroutines to compose. Inheriting from CoroutineWrapper, a complex coroutine can encapsulate
