@@ -1,3 +1,4 @@
+from __future__ import annotations
 from functools import lru_cache
 
 from proto.marshal.rules.message import MessageRule
@@ -34,7 +35,7 @@ class SessionRuntimeStopServiceError(UbiiError):
 
 
 class ErrorRule(MessageRule):
-    def to_python(self, value, *, absent: bool = None):
+    def to_python(self, value, *, absent: bool | None = None):
         title = value.title or ''
         if title.startswith('SessionRuntimeStopService'):
             return SessionRuntimeStopServiceError.rule().to_python(value, absent=absent)

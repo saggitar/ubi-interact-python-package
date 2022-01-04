@@ -38,7 +38,7 @@ def enable_debug():
     ubii.interact.debug(enabled=previous)
 
 
-@pytest.fixture(scope='class')
+@pytest.fixture(scope='session')
 def event_loop():
     loop = asyncio.get_event_loop()
     yield loop

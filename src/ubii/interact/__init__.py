@@ -1,9 +1,9 @@
-from ._default import StandardProtocol
+from __future__ import annotations
 
 __DEBUG__ = False
 
 
-def debug(enabled: bool = None):
+def debug(enabled: bool | None = None):
     """
     Call without arguments to get current debug state, pass truthy value to set debug mode.
 
@@ -15,8 +15,3 @@ def debug(enabled: bool = None):
         __DEBUG__ = bool(enabled)
 
     return __DEBUG__
-
-
-__all__ = [
-    "debug",
-]

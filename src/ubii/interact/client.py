@@ -1,27 +1,48 @@
+from __future__ import annotations
+
+import asyncio
+import dataclasses
+import re
 import typing as t
+import warnings
+from contextlib import asynccontextmanager
+from functools import partial
+from itertools import chain
 
 import ubii.proto as ub
 from .protocol import UbiiProtocol
-from .services import ServiceMap
+from .services import DefaultServiceMap
 from .topics import Topic
+
+import codestare.async_utils as util
 
 T = t.TypeVar('T')
 SimpleCoroutine = t.Coroutine[t.Any, t.Any, T]
 
 
-class InjectedCallables(t.NamedTuple):
+@dataclasses.dataclass
+class BasicBehaviour:
     """
-    Behaviour of the client that needs to be injected
+    Behavior of the client that needs to be injected
     """
-    service_map: t.Callable[[], ServiceMap]
-    subscribe_regex: t.Callable[[t.Tuple[str, ...]], SimpleCoroutine[t.Tuple[Topic, ...]]]
-    subscribe_topic: t.Callable[[t.Tuple[str, ...]], SimpleCoroutine[t.Tuple[Topic, ...]]]
-    unsubscribe_regex: t.Callable[[t.Tuple[str, ...]], SimpleCoroutine[bool]]
-    unsubscribe_topic: t.Callable[[t.Tuple[str, ...]], SimpleCoroutine[bool]]
-    publish: t.Callable[[t.Tuple[ub.TopicDataRecord, ...]], SimpleCoroutine[None]]
+    subscribe_regex: t.Callable[[t.Tuple[str, ...]], SimpleCoroutine[t.Tuple[Topic, ...]]] | None = None
+    subscribe_topic: t.Callable[[t.Tuple[str, ...]], SimpleCoroutine[t.Tuple[Topic, ...]]] | None = None
+    unsubscribe_regex: t.Callable[[t.Tuple[str, ...]], SimpleCoroutine[bool]] | None = None
+    unsubscribe_topic: t.Callable[[t.Tuple[str, ...]], SimpleCoroutine[bool]] | None = None
+    publish: t.Callable[[t.Tuple[ub.TopicDataRecord, ...]], SimpleCoroutine[None]] | None = None
+    services: DefaultServiceMap | None = None
 
 
-class UbiiClient(ub.Client, metaclass=ub.ProtoMeta):
+@dataclasses.dataclass
+class DeviceManager:
+    """
+    Behavior to register and deregister Devices (optional)
+    """
+    register_device: t.Callable[[ub.Device], SimpleCoroutine[ub.Device]] | None = None
+    deregister_device: t.Callable[[ub.Device], SimpleCoroutine[None]] | None = None
+
+
+class UbiiClient(ub.Client, t.Awaitable['UbiiClient'], metaclass=ub.ProtoMeta):
     """
     A Client is a wrapper around a ``Client`` proto message.
     It can perform the following additional features:
@@ -52,41 +73,157 @@ class UbiiClient(ub.Client, metaclass=ub.ProtoMeta):
 
     """
 
-    def __init__(self, *, protocol: UbiiProtocol, callables: InjectedCallables, **kwargs):
+    def __init__(self, *,
+                 protocol: UbiiProtocol,
+                 required_behaviours: t.Tuple[t.Type] = (BasicBehaviour,),
+                 optional_behaviours: t.Tuple[t.Type] = (DeviceManager,),
+                 **kwargs):
         super().__init__(**kwargs)
+        if not self.name:
+            self.name = f"{self.__class__.__name__}"
+
+        self._behaviours = {kls: kls() for kls in chain(required_behaviours or (), optional_behaviours or ())}
+        if not all(dataclasses.is_dataclass(b) for b in self._behaviours):
+            raise ValueError(f"Only dataclasses can be passed as behaviours")
+
+        self._required_behaviours = required_behaviours or ()
+
+        self._behaviour_changed = asyncio.Condition()
         self._protocol = protocol
-        self._services = callables.service_map()
-        self._subscribe_regex = callables.subscribe_regex
-        self._subscribe_topic = callables.subscribe_topic
-        self._unsubscribe_regex = callables.subscribe_regex
-        self._unsubscribe_topic = callables.unsubscribe_topic
-        self._publish = callables.publish
+        self._implemented = None
+        self.__ctx: t.AsyncContextManager = self.__with_running_protocol()
+        self._init = self.protocol.create_task(self._initialize())
+
+    async def implement(self, behaviour: t.Any | None = None, **kwargs):
+        """
+        Set the implementation of one of the clients key behaviours, or update it.
+        Searches the dataclass or keyword in the supplied behaviours and replaces the field value[s] from
+        the supplied argument
+
+        :param behaviour: opional dataclass instance of one of the required or optional behaviour classes
+        :param kwargs: keyword arguments for fields in one of the required or optional behaviour classes
+        """
+        if behaviour and not dataclasses.is_dataclass(behaviour):
+            raise ValueError(f"behaviour needs to be a dataclass instance (one of required or optional behaviours)")
+
+        behaviours_matching_type = {
+            kls: instance for kls, instance in self._behaviours.items() if isinstance(instance, type(behaviour))
+        }
+
+        if behaviour and not behaviours_matching_type:
+            raise ValueError(f"no behaviours from {self} matched argument {behaviour}")
+
+        for kls, instance in behaviours_matching_type.items():
+            self._behaviours[kls] = dataclasses.replace(instance, **behaviour)
+
+        matching_kwarg_types = {
+            name: [b for b in self._behaviours if name in [field.name for field in dataclasses.fields(b)]]
+            for name in kwargs
+        }
+
+        _missing = [k for k in matching_kwarg_types if not matching_kwarg_types[k]]
+        if _missing:
+            raise ValueError(f"no fields from behaviours of {self} match keywords {', '.join(map(str, _missing))}")
+
+        for name, matching in matching_kwarg_types.items():
+            for kls in matching:
+                self._behaviours[kls] = dataclasses.replace(self._behaviours[kls], **{name: kwargs[name]})
+
+        # the behaviour property needs to be recomputed, so it needs to be reset.
+        # this is typically done with a custom deleter on the property, but the proto-plus parent class
+        # intercepts normal attribute deletion, which prevents the deleter of the descriptor to run normally.
+        # workarounds:
+        #   a) overwrite __delattr__ and handle deleting there (intercept the interception :S)
+        #   b) set the base attribute of the computed ``behaviour`` attribute to None manually (bad idea)
+        #   c) call the deleter of the property manually <- see below
+        type(self).behaviour.fdel(self)
+        async with self._behaviour_changed:
+            self._behaviour_changed.notify_all()
+
+    async def _initialize(self):
+        await self.implements(*self._required_behaviours)
+        return self
+
+    def __await__(self):
+        with warnings.catch_warnings():
+            # this might not be the first call to run() but we know this, so it's ok.
+            warnings.simplefilter('ignore', UserWarning)
+            self.protocol.run()
+
+        return self._init.__await__()
+
+    @asynccontextmanager
+    async def __with_running_protocol(self):
+        async with self.protocol:
+            client = await self
+            yield client
+
+    def __aenter__(self):
+        return self.__ctx.__aenter__()
+
+    def __aexit__(self, *exc_info):
+        return self.__ctx.__aexit__(*exc_info)
 
     @property
-    def services(self) -> ServiceMap:
-        return self._services
-
-    @services.setter
-    def services(self, service_list: ub.ServiceList):
-        ub.ServiceList.copy_from(self._services, service_list)
-        self._services.cache_clear()
+    def protocol(self) -> UbiiProtocol:
+        return self._protocol
 
     @property
-    def subscribe_regex(self):
-        return self._subscribe_regex
+    def behaviour(self) -> t.Mapping[str, t.Any]:
+        """
+        Returns a mapping of implemented functionalities from the required and optional behaviours.
+        Keys are the names that can be used to access the functionality on the client
+        """
+        if self._implemented is None:
+            self._implemented = {
+                field.name: getattr(b, field.name) for b in self._behaviours.values() for field in dataclasses.fields(b)
+            }
+        return self._implemented
 
-    @property
-    def subscribe_topic(self):
-        return self._subscribe_topic
+    @behaviour.deleter
+    def behaviour(self):
+        self._implemented = None
 
-    @property
-    def unsubscribe_regex(self):
-        return self._unsubscribe_regex
+    def does_implement(self, *behaviours: t.Type) -> bool:
+        """
+        Checks if all fields from the dataclasses passed as arguments are present in ``self.behaviour``
 
-    @property
-    def unsubscribe_topic(self):
-        return self._unsubscribe_topic
+        :param behaviours: dataclass types or instances
+        """
+        if not all(dataclasses.is_dataclass(b) for b in behaviours):
+            raise ValueError(f"behaviours needs to be a dataclass instance or type")
 
-    @property
-    def publish(self):
-        return self._publish
+        value = all(
+            self.behaviour[field.name]
+            for field in chain.from_iterable(dataclasses.fields(b) for b in behaviours)  # noqa
+        )
+        return value
+
+    async def implements(self, *behaviours: t.Type):
+        """
+        Wait until the client implements the behaviours
+
+        :param behaviours:
+        :type behaviours:
+        :return:
+        :rtype:
+        """
+        async with self._behaviour_changed:
+            await self._behaviour_changed.wait_for(partial(self.does_implement, *behaviours))
+
+    def __getattr__(self, item):
+        """
+        Try protobuf fields first, then try behavior fields
+        """
+        try:
+            return super().__getattr__(item)
+        except AttributeError:
+            if item in self.behaviour:
+                return self.behaviour[item]
+            else:
+                raise
+
+    def __str__(self):
+        formatted = super().__str__().strip()
+        formatted = re.sub(r'\n', ' | ', formatted)
+        return f"<{self.__class__.__name__}{' '+formatted if formatted else ''}>"
