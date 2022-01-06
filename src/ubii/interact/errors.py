@@ -1,9 +1,9 @@
 from __future__ import annotations
-from functools import lru_cache
 
+from functools import lru_cache
+from proto.marshal import Marshal
 from proto.marshal.rules.message import MessageRule
 
-from proto.marshal import Marshal
 import ubii.proto as ub
 
 __protobuf__ = ub.__protobuf__

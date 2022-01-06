@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import aiohttp
 import asyncio
 import logging
 import socket
@@ -8,9 +9,7 @@ from contextlib import asynccontextmanager
 from urllib.parse import urlparse
 from warnings import warn
 
-import aiohttp
 import ubii.proto as ub
-
 from .services import ServiceConnection
 from .topics import DataConnection
 
@@ -57,7 +56,7 @@ class AIOHttpConnection:
 
 class AIOHttpWebsocketConnection(AIOHttpConnection, DataConnection):
     def __anext__(self) -> t.Awaitable[ub.TopicData]:
-        return self._stream.__anext__()
+        return self._stream.__anext__()  # type: ignore
 
     def __init__(self, url, host_ip=local_ip):
         super().__init__(url, host_ip)
@@ -81,7 +80,7 @@ class AIOHttpWebsocketConnection(AIOHttpConnection, DataConnection):
         del self.ws
         log.info(f"Disconnected {self}")
 
-    async def _stream(self):
+    async def _stream(self) -> ub.TopicData:
         await self._ws_connected.wait()
         message: aiohttp.WSMessage
         async for message in self.ws:
@@ -139,9 +138,9 @@ class AIOHttpWebsocketConnection(AIOHttpConnection, DataConnection):
         self._client_id = None
 
     async def send(self, data: ub.TopicData, timeout=None):
-        await asyncio.wait_for([self._ws_connected.wait()], timeout=timeout)
+        await asyncio.wait_for(self._ws_connected.wait(), timeout=timeout)
         log.debug(f"Sending {data}")
-        await asyncio.wait([self._ws.send_bytes(ub.TopicData.serialize(data))], timeout=timeout)
+        await asyncio.wait_for(self._ws.send_bytes(ub.TopicData.serialize(data)), timeout=timeout)
 
 
 class AIOHttpRestConnection(AIOHttpConnection, ServiceConnection):

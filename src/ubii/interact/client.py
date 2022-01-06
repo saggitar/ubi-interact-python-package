@@ -2,22 +2,21 @@ from __future__ import annotations
 
 import asyncio
 import dataclasses
-import re
 import typing as t
 import warnings
 from contextlib import asynccontextmanager
 from functools import partial
 from itertools import chain
+from warnings import warn
 
 import ubii.proto as ub
+from ._typing import SimpleCoroutine
+from .logging import ProtoFormatMixin, debug
 from .protocol import UbiiProtocol
 from .services import DefaultServiceMap
 from .topics import Topic
 
-import codestare.async_utils as util
-
-T = t.TypeVar('T')
-SimpleCoroutine = t.Coroutine[t.Any, t.Any, T]
+__protobuf__ = ub.__protobuf__
 
 
 @dataclasses.dataclass
@@ -25,10 +24,15 @@ class BasicBehaviour:
     """
     Behavior of the client that needs to be injected
     """
-    subscribe_regex: t.Callable[[t.Tuple[str, ...]], SimpleCoroutine[t.Tuple[Topic, ...]]] | None = None
-    subscribe_topic: t.Callable[[t.Tuple[str, ...]], SimpleCoroutine[t.Tuple[Topic, ...]]] | None = None
-    unsubscribe_regex: t.Callable[[t.Tuple[str, ...]], SimpleCoroutine[bool]] | None = None
-    unsubscribe_topic: t.Callable[[t.Tuple[str, ...]], SimpleCoroutine[bool]] | None = None
+    _subscribe_type = t.Callable[[t.Tuple[str, ...]], SimpleCoroutine[t.Tuple[Topic, ...]]]
+    _unsubscribe_type = t.Callable[[t.Tuple[str, ...]], SimpleCoroutine[bool]]
+
+    register: t.Any | None = None
+    deregister: t.Any | None = None
+    subscribe_regex: _subscribe_type | None = None
+    subscribe_topic: _subscribe_type | None = None
+    unsubscribe_regex: _unsubscribe_type | None = None
+    unsubscribe_topic: _unsubscribe_type | None = None
     publish: t.Callable[[t.Tuple[ub.TopicDataRecord, ...]], SimpleCoroutine[None]] | None = None
     services: DefaultServiceMap | None = None
 
@@ -42,7 +46,14 @@ class DeviceManager:
     deregister_device: t.Callable[[ub.Device], SimpleCoroutine[None]] | None = None
 
 
-class UbiiClient(ub.Client, t.Awaitable['UbiiClient'], metaclass=ub.ProtoMeta):
+@dataclasses.dataclass
+class ProcessingModuleManager:
+    """
+    Behavior to update and run processing modules
+    """
+
+
+class UbiiClient(ub.Client, t.Awaitable['UbiiClient'], ProtoFormatMixin, metaclass=ub.ProtoMeta):
     """
     A Client is a wrapper around a ``Client`` proto message.
     It can perform the following additional features:
@@ -79,6 +90,7 @@ class UbiiClient(ub.Client, t.Awaitable['UbiiClient'], metaclass=ub.ProtoMeta):
                  optional_behaviours: t.Tuple[t.Type] = (DeviceManager,),
                  **kwargs):
         super().__init__(**kwargs)
+        self.name: str
         if not self.name:
             self.name = f"{self.__class__.__name__}"
 
@@ -94,7 +106,7 @@ class UbiiClient(ub.Client, t.Awaitable['UbiiClient'], metaclass=ub.ProtoMeta):
         self.__ctx: t.AsyncContextManager = self.__with_running_protocol()
         self._init = self.protocol.create_task(self._initialize())
 
-    async def implement(self, behaviour: t.Any | None = None, **kwargs):
+    async def implement(self, behaviour: t.Mapping | None = None, **kwargs):
         """
         Set the implementation of one of the clients key behaviours, or update it.
         Searches the dataclass or keyword in the supplied behaviours and replaces the field value[s] from
@@ -114,7 +126,7 @@ class UbiiClient(ub.Client, t.Awaitable['UbiiClient'], metaclass=ub.ProtoMeta):
             raise ValueError(f"no behaviours from {self} matched argument {behaviour}")
 
         for kls, instance in behaviours_matching_type.items():
-            self._behaviours[kls] = dataclasses.replace(instance, **behaviour)
+            self._behaviours[kls] = dataclasses.replace(instance, **(behaviour or {}))
 
         matching_kwarg_types = {
             name: [b for b in self._behaviours if name in [field.name for field in dataclasses.fields(b)]]
@@ -136,7 +148,7 @@ class UbiiClient(ub.Client, t.Awaitable['UbiiClient'], metaclass=ub.ProtoMeta):
         #   a) overwrite __delattr__ and handle deleting there (intercept the interception :S)
         #   b) set the base attribute of the computed ``behaviour`` attribute to None manually (bad idea)
         #   c) call the deleter of the property manually <- see below
-        type(self).behaviour.fdel(self)
+        type(self).behaviour.fdel(self)  # type: ignore
         async with self._behaviour_changed:
             self._behaviour_changed.notify_all()
 
@@ -211,19 +223,31 @@ class UbiiClient(ub.Client, t.Awaitable['UbiiClient'], metaclass=ub.ProtoMeta):
         async with self._behaviour_changed:
             await self._behaviour_changed.wait_for(partial(self.does_implement, *behaviours))
 
+    def _get_debug_info(self, missing_key):
+        from ._util import similar
+        matches = similar(
+            choices=map(lambda f: f.name, chain.from_iterable(dataclasses.fields(b) for b in self._behaviours)),
+            item=missing_key
+        )
+
+        info = f"No attribute {missing_key} found in {self.__class__.__name__}."
+        if matches:
+            info += f" Best match[es] in behaviour fields: {', '.join(matches)}"
+            warn(info)
+        return info
+
     def __getattr__(self, item):
         """
         Try protobuf fields first, then try behavior fields
         """
         try:
             return super().__getattr__(item)
-        except AttributeError:
+        except AttributeError as e:
             if item in self.behaviour:
                 return self.behaviour[item]
             else:
-                raise
-
-    def __str__(self):
-        formatted = super().__str__().strip()
-        formatted = re.sub(r'\n', ' | ', formatted)
-        return f"<{self.__class__.__name__}{' '+formatted if formatted else ''}>"
+                info = self._get_debug_info(missing_key=item)
+                if debug():
+                    raise AttributeError(info) from e
+                else:
+                    raise

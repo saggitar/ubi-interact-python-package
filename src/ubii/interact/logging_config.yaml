@@ -29,8 +29,10 @@ handlers:
 loggers:
   ubii.interact:
     propagate: yes
-  ubii.interact.client.websocket.sock:
+  ubii.interact.connections.sock:
     propagate: no
     handlers: [websocket]
+  aiohttp.client:
+    propagate: yes
 root:
   handlers: [console, log]

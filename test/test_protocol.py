@@ -5,8 +5,8 @@ from contextlib import suppress
 
 import pytest
 
-from ubii.interact.protocol import UbiiProtocol, RunProtocol
-from ubii.interact._default import UbiiStates, AiohttpProtocol
+from ubii.interact.protocol import UbiiProtocol, RunProtocol, UbiiStates
+from ubii.interact.default import DefaultProtocol
 
 pytestmark = pytest.mark.asyncio
 log = logging.getLogger(__name__)
@@ -70,16 +70,16 @@ async def protocol(request):
     await asyncio.sleep(1)
 
 
-@pytest.mark.parametrize('protocol', [AiohttpProtocol], indirect=True)
-async def test_default_protocol(protocol: AiohttpProtocol):
+@pytest.mark.parametrize('protocol', [DefaultProtocol], indirect=True)
+async def test_default_protocol(protocol: DefaultProtocol):
     await asyncio.wait_for(protocol.state.get(predicate=lambda: protocol.peek_state() == UbiiStates.CONNECTED),
                            timeout=5)
     client = protocol.client
     assert client.id
 
 
-@pytest.mark.parametrize('protocol', [AiohttpProtocol], indirect=True)
-async def test_default_protocol_stop(protocol: AiohttpProtocol):
+@pytest.mark.parametrize('protocol', [DefaultProtocol], indirect=True)
+async def test_default_protocol_stop(protocol: DefaultProtocol):
     await asyncio.wait_for(protocol.state.get(predicate=lambda: protocol.peek_state() == UbiiStates.CONNECTED),
                            timeout=5)
     client = protocol.client

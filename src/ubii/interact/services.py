@@ -1,12 +1,18 @@
 from __future__ import annotations
+
 import abc
 import copy
+import logging
 import typing as t
 from functools import lru_cache
+from warnings import warn
 
 import ubii.proto as ub
+from .logging import ProtoFormatMixin, debug
 
 __protobuf__ = ub.__protobuf__
+
+log = logging.getLogger(__name__)
 
 
 class ServiceConnection(abc.ABC):
@@ -34,24 +40,24 @@ class ServiceCall(ub.Service, metaclass=ub.ProtoMeta):
     Optional parameter decorator: a decorator to applied to the __call__ method, e.g. for error handling.
     Can also be adjusted by setting the call_decorator attribute.
     """
-    CallDecorator = t.Callable[[t.Callable], t.Callable]
 
-    def __init__(self, *, transport: ServiceConnection, decorator: CallDecorator | None = None, **kwargs):
-        super().__init__(**kwargs)
+    def __init__(self, mapping=None, *, transport: ServiceConnection, **kwargs):
+        """
+
+        :param transport:
+        :type transport:
+        :param decorator:
+        :type decorator:
+        :param kwargs:
+        :type kwargs:
+        """
+        # we allow initialisation from ub.Service wrappers
+        if isinstance(mapping, ub.Service):
+            mapping = ub.Service.pb(mapping)
+
+        super().__init__(mapping=mapping, **kwargs)
         self._transport = transport
-        self._call_decorator = decorator
         self._orig_call = type(self).__call__
-        if self._call_decorator is not None:
-            type(self).__call__ = self._call_decorator(self._orig_call)
-
-    @property
-    def call_decorator(self):
-        return self._call_decorator
-
-    @call_decorator.setter
-    def call_decorator(self, decorator: CallDecorator):
-        self._call_decorator = decorator
-        type(self).__call__ = self._call_decorator(self._orig_call)
 
     async def __call__(self, **payload) -> ub.ServiceReply:
         """
@@ -65,7 +71,9 @@ class ServiceCall(ub.Service, metaclass=ub.ProtoMeta):
         :return: a coroutine that can be awaited to get the ServiceReply
         """
         request = ub.ServiceRequest(topic=self.topic, **payload)
+        log.debug(f"sending service request:\n{request}")
         reply = await self._transport.send(request)
+        log.debug(f"received service reply:\n{reply}")
         if reply.error:
             raise reply.error
         else:
@@ -80,7 +88,8 @@ class ServiceCallFactory(t.Protocol[T_Service_Cov]):
     def __call__(self, *, mapping: ub.Service) -> T_Service_Cov: ...
 
 
-class ServiceMap(ub.ServiceList, t.Mapping[str, T_Service], t.Generic[T_Service], metaclass=ub.ProtoMeta):
+class ServiceMap(ub.ServiceList, t.Mapping[str, T_Service], t.Generic[T_Service], ProtoFormatMixin,
+                 metaclass=ub.ProtoMeta):
     """
     A ServiceMap is a wrapper around a ServiceList proto message which provides a Mapping for ServiceCalls by topic.
 
@@ -92,7 +101,9 @@ class ServiceMap(ub.ServiceList, t.Mapping[str, T_Service], t.Generic[T_Service]
     it will be called with the ``Service`` message as only argument). The results are cached.
 
     If you change the protobuf contents of a ServiceMap object after creation (e.g. when you get a new ServiceList from
-    the master node), make sure to invalidate the cache by calling ``cache_clear``.
+    the master node), make sure to invalidate the cache by calling ``cache_clear``. This is automatically done
+    if you assign to the ``elements`` attribute directly, but if you e.g. copy the contents of a ServiceList message
+    into a ServiceMap by means of ``ServiceList.copy_from``, you need to invalidate the cache manually.
 
     Until the message format changes, use this adapter.
     """
@@ -110,14 +121,20 @@ class ServiceMap(ub.ServiceList, t.Mapping[str, T_Service], t.Generic[T_Service]
             setattr(result, k, copy.deepcopy(v, memo))
         return result
 
-    def __init__(self: 'ServiceMap[T_Service]', *,
+    def __init__(self: 'ServiceMap[T_Service]',
+                 mapping=None,
+                 *,
                  service_call_factory: ServiceCallFactory[T_Service],
                  **kwargs):
-        super().__init__(**kwargs)
+        # we allow initialisation from ub.ServiceList Wrappers
+        if isinstance(mapping, ub.ServiceList):
+            mapping = ub.ServiceList.pb(mapping)
+
+        super().__init__(mapping=mapping, **kwargs)
         self._factory = service_call_factory
 
         # apply the lru cache wrapper per instance since the ServiceMap itself is not hashable
-        self._make_service_call = lru_cache(maxsize=128, typed=False)(self._make_service_call)
+        self._make_service_call = lru_cache(maxsize=128, typed=False)(self._make_service_call)  # type: ignore
 
     def _make_service_call(self: 'ServiceMap[T_Service]', topic) -> T_Service:
         found = [service for service in self.elements if service.topic == topic]
@@ -130,7 +147,13 @@ class ServiceMap(ub.ServiceList, t.Mapping[str, T_Service], t.Generic[T_Service]
         """
         Clear cached service calls (use after changing ``elements``)
         """
-        self._make_service_call.cache_clear()  # noqa  Pycharm is confused because of generic return type
+        self._make_service_call.cache_clear()
+
+    def __setattr__(self, key, value):
+        if key == 'elements':
+            self.cache_clear()
+
+        super().__setattr__(key, value)
 
     def __getitem__(self: 'ServiceMap[T_Service]', topic: t.Union[ub.ProtoField, str]) -> T_Service:
         return self._make_service_call(topic)
@@ -142,7 +165,7 @@ class ServiceMap(ub.ServiceList, t.Mapping[str, T_Service], t.Generic[T_Service]
         return (service.data for service in self.elements)
 
 
-class DefaultServiceMap(ServiceMap):
+class DefaultServiceMap(ServiceMap[T_Service]):
     """
     Automatically creates Services for missing topics (like a defaultdict)
     Takes and optional mapping str -> str of names for topics, which can be accessed
@@ -155,12 +178,8 @@ class DefaultServiceMap(ServiceMap):
         > ServiceCall(topic='services/bar' ...)
     """
 
-    def __init__(self,
-                 *,
-                 service_call_factory: ServiceCallFactory[T_Service],
-                 defaults: t.MutableMapping[str, str] | None = None,
-                 **kwargs):
-        super().__init__(service_call_factory=service_call_factory, **kwargs)
+    def __init__(self, *args, defaults: t.MutableMapping[str, str] | None = None, **kwargs):
+        super().__init__(*args, **kwargs)
         self._defaults = defaults or {}
 
     @property
@@ -187,4 +206,22 @@ class DefaultServiceMap(ServiceMap):
         if item in self._defaults:
             return self[self._defaults[item]]
 
-        return super().__getattr__(item)
+        try:
+            return super().__getattr__(item)
+        except AttributeError as e:
+            # we want to give some additonal info because maybe
+            info = self._get_debug_info(missing_key=item)
+            if debug():
+                raise AttributeError(info) from e
+            else:
+                raise
+
+    def _get_debug_info(self, missing_key):
+        from ._util import similar
+        matches = similar(self._defaults, missing_key)
+
+        info = f"No attribute {missing_key} found in {self.__class__.__name__}."
+        if matches:
+            info += f" Best match[es] in default topics: {', '.join(matches)}"
+            warn(info)
+        return info

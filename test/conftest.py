@@ -4,13 +4,24 @@ import logging
 import pytest
 
 import ubii.interact
+import ubii.interact.logging
+import ubii.proto as ub
 
 __verbosity__ = None
+
+from ubii.interact._connect import connect
+
+ALWAYS_VERBOSE = True
 
 
 def pytest_configure(config):
     global __verbosity__
-    __verbosity__ = logging.INFO - 10 * config.getoption('verbose')
+    global ALWAYS_VERBOSE
+    __verbosity__ = (
+        logging.INFO - 10 * config.getoption('verbose')
+        if not ALWAYS_VERBOSE else
+        logging.DEBUG
+    )
 
     from ubii.interact.logging import set_logging
     set_logging(verbosity=__verbosity__)
@@ -32,10 +43,10 @@ def service_url_env():
 
 @pytest.fixture(autouse=True, scope='session')
 def enable_debug():
-    previous = ubii.interact.debug()
-    ubii.interact.debug(enabled=True)
+    previous = ubii.interact.logging.debug()
+    ubii.interact.logging.debug(enabled=True)
     yield
-    ubii.interact.debug(enabled=previous)
+    ubii.interact.logging.debug(enabled=previous)
 
 
 @pytest.fixture(scope='session')
@@ -43,3 +54,25 @@ def event_loop():
     loop = asyncio.get_event_loop()
     yield loop
     loop.close()
+
+
+@pytest.fixture(scope='class')
+async def client() -> ub.Client:
+    async with connect() as client:
+        yield client
+
+
+@pytest.fixture(scope='class')
+async def start_session(client):
+    _started = {}
+
+    async def _start(session):
+        if session.id:
+            raise ValueError(f"Session {session} already started.")
+
+        nonlocal _started
+        response = await client.services.session_runtime_start(session=session)
+        await asyncio.sleep(5)  # session needs to start up
+        _started[response.session.id] = response.session
+
+    yield _start

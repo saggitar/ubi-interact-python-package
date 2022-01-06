@@ -69,33 +69,13 @@ class Topic(t.Generic[_Buffer, _Token], abc.ABC):
     @abc.abstractmethod
     def buffer(self: Topic[_Buffer, _Token]) -> util.accessor[_Buffer]: ...
 
-    class default_token_factory:
-        """ creates increasing integers. wow."""
-        __last_token__ = -1
-
-        def __call__(self):
-            self.__last_token__ += 1
-            return self.__last_token__
-
     async def __anext__(self) -> _Buffer:
         return await self.buffer.get()
 
-    @t.overload
-    def __init__(self: Topic[_Buffer, int], *,
-                 token_factory: None = ...,
-                 task_manager: AsyncExitStack | None = ...) -> None:
-        ...
-
-    @t.overload
     def __init__(self: Topic[_Buffer, _Token], *,
-                 token_factory: t.Callable[[], _Token] = ...,
-                 task_manager: AsyncExitStack | None = ...) -> None:
-        ...
-
-    def __init__(self, *,
-                 token_factory: t.Callable[[], _Token] | None = None,
+                 token_factory: t.Callable[[], _Token],
                  task_manager: AsyncExitStack | None = None) -> None:
-        token_factory = token_factory or self.default_token_factory()
+        token_factory = token_factory
         self._next_token = lambda: token_factory()
         self._exit_Stack = task_manager or AsyncExitStack()
         self._callback_tasks: t.Dict[_Token, asyncio.Task] = {}
@@ -169,16 +149,25 @@ class Topic(t.Generic[_Buffer, _Token], abc.ABC):
 
 
 class DefaultTopic(Topic[ub.TopicDataRecord, int]):
-    def __init__(self: Topic[ub.TopicDataRecord, int], *, task_manager: AsyncExitStack | None = None) -> None:
-        super().__init__(token_factory=None, task_manager=task_manager)
+    class default_token_factory:
+        """ creates increasing integers. wow."""
+        __last_token__ = -1
+
+        def __call__(self):
+            self.__last_token__ += 1
+            return self.__last_token__
+
+    def __init__(self, *, task_manager: AsyncExitStack | None = None) -> None:
+        super().__init__(token_factory=self.default_token_factory(), task_manager=task_manager)
 
     @cached_property
     def buffer(self) -> util.accessor[ub.TopicDataRecord]:
         return util.accessor[ub.TopicDataRecord]()
 
 
-class MatchMixin:
-    def match_name(self: t.Mapping[str, _T_co], name) -> t.Tuple[_T_co, ...]:
+class MatchMapping(t.Mapping[str, _T_co], abc.ABC):
+
+    def match_name(self, name) -> t.Tuple[_T_co, ...]:
         """
         Returns all values where ``name`` matches the keys of contained values interpreted as a glob pattern.
         See documentation of ``fnmatch`` for more info.
@@ -194,7 +183,7 @@ class MatchMixin:
         """
         return tuple(val for pattern, val in self.items() if fnmatch(name=name, pat=pattern))
 
-    def match_pattern(self: t.Mapping[str, _T_co], pattern) -> t.Tuple[_T_co, ...]:
+    def match_pattern(self, pattern) -> t.Tuple[_T_co, ...]:
         """
         Returns all values where the keys of contained values match the pattern (some glob pattern).
         See documentation of ``fnmatch`` for more info.
@@ -214,10 +203,10 @@ class MatchMixin:
 _Topic_co = t.TypeVar('_Topic_co', bound=Topic, covariant=True)
 
 
-class TopicStore(t.Mapping[str, _Topic_co], MatchMixin, t.Generic[_Topic_co]):
+class TopicStore(MatchMapping, t.Generic[_Topic_co]):
     def __init__(self: TopicStore[_Topic_co], default_factory: t.Callable[[], _Topic_co]):
         self._default_factory = default_factory
-        self.data = {}
+        self.data: t.Dict[str, _Topic_co] = {}
 
     def __getitem__(self, key: str) -> _Topic_co:
         return self.data.setdefault(key, self._default_factory())
@@ -225,7 +214,7 @@ class TopicStore(t.Mapping[str, _Topic_co], MatchMixin, t.Generic[_Topic_co]):
     def __len__(self) -> int:
         return len(self.data)
 
-    def __iter__(self) -> t.Iterator[_Topic_co]:
+    def __iter__(self) -> t.Iterator[str]:
         return iter(self.data)
 
     def __contains__(self, item):
