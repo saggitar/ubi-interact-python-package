@@ -39,8 +39,8 @@ class ErrorRule(MessageRule):
         title = value.title or ''
         if title.startswith('SessionRuntimeStopService'):
             return SessionRuntimeStopServiceError.rule().to_python(value, absent=absent)
-
-        return super().to_python(value, absent=absent)
+        else:
+            return UbiiError.rule().to_python(value, absent=absent)
 
     def to_proto(self, value):
         return super().to_proto(value)

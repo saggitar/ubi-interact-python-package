@@ -1,15 +1,14 @@
 import asyncio
 import logging
-
 import pytest
 
 import ubii.interact
 import ubii.interact.logging
-import ubii.proto as ub
 
 __verbosity__ = None
 
-from ubii.interact._connect import connect
+from ubii.interact._default import DefaultProtocol
+from ubii.interact.client import DeviceManager, UbiiClient
 
 ALWAYS_VERBOSE = True
 
@@ -26,8 +25,10 @@ def pytest_configure(config):
     from ubii.interact.logging import set_logging
     set_logging(verbosity=__verbosity__)
 
+
     import ubii.proto
     assert ubii.proto.__proto_package__ is not None, "No proto package set, aborting test setup."
+
 
 
 @pytest.fixture(scope='session', autouse=True)
@@ -49,17 +50,32 @@ def enable_debug():
     ubii.interact.logging.debug(enabled=previous)
 
 
-@pytest.fixture(scope='session')
+@pytest.fixture(scope='session', autouse=True)
 def event_loop():
     loop = asyncio.get_event_loop()
+    asyncio.set_event_loop(loop)
     yield loop
     loop.close()
 
 
 @pytest.fixture(scope='class')
-async def client() -> ub.Client:
-    async with connect() as client:
-        yield client
+async def client() -> UbiiClient:
+    """
+    We need more control over the client, so don't use the default client fixture
+    """
+    protocol = DefaultProtocol()
+    client = UbiiClient(protocol=protocol)
+    protocol.client = client
+    yield client
+    client = await client
+    await client.protocol.stop()
+
+
+@pytest.fixture
+async def register_device(client):
+    client = await client
+    await client.implements(DeviceManager)
+    yield client.register_device
 
 
 @pytest.fixture(scope='class')
@@ -67,11 +83,12 @@ async def start_session(client):
     _started = {}
 
     async def _start(session):
+        _client = await client
         if session.id:
             raise ValueError(f"Session {session} already started.")
 
         nonlocal _started
-        response = await client.services.session_runtime_start(session=session)
+        response = await _client.services.session_runtime_start(session=session)
         await asyncio.sleep(5)  # session needs to start up
         _started[response.session.id] = response.session
 

@@ -1,8 +1,9 @@
 from __future__ import annotations
 
+from functools import partial, cached_property
+
 import abc
 import asyncio
-import enum
 import logging
 import types
 import typing as t
@@ -13,7 +14,7 @@ import codestare.async_utils as util
 import ubii.interact as ub
 from . import topics, constants, client
 from ._typing import Decorator, Descriptor, T_EnumFlag
-from ._util import EnumMatchMapping, register_for_decorator, decorator_property
+from ._util import register_for_decorator, decorator_property, EnumMatcher
 
 Callback = t.Callable[..., t.Coroutine[t.Any, t.Any, None]]
 _StateChange = t.Tuple[T_EnumFlag, T_EnumFlag]
@@ -24,7 +25,7 @@ class UbiiProtocol(t.Generic[T_EnumFlag], util.TaskNursery, abc.ABC):
     @classmethod
     @property
     @abc.abstractmethod
-    def state_changes(cls) -> EnumMatchMapping[T_EnumFlag, Callback | Descriptor[Callback]]:
+    def state_changes(cls) -> t.Mapping[t.Tuple[T_EnumFlag | None, ...], Callback | Descriptor[Callback]]:
         ...
 
     @classmethod
@@ -39,10 +40,15 @@ class UbiiProtocol(t.Generic[T_EnumFlag], util.TaskNursery, abc.ABC):
     def end_state(cls) -> T_EnumFlag:
         ...
 
+    @cached_property
+    def context(self):
+        return types.SimpleNamespace()
+
     def __init__(self) -> None:
         super().__init__()
         self._state = self.starting_state
         self._run = None
+        self._get_state_change_callback = partial(EnumMatcher.get_matching_value, mapping=self.state_changes)
 
     def _get_state(self) -> T_EnumFlag:
         return self._state
@@ -53,7 +59,7 @@ class UbiiProtocol(t.Generic[T_EnumFlag], util.TaskNursery, abc.ABC):
             return
 
         # it is allowed to change the state if a matching callback is defined
-        if not self.state_changes.get((current, new_state), None):
+        if not self._get_state_change_callback((current, new_state), None):
             raise ValueError(f"Can't change state {current!r} -> {new_state!r}")
 
         self._state = new_state
@@ -119,6 +125,7 @@ class UbiiProtocol(t.Generic[T_EnumFlag], util.TaskNursery, abc.ABC):
 
 
 class RunProtocol(util.wrapper.CoroutineWrapper):
+
     def __init__(self, protocol: UbiiProtocol):
         self._protocol = protocol
         super().__init__(coroutine=self._run())
@@ -130,10 +137,11 @@ class RunProtocol(util.wrapper.CoroutineWrapper):
         previous = None
         end_state = self._protocol.end_state
         current = self._protocol.starting_state
-        context = types.SimpleNamespace()
+        context = self._protocol.context
+        get_state = partial(EnumMatcher.get_matching_value, mapping=self._protocol.state_changes)
 
         while previous != end_state:
-            callback = self._protocol.state_changes.get((previous, current), self._no_callback_found)
+            callback = get_state((previous, current), self._no_callback_found)
             context.state_change = (previous, current)
             if hasattr(callback, '__get__'):
                 # it's a descriptor
@@ -255,6 +263,7 @@ class StandardProtocol(UbiiProtocol[T_EnumFlag], t.Generic[T_EnumFlag], abc.ABC)
         Register decorators
         """
         descriptor: decorator_property
+        owner: t.Type[StandardProtocol]
         for (owner, name), descriptor in cls.__registered_for_decorators__.items():
             assert issubclass(cls, owner)
             if descriptor.decorators != cls.__decorators__:

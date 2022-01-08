@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import typing as t
 
-from ubii.interact import client, constants, protocol, default
+from ubii.interact import client, constants, protocol, _default
 
 T_Client = t.TypeVar('T_Client', bound=client.UbiiClient)
 
@@ -19,18 +19,22 @@ class connect(t.Awaitable[client.UbiiClient], t.AsyncContextManager):
                  url=None,
                  config: constants.UbiiConfig = constants.GLOBAL_CONFIG,
                  client_type: t.Type[client.UbiiClient] = client.UbiiClient,
-                 protocol_type: t.Type[protocol.UbiiProtocol] = default.DefaultProtocol):
+                 protocol_type: t.Type[protocol.UbiiProtocol] = _default.DefaultProtocol):
         if url is not None:
             config.DEFAULT_SERVICE_URL = url
         self.config = config
-        self.client = self.client_factories.get((client_type, protocol_type))(
+        factory = self.client_factories.get((client_type, protocol_type))
+        if not factory:
+            raise ValueError(f"No factory found for {(client_type, protocol_type)}")
+
+        self.client = factory(
             self,
             client_type=client_type,
             protocol_type=protocol_type
         )
 
     def default_create(self, *, client_type, protocol_type):
-        if client_type == client.UbiiClient and protocol_type == default.DefaultProtocol:
+        if client_type == client.UbiiClient and protocol_type == _default.DefaultProtocol:
             _protocol = protocol_type(config=self.config)
             _client = client_type(protocol=_protocol)
             _protocol.client = _client
@@ -49,5 +53,5 @@ class connect(t.Awaitable[client.UbiiClient], t.AsyncContextManager):
         return self.client.__aexit__(*exc_infos)
 
     client_factories: t.Dict[t.Tuple[t.Type[client.UbiiClient], t.Type[protocol.UbiiProtocol]], ClientFactory] = {
-        (client.UbiiClient, default.DefaultProtocol): default_create
+        (client.UbiiClient, _default.DefaultProtocol): default_create
     }

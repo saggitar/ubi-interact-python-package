@@ -98,7 +98,7 @@ async def test_task_manager(make_connection, container, items):
     b_received = []
 
     # register tasks with task manager, tasks for topic 'a' should be automatically unregistered after async with block
-    async with a.task_manager:
+    async with a.exit_stack:
         a.register_callback(a_received.append)
         b.register_callback(b_received.append)
         await asyncio.create_task(
@@ -113,15 +113,15 @@ async def test_task_manager(make_connection, container, items):
     assert [record.int32 for record in b_received] == list(filter(lambda x: x % 2, range(items)))
 
     # register again ...
-    async with a.task_manager:
+    async with a.exit_stack:
         a.register_callback(a_received.append)
         # ... but change task_manager
-        a.task_manager = b.task_manager
+        a.exit_stack = b.exit_stack
 
     assert b._callback_tasks  # should not be cancelled
     assert a._callback_tasks  # should not be cancelled since task_manager was changed before block was closed
 
-    await b.task_manager.aclose()  # should cancel all tasks (also for topic 'a')
+    await b.exit_stack.aclose()  # should cancel all tasks (also for topic 'a')
     assert not a._callback_tasks
     assert not b._callback_tasks
 

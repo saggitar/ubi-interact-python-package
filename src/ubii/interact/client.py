@@ -11,6 +11,7 @@ from warnings import warn
 
 import ubii.proto as ub
 from ._typing import SimpleCoroutine
+from ._util import ProtoRegistry
 from .logging import ProtoFormatMixin, debug
 from .protocol import UbiiProtocol
 from .services import DefaultServiceMap
@@ -51,9 +52,10 @@ class ProcessingModuleManager:
     """
     Behavior to update and run processing modules
     """
+    processing_module_manager: bool = False
 
 
-class UbiiClient(ub.Client, t.Awaitable['UbiiClient'], ProtoFormatMixin, metaclass=ub.ProtoMeta):
+class UbiiClient(ub.Client, t.Awaitable['UbiiClient'], ProtoFormatMixin, metaclass=ProtoRegistry):
     """
     A Client is a wrapper around a ``Client`` proto message.
     It can perform the following additional features:
@@ -84,10 +86,13 @@ class UbiiClient(ub.Client, t.Awaitable['UbiiClient'], ProtoFormatMixin, metacla
 
     """
 
+    # key for registry
+    __unique_key_attr__ = 'id'
+
     def __init__(self, *,
                  protocol: UbiiProtocol,
-                 required_behaviours: t.Tuple[t.Type] = (BasicBehaviour,),
-                 optional_behaviours: t.Tuple[t.Type] = (DeviceManager,),
+                 required_behaviours: t.Tuple[t.Type, ...] = (BasicBehaviour,),
+                 optional_behaviours: t.Tuple[t.Type, ...] = (DeviceManager, ProcessingModuleManager),
                  **kwargs):
         super().__init__(**kwargs)
         self.name: str
@@ -100,11 +105,15 @@ class UbiiClient(ub.Client, t.Awaitable['UbiiClient'], ProtoFormatMixin, metacla
 
         self._required_behaviours = required_behaviours or ()
 
-        self._behaviour_changed = asyncio.Condition()
+        self._change_specs = asyncio.Condition()
         self._protocol = protocol
         self._implemented = None
         self.__ctx: t.AsyncContextManager = self.__with_running_protocol()
         self._init = self.protocol.create_task(self._initialize())
+
+    @property
+    def change_specs(self):
+        return self._change_specs
 
     async def implement(self, behaviour: t.Mapping | None = None, **kwargs):
         """
@@ -149,8 +158,8 @@ class UbiiClient(ub.Client, t.Awaitable['UbiiClient'], ProtoFormatMixin, metacla
         #   b) set the base attribute of the computed ``behaviour`` attribute to None manually (bad idea)
         #   c) call the deleter of the property manually <- see below
         type(self).behaviour.fdel(self)  # type: ignore
-        async with self._behaviour_changed:
-            self._behaviour_changed.notify_all()
+        async with self._change_specs:
+            self._change_specs.notify_all()
 
     async def _initialize(self):
         await self.implements(*self._required_behaviours)
@@ -196,22 +205,20 @@ class UbiiClient(ub.Client, t.Awaitable['UbiiClient'], ProtoFormatMixin, metacla
     def behaviour(self):
         self._implemented = None
 
-    def does_implement(self, *behaviours: t.Type) -> bool:
+    def does_implement(self, *behaviours: t.Type | str) -> bool:
         """
         Checks if all fields from the dataclasses passed as arguments are present in ``self.behaviour``
 
         :param behaviours: dataclass types or instances
         """
-        if not all(dataclasses.is_dataclass(b) for b in behaviours):
-            raise ValueError(f"behaviours needs to be a dataclass instance or type")
-
-        value = all(
-            self.behaviour[field.name]
-            for field in chain.from_iterable(dataclasses.fields(b) for b in behaviours)  # noqa
+        fields = chain.from_iterable(
+            dataclasses.fields(b) for b in behaviours if dataclasses.is_dataclass(b)  # noqa
         )
-        return value
+        attributes = [f.name for f in fields] + [b for b in behaviours if isinstance(b, str)]
+        exists = [hasattr(self, attr) for attr in attributes]
+        return all(exists)
 
-    async def implements(self, *behaviours: t.Type):
+    async def implements(self, *behaviours: t.Type | str):
         """
         Wait until the client implements the behaviours
 
@@ -220,8 +227,8 @@ class UbiiClient(ub.Client, t.Awaitable['UbiiClient'], ProtoFormatMixin, metacla
         :return:
         :rtype:
         """
-        async with self._behaviour_changed:
-            await self._behaviour_changed.wait_for(partial(self.does_implement, *behaviours))
+        async with self._change_specs:
+            await self._change_specs.wait_for(partial(self.does_implement, *behaviours))
 
     def _get_debug_info(self, missing_key):
         from ._util import similar
@@ -244,7 +251,11 @@ class UbiiClient(ub.Client, t.Awaitable['UbiiClient'], ProtoFormatMixin, metacla
             return super().__getattr__(item)
         except AttributeError as e:
             if item in self.behaviour:
-                return self.behaviour[item]
+                value = self.behaviour[item]
+                if value is None:
+                    raise AttributeError(f"Attribute {item} not implemented in {self}")
+                else:
+                    return value
             else:
                 info = self._get_debug_info(missing_key=item)
                 if debug():

@@ -8,6 +8,7 @@ from functools import lru_cache
 from warnings import warn
 
 import ubii.proto as ub
+from ._util import register_for_decorator, decorator_property
 from .logging import ProtoFormatMixin, debug
 
 __protobuf__ = ub.__protobuf__
@@ -40,7 +41,6 @@ class ServiceCall(ub.Service, metaclass=ub.ProtoMeta):
     Optional parameter decorator: a decorator to applied to the __call__ method, e.g. for error handling.
     Can also be adjusted by setting the call_decorator attribute.
     """
-
     def __init__(self, mapping=None, *, transport: ServiceConnection, **kwargs):
         """
 
@@ -59,6 +59,7 @@ class ServiceCall(ub.Service, metaclass=ub.ProtoMeta):
         self._transport = transport
         self._orig_call = type(self).__call__
 
+    @register_for_decorator
     async def __call__(self, **payload) -> ub.ServiceReply:
         """
         async send the ServiceRequest defined by the ```request`` arguments and the ServiceCall's ```topic``
@@ -79,13 +80,16 @@ class ServiceCall(ub.Service, metaclass=ub.ProtoMeta):
         else:
             return reply
 
+    def register_decorator(self, decorator):
+        type(self).__call__.register_decorator(owner=type(self), decorator=decorator)
+
 
 T_Service = t.TypeVar('T_Service', bound=ServiceCall)
 T_Service_Cov = t.TypeVar('T_Service_Cov', bound=ServiceCall, covariant=True)
 
 
 class ServiceCallFactory(t.Protocol[T_Service_Cov]):
-    def __call__(self, *, mapping: ub.Service) -> T_Service_Cov: ...
+    def __call__(self, mapping: ub.Service) -> T_Service_Cov: ...
 
 
 class ServiceMap(ub.ServiceList, t.Mapping[str, T_Service], t.Generic[T_Service], ProtoFormatMixin,
@@ -121,7 +125,7 @@ class ServiceMap(ub.ServiceList, t.Mapping[str, T_Service], t.Generic[T_Service]
             setattr(result, k, copy.deepcopy(v, memo))
         return result
 
-    def __init__(self: 'ServiceMap[T_Service]',
+    def __init__(self: ServiceMap[T_Service],
                  mapping=None,
                  *,
                  service_call_factory: ServiceCallFactory[T_Service],
@@ -141,7 +145,7 @@ class ServiceMap(ub.ServiceList, t.Mapping[str, T_Service], t.Generic[T_Service]
         if not len(found) == 1:
             raise KeyError(f"found {found or 'no services'} for topic {topic}")
 
-        return self._factory(mapping=found[0])
+        return self._factory(found[0])
 
     def cache_clear(self):
         """

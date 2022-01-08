@@ -32,6 +32,8 @@ loggers:
   ubii.interact.connections.sock:
     propagate: no
     handlers: [websocket]
+  codestare:
+    propagate: yes
   aiohttp.client:
     propagate: yes
 root:

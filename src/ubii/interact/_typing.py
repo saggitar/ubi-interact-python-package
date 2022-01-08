@@ -16,6 +16,8 @@ T_contra = t.TypeVar('T_contra', contravariant=True)
 SimpleCoroutine = t.Coroutine[t.Any, t.Any, T]
 Decorator = t.Callable[[t.Callable], t.Callable]
 
+ExcInfo = t.Tuple[t.Optional[t.Type[T_Exception]], t.Optional[T_Exception], t.Any]
+
 
 class Descriptor(t.Protocol[T_co]):
     def __get__(self, instance: t.Any | None = None, owner: t.Type[t.Any] | None = None) -> T_co: ...

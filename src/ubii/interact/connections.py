@@ -82,11 +82,12 @@ class AIOHttpWebsocketConnection(AIOHttpConnection, DataConnection):
 
     async def _stream(self) -> ub.TopicData:
         await self._ws_connected.wait()
+        assert self.ws is not None
         message: aiohttp.WSMessage
         async for message in self.ws:
             if message.type == aiohttp.WSMsgType.TEXT:
                 if message.data == "PING":
-                    await self._ws.send_str('PONG')
+                    await self.ws.send_str('PONG')
                 else:
                     log.error(message.data)
             elif message.type == aiohttp.WSMsgType.ERROR:
@@ -101,7 +102,7 @@ class AIOHttpWebsocketConnection(AIOHttpConnection, DataConnection):
         log.info(f"Closing Websocket connection")
 
     @property
-    def ws(self) -> aiohttp.ClientWebSocketResponse:
+    def ws(self) -> aiohttp.ClientWebSocketResponse | None:
         return self._ws
 
     @ws.setter
@@ -139,8 +140,9 @@ class AIOHttpWebsocketConnection(AIOHttpConnection, DataConnection):
 
     async def send(self, data: ub.TopicData, timeout=None):
         await asyncio.wait_for(self._ws_connected.wait(), timeout=timeout)
+        assert self.ws is not None
         log.debug(f"Sending {data}")
-        await asyncio.wait_for(self._ws.send_bytes(ub.TopicData.serialize(data)), timeout=timeout)
+        await asyncio.wait_for(self.ws.send_bytes(ub.TopicData.serialize(data)), timeout=timeout)
 
 
 class AIOHttpRestConnection(AIOHttpConnection, ServiceConnection):

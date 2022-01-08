@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import warnings
+
 import abc
 import asyncio
 import logging
@@ -51,7 +53,7 @@ class TopicCoroutine(t.Generic[_Buffer], util.wrapper.CoroutineWrapper[t.Any, t.
             await self._callback(value)
 
 
-class Topic(t.Generic[_Buffer, _Token], abc.ABC):
+class Topic(util.TaskNursery, t.AsyncIterator[_Buffer], t.Generic[_Buffer, _Token], abc.ABC):
     """
     A Topic can be used to asynchronously iterate over TopicDataRecords that are published to the topic.
     It can also register (and unregister) callbacks to handle the published values in a background task.
@@ -72,13 +74,20 @@ class Topic(t.Generic[_Buffer, _Token], abc.ABC):
     async def __anext__(self) -> _Buffer:
         return await self.buffer.get()
 
-    def __init__(self: Topic[_Buffer, _Token], *,
+    def __init__(self: Topic[_Buffer, _Token],
+                 *,
                  token_factory: t.Callable[[], _Token],
-                 task_manager: AsyncExitStack | None = None) -> None:
+                 task_manager: util.TaskNursery | None) -> None:
+        super().__init__()
         token_factory = token_factory
+        self._task_nursery = task_manager or self
+        self._exit_stack = AsyncExitStack()
         self._next_token = lambda: token_factory()
-        self._exit_Stack = task_manager or AsyncExitStack()
         self._callback_tasks: t.Dict[_Token, asyncio.Task] = {}
+        self.add_sentinel_callback(self.aclose())
+
+    async def aclose(self):
+        await self._exit_stack.aclose()
 
     def register_callback(self, callback: Consumer[_Buffer]) -> _Token:
         """
@@ -101,8 +110,8 @@ class Topic(t.Generic[_Buffer, _Token], abc.ABC):
         :return: a unique token (supplied by the ``token_factory``) to deregister the callback later
         """
         token = self._next_token()
-        self._exit_Stack.push_async_callback(lambda *exc_info: self.unregister_callback(token))
-        self._callback_tasks[token] = asyncio.create_task(
+        self._exit_stack.push_async_callback(lambda *exc_info: self.unregister_callback(token))
+        self._callback_tasks[token] = self._task_nursery.create_task(
             TopicCoroutine(shared_resource_accessor=self.buffer, callback=callback)
         )
         return token
@@ -130,22 +139,22 @@ class Topic(t.Generic[_Buffer, _Token], abc.ABC):
         return True
 
     @property
-    def task_manager(self) -> AsyncExitStack:
+    def exit_stack(self) -> AsyncExitStack:
         """
         This context manager unregisters the callbacks and stops the tasks on exit.
         Setting this values transfers handling of all callbacks to the new AsyncExitStack.
 
         :return: a exit stack context manager
         """
-        return self._exit_Stack
+        return self._exit_stack
 
-    @task_manager.setter
-    def task_manager(self, manager: AsyncExitStack):
+    @exit_stack.setter
+    def exit_stack(self, manager: AsyncExitStack):
         """
         make temporary stack (so exiting the previous one does not unregister) and close it when the new context exits.
         """
-        manager.push_async_exit(self._exit_Stack.pop_all())
-        self._exit_Stack = manager
+        manager.push_async_exit(self._exit_stack.pop_all())
+        self._exit_stack = manager
 
 
 class DefaultTopic(Topic[ub.TopicDataRecord, int]):
@@ -157,8 +166,11 @@ class DefaultTopic(Topic[ub.TopicDataRecord, int]):
             self.__last_token__ += 1
             return self.__last_token__
 
-    def __init__(self, *, task_manager: AsyncExitStack | None = None) -> None:
-        super().__init__(token_factory=self.default_token_factory(), task_manager=task_manager)
+    def __init__(self, **kwargs) -> None:
+        if 'token_factory' in kwargs:
+            warn(f"passing `token_factory={kwargs.pop('token_factory')}` to {self.__class__} is deprecated, "
+                 f"will use default factory instead.", DeprecationWarning)
+        super().__init__(token_factory=self.default_token_factory(), **kwargs)
 
     @cached_property
     def buffer(self) -> util.accessor[ub.TopicDataRecord]:

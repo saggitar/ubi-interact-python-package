@@ -1,22 +1,45 @@
 import asyncio
-
-import types
-
 import pytest
-from ubii.interact.client import DeviceManager
-from ubii.interact.processing import ProcessingRoutine
-import ubii.proto as ub
-import codestare.async_utils as util
 
-from ubii.interact.constants import GLOBAL_CONFIG
+import codestare.async_utils as util
+import ubii.proto as ub
+from ubii.interact import processing
+from ubii.interact.client import DeviceManager, UbiiClient, ProcessingModuleManager
 
 pytestmark = pytest.mark.asyncio
 
 
 class TestProcessing:
+    @pytest.fixture(scope='class')
+    def test_module(self, client):
+        processing_module = ub.ProcessingModule(
+            name="example-processing-module",
+            processing_mode={'trigger_on_input': {'min_delay_ms': 0,
+                                                  'all_inputs_need_update': True}},
+
+            on_processing_stringified="",
+            inputs=[
+                {
+                    'internal_name': 'clientBool',
+                    'message_format': 'bool'
+                },
+            ],
+            outputs=[
+                {
+                    'internal_name': 'serverBool',
+                    'message_format': 'bool'
+                }
+            ],
+            language=ub.ProcessingModule.Language.PY,
+        )
+
+        client.processing_modules.append(processing_module)
+        client.is_dedicated_processing_node = True
+        return processing_module
 
     @pytest.fixture(scope='class')
-    async def setup(self, client):
+    async def test_device(self, client, test_module):
+        client = await client
         device_name = 'test_device'
         topic_prefix = f"/{client.id}/{device_name}"
         client_bool_topic = topic_prefix + '/client_bool'
@@ -38,45 +61,24 @@ class TestProcessing:
             ],
         )
 
-        await client.implements(DeviceManager)
-        await client.register_device(device=device)
+        return device
 
-        processing_module = ub.ProcessingModule(
-            name="example-processing-module",
-            processing_mode={'trigger_on_input': {'min_delay_ms': 0,
-                                                  'all_inputs_need_update': True}},
-            on_processing_stringified="function processingCallback(deltaTime, inputs) {"
-                                      "  let outputs = {};\n"
-                                      "  outputs.serverBool = !inputs.clientBool;\n"
-                                      "  return {outputs};\n"
-                                      "}",
-            inputs=[
-                {
-                    'internal_name': 'clientBool',
-                    'message_format': 'bool'
-                },
-            ],
-            outputs=[
-                {
-                    'internal_name': 'serverBool',
-                    'message_format': 'bool'
-                }
-            ],
-            language=ub.ProcessingModule.Language.JS,
-        )
-
+    @pytest.fixture(scope='class')
+    async def test_session(self, test_module, test_device: ub.Device):
+        client_bool_topic = test_device.components[0].topic
+        server_bool_topic = test_device.components[1].topic
         io_mappings = [
             {
-                'processing_module_name': processing_module.name,
+                'processing_module_name': test_module.name,
                 'input_mappings': [
                     {
-                        'input_name': processing_module.inputs[0].internal_name,
+                        'input_name': test_module.inputs[0].internal_name,
                         'topic': client_bool_topic
                     },
                 ],
                 'output_mappings': [
                     {
-                        'output_name': processing_module.outputs[0].internal_name,
+                        'output_name': test_module.outputs[0].internal_name,
                         'topic': server_bool_topic
                     }
                 ]
@@ -84,30 +86,38 @@ class TestProcessing:
         ]
 
         session = ub.Session(name="Example Session",
-                             processing_modules=[processing_module],
+                             processing_modules=[test_module],
                              io_mappings=io_mappings)
-
-        result = types.SimpleNamespace()
-        result.device = device
-        result.session = session
-        result.server_bool_topic = server_bool_topic
-        result.client_bool_topic = client_bool_topic
-
-        yield result
+        return session
 
     @pytest.mark.xfail(reason="Not allowed to reregister device", raises=ValueError)
-    async def test_device_reregistration(self, client, setup):
+    async def test_device_reregistration(self, client, test_device):
+        client = await client
         # Device Manager is not a required behaviour
         await client.implements(DeviceManager)
-        assert setup.device in client.devices
-        await client.register_device(device=setup.device)
+
+        await client.register_device(device=test_device)
+        assert test_device in client.devices
+        await client.register_device(device=test_device)
 
     @pytest.fixture(scope='class')
-    async def server_bool_test_value(self, client, setup, start_session):
+    async def server_bool_test_value(self, client, test_module, test_device: ub.Device, test_session, start_session):
+        test_module.on_processing_stringified = (
+            "function processingCallback(deltaTime, inputs) {"
+            "  let outputs = {};\n"
+            "  outputs.serverBool = !inputs.clientBool;\n"
+            "  return {outputs};\n"
+            "}"
+        )
+        test_module.language = test_module.Language.JS
+        test_session.processing_modules = [test_module]
+
+        server_bool_topic = test_device.components[1].topic
+        client = await client
         value = util.accessor()
-        topic, = await client.subscribe_topic(setup.server_bool_topic)
+        topic, = await client.subscribe_topic(server_bool_topic)
         _ = topic.register_callback(value.set)
-        await start_session(setup.session)
+        await start_session(test_session)
         yield value
 
     @pytest.mark.parametrize('data', [
@@ -119,26 +129,22 @@ class TestProcessing:
         True,
         False,
     ])
-    async def test_server_processing(self, client, setup, start_session, server_bool_test_value, data):
-        await client.publish({'topic': setup.client_bool_topic, 'bool': data})
+    async def test_server_processing(self, client, test_device: ub.Device, server_bool_test_value, data):
+        client_bool_topic = test_device.components[0].topic
+        await client.publish({'topic': client_bool_topic, 'bool': data})
         result = await asyncio.wait_for(server_bool_test_value.get(), timeout=1)
         assert result is not None and result != data
 
-    @pytest.fixture
-    async def client_processing_module(self, client, setup):
-        await client.subscribe_regex(GLOBAL_CONFIG.CONSTANTS.DEFAULT_TOPICS.INFO_TOPICS.REGEX_ALL_INFOS)
+    async def test_processing_module(self, client: UbiiClient, start_session, test_module, test_session):
+        client = await client
+        await client.implements(ProcessingModuleManager)
+        await start_session(test_session)
 
-        processing_module: ub.ProcessingModule = setup.session.processing_modules[0]
-        processing_module.on_processing_stringified = None
-        processing_module.language = processing_module.Language.PY
-        yield processing_module
+        pm = processing.ProcessingRoutine.registry.get(test_module.name)
+        async with pm.change_specs:
+            await pm.change_specs.wait_for(lambda: pm.input_mapping)
 
-    async def test_processing_module(self, client, start_session, setup, client_processing_module):
-        await client.deregister()
-
-
-        setup.session.processing_modules = [client_processing_module]
-
-        await asyncio.sleep(3)
-        await start_session(setup.session)
+        client_bool_topic = ""
+        await client.publish({'topic': client_bool_topic, 'bool': True})
         await asyncio.sleep(400)
+
