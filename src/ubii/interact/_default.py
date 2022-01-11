@@ -15,7 +15,7 @@ from functools import cached_property, partial, wraps
 
 import ubii.proto as ub
 from ubii.interact import connections, constants, services, client, topics, processing
-from ._util import exc_handler, log_call
+from ._util import exc_handler, log_call, attach_info
 from .logging import debug
 from .protocol import StandardProtocol
 
@@ -76,7 +76,7 @@ class DefaultProtocol(StandardProtocol[States]):
     end_state = States.STOPPED
 
     # decorators applied to DefaultProtocol.__registered_for_decorators__
-    __decorators__ = StandardProtocol.__decorators__.union([log_call(log)])
+    __hooks__ = StandardProtocol.__hooks__.union([log_call(log)])
 
     def __init__(self, config: constants.UbiiConfig = constants.GLOBAL_CONFIG, log: logging.Logger | None = None):
         super().__init__(config, log)
@@ -97,10 +97,11 @@ class DefaultProtocol(StandardProtocol[States]):
         context.service_connection = connections.AIOHttpRestConnection(self.config.DEFAULT_SERVICE_URL)
         context.service_connection.session = self.aiohttp_session
 
+        services.ServiceCall.register_decorator(exc_handler(lambda *_: log.exception("Exception in Service Call")))
+
         def create_service_call(mapping: ub.Service):
             assert context.service_connection is not None
             service_call = services.ServiceCall(transport=context.service_connection, mapping=mapping)
-            service_call.register_decorator(exc_handler(lambda *_: log.exception("Exception in Service Call")))
             return service_call
 
         context.service_map = services.DefaultServiceMap(
@@ -168,9 +169,6 @@ class DefaultProtocol(StandardProtocol[States]):
             ](client=context.client)
             assert result.success, f"Client did not deregister correctly! Error: {result.error}"
 
-            if not self.peek_state() == self.end_state:
-                await self.state.set(States.WAITING)
-
         context.register_manager = context_manager(context)
         return context.register_manager
 
@@ -199,11 +197,15 @@ class DefaultProtocol(StandardProtocol[States]):
     def _subscription_behaviour(self, context: Context):
         context.topic_store = topics.TopicStore(default_factory=partial(topics.DefaultTopic, task_manager=self))
 
-        async def _handle_subscribe(*topic_patterns, as_regex=False, unsubscribe=False):
+        async def _handle_subscribe(*topic_patterns, as_regex=False, unsubscribe=False, force=False):
             if not topic_patterns:
                 return
 
-            need_subscription = (pattern for pattern in topic_patterns if pattern not in context.topic_store)
+            need_subscription = (
+                (pattern for pattern in topic_patterns if pattern not in context.topic_store)
+                if not force else
+                topic_patterns
+            )
             if need_subscription:
                 message = {
                     'client_id': context.client.id,
@@ -300,13 +302,8 @@ class DefaultProtocol(StandardProtocol[States]):
         await self.state.set(States.CONNECTED)
 
     async def implement_processing(self, context: Context):
-        def start_pm(pm: processing.ProcessingRoutine):
-            task: asyncio.Task = self.create_task(pm)
-            task.add_done_callback(lambda _: self.trigger_sentinel.set())
 
-        async def _on_start_session(record):
-            session: ub.Session = record.session
-
+        async def _on_start_session(session: ub.Session):
             specs: ub.ProcessingModule
             for specs in session.processing_modules:
                 if specs.node_id != context.client.id:
@@ -316,49 +313,73 @@ class DefaultProtocol(StandardProtocol[States]):
                 if pm is None:
                     raise ValueError(f"No processing module routine with name {specs.name} found")
 
-                ub.ProcessingModule.copy_from(pm, specs)
-                pm.change_specs.notify_all()
+                task: asyncio.Task = self.create_task(pm)
+                task.add_done_callback(lambda _: self.trigger_sentinel.set())
+
+                async with pm.change_specs:
+                    ub.ProcessingModule.copy_from(pm, specs)
+                    pm.change_specs.notify_all()
 
                 assert specs.name in processing.ProcessingRoutine.registry
 
             # apply io mappings
             io_mapping: ub.IOMapping
             for io_mapping in session.io_mappings:
-                if io_mapping.processing_module_id in processing.ProcessingRoutine.registry:
-                    processing.ProcessingRoutine.apply_io_mapping(io_mapping, topic_map=context.topic_store)
+                if io_mapping.processing_module_name in processing.ProcessingRoutine.registry:
+                    assert io_mapping.processing_module_id is not None
+                    assert io_mapping.processing_module_name is not None
+                    instance: processing.ProcessingRoutine = (
+                        processing.ProcessingRoutine.registry[io_mapping.processing_module_name]
+                    )
 
-            service = context.client.services.pm_runtime_add
-            await service(processing_module_list={'elements': list(processing.ProcessingRoutine.registry.values())})
+                    await instance.apply_io_mapping(
+                        io_mapping,
+                        topic_map=context.topic_store
+                    )
 
-        async def _on_stop_session(record):
-            session: ub.Session = record.session
+                    # subscribe
+                    mapping: ub.TopicInputMapping
+                    for mapping in io_mapping.input_mappings or ():
+                        subscriber = (
+                            context.client.subscribe_regex(mapping.topic_mux, force=True)
+                            if mapping.topic_mux else
+                            context.client.subscribe_topic(mapping.topic, force=True)
+                        )
+                        await subscriber
+
+                    # publish
+                    async with instance.change_specs:
+                        instance.get_output_topic.register_decorator(partial(attach_info, context.client.publish))
+                        instance.change_specs.notify_all()
+
+            add_service = context.client.services.pm_runtime_add
+            pms = [pm for pm in processing.ProcessingRoutine.registry.values() if pm.id]
+            await add_service(processing_module_list={'elements': pms})
+
+        async def _on_stop_session(session: ub.Session):
             if session.id != context.client.id:
                 return
             print()
+
+        async def _callback_wrapper(fun, record):
+            await fun(record.session)
 
         # register callbacks
         assert context.client is not None
         assert context.constants is not None
         default_topics = context.constants.DEFAULT_TOPICS
         start, = await context.client.subscribe_topic(default_topics.INFO_TOPICS.START_SESSION)
-        start.register_callback(_on_start_session)
         stop, = await context.client.subscribe_topic(default_topics.INFO_TOPICS.STOP_SESSION)
-        stop.register_callback(_on_stop_session)
+        start.register_callback(partial(_callback_wrapper, _on_start_session))
+        stop.register_callback(partial(_callback_wrapper, _on_stop_session))
         # let the protocol stop the tasks on exit
         start.exit_stack = self.exit_stack
         stop.exit_stack = self.exit_stack
-
-        pm_store_location = 'processing_modules.file'
-        self.exit_stack.push(lambda *_: processing.ProcessingRoutine.save_specs(pm_store_location))
 
         # create processing routines for all pms
         context.client.processing_modules = [
             processing.ProcessingRoutine(mapping=pm) for pm in context.client.processing_modules
         ]
-
-        processing.ProcessingRoutine.update_specs(pm_store_location)
-        for pm in processing.ProcessingRoutine.registry.values():
-            start_pm(pm)
 
         await context.client.implement(processing_module_manager=True)
 

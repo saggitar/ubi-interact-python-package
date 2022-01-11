@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from functools import partial, cached_property
+from itertools import product
 
 import abc
 import asyncio
@@ -9,15 +9,18 @@ import types
 import typing as t
 import warnings
 from contextlib import AsyncExitStack
+from functools import partial, cached_property
 
 import codestare.async_utils as util
 import ubii.interact as ub
 from . import topics, constants, client
 from ._typing import Decorator, Descriptor, T_EnumFlag
-from ._util import register_for_decorator, decorator_property, EnumMatcher
+from ._util import EnumMatcher, hook, registry
 
 Callback = t.Callable[..., t.Coroutine[t.Any, t.Any, None]]
 _StateChange = t.Tuple[T_EnumFlag, T_EnumFlag]
+
+log = logging.getLogger(__name__)
 
 
 class UbiiProtocol(t.Generic[T_EnumFlag], util.TaskNursery, abc.ABC):
@@ -25,7 +28,7 @@ class UbiiProtocol(t.Generic[T_EnumFlag], util.TaskNursery, abc.ABC):
     @classmethod
     @property
     @abc.abstractmethod
-    def state_changes(cls) -> t.Mapping[t.Tuple[T_EnumFlag | None, ...], Callback | Descriptor[Callback]]:
+    def state_changes(cls) -> t.Mapping[t.Tuple[T_EnumFlag | None, ...], Descriptor[Callback]]:
         ...
 
     @classmethod
@@ -46,6 +49,7 @@ class UbiiProtocol(t.Generic[T_EnumFlag], util.TaskNursery, abc.ABC):
 
     def __init__(self) -> None:
         super().__init__()
+        self.change_context = asyncio.Condition()
         self._state = self.starting_state
         self._run = None
         self._get_state_change_callback = partial(EnumMatcher.get_matching_value, mapping=self.state_changes)
@@ -88,10 +92,6 @@ class UbiiProtocol(t.Generic[T_EnumFlag], util.TaskNursery, abc.ABC):
             warnings.warn(f"{self} already running.")
 
         return self._run
-
-    def peek_state(self) -> T_EnumFlag:
-        """Look at the state without all the accessor shenanigans"""
-        return self._state
 
     def __await__(self):
         with warnings.catch_warnings():
@@ -143,29 +143,30 @@ class RunProtocol(util.wrapper.CoroutineWrapper):
         while previous != end_state:
             callback = get_state((previous, current), self._no_callback_found)
             context.state_change = (previous, current)
-            if hasattr(callback, '__get__'):
-                # it's a descriptor
-                callback = callback.__get__(self._protocol)
-                coro = callback(context)
-            else:
-                # simple function
-                coro = callback(self._protocol, context)
+            log.debug(f"Changed state {previous!r}->{current!r} in {self._protocol}, got callback {callback}")
+
+            # also functions are descriptors
+            assert isinstance(callback, Descriptor), f"{callback} needs to be a descriptor"
+            coro = callback.__get__(self._protocol, type(self._protocol))(context)
 
             if not asyncio.iscoroutine(coro):
                 raise RuntimeError(f"{callback} did not return a coroutine (not using `async def`?)")
 
-            await coro
+            async with self._protocol.change_context:
+                await coro
+                self._protocol.change_context.notify_all()
+
             previous = current
             if current != end_state:
                 # wait until a state is set that is not the previous state
                 current = await self._protocol.state.get(
-                    predicate=lambda: self._protocol.peek_state() != previous
+                    predicate=lambda value: value != current
                 )
 
 
 class StandardProtocol(UbiiProtocol[T_EnumFlag], t.Generic[T_EnumFlag], abc.ABC):
-    __registered_for_decorators__: t.MutableMapping[t.Tuple[t.Type, str], decorator_property] = {}
-    __decorators__: t.Set[Decorator] = set()
+    hook_function = registry(lambda h: h.__name__, hook)
+    __hooks__ = set()
 
     def __init__(self, config: constants.UbiiConfig = constants.GLOBAL_CONFIG, log: logging.Logger | None = None):
         super().__init__()
@@ -182,7 +183,6 @@ class StandardProtocol(UbiiProtocol[T_EnumFlag], t.Generic[T_EnumFlag], abc.ABC)
         service call: ``server_config`` (see documentation).
         """
 
-    @register_for_decorator(registry=__registered_for_decorators__, decorators=__decorators__)
     @abc.abstractmethod
     async def update_config(self, context):
         """
@@ -228,7 +228,7 @@ class StandardProtocol(UbiiProtocol[T_EnumFlag], t.Generic[T_EnumFlag], abc.ABC)
         coroutine is finished, which returns a fully functional client.
         """
 
-    @register_for_decorator(registry=__registered_for_decorators__, decorators=__decorators__)
+    @hook_function
     async def on_start(self, context):
         await self.create_service_map(context)
         await self.update_config(context)
@@ -236,7 +236,7 @@ class StandardProtocol(UbiiProtocol[T_EnumFlag], t.Generic[T_EnumFlag], abc.ABC)
         await self.create_client(context)
         await self.exit_stack.enter_async_context(self.register_client(context))
 
-    @register_for_decorator(registry=__registered_for_decorators__, decorators=__decorators__)
+    @hook_function
     async def on_registration(self, context):
         await self.create_topic_connection(context)
         await self.implement_client(context)
@@ -246,7 +246,7 @@ class StandardProtocol(UbiiProtocol[T_EnumFlag], t.Generic[T_EnumFlag], abc.ABC)
         except asyncio.TimeoutError:
             raise RuntimeError(f"Client is not implemented")
 
-    @register_for_decorator(registry=__registered_for_decorators__, decorators=__decorators__)
+    @hook_function
     async def on_connect(self, context):
         splitter = self.create_task(
             topics.StreamSplitRoutine(container=context.topic_store, stream=context.topic_connection)
@@ -254,7 +254,7 @@ class StandardProtocol(UbiiProtocol[T_EnumFlag], t.Generic[T_EnumFlag], abc.ABC)
         # when the splitter task is finished (e.g. when the topic connection closes), stop the protocol
         splitter.add_done_callback(lambda _: self.trigger_sentinel.set())
 
-    @register_for_decorator(registry=__registered_for_decorators__, decorators=__decorators__)
+    @hook_function
     async def on_stop(self, context):
         self.log.info(f"Stopped protocol {self}")
 
@@ -262,13 +262,8 @@ class StandardProtocol(UbiiProtocol[T_EnumFlag], t.Generic[T_EnumFlag], abc.ABC)
         """
         Register decorators
         """
-        descriptor: decorator_property
-        owner: t.Type[StandardProtocol]
-        for (owner, name), descriptor in cls.__registered_for_decorators__.items():
-            assert issubclass(cls, owner)
-            if descriptor.decorators != cls.__decorators__:
-                for decorator in cls.__decorators__:
-                    descriptor.register_decorator(owner=cls, decorator=decorator)
-                logging.getLogger(__name__).debug(f"updated decorators for {descriptor}")
+        hook_function: hook
+        for hook_function, hk in product(cls.hook_function.registry.values(), cls.__hooks__):
+            hook_function.register_decorator(hk)
 
         super().__init_subclass__(**kwargs)

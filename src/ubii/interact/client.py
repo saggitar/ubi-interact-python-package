@@ -250,10 +250,14 @@ class UbiiClient(ub.Client, t.Awaitable['UbiiClient'], ProtoFormatMixin, metacla
         try:
             return super().__getattr__(item)
         except AttributeError as e:
+            # before initialisation
+            if not self.__dict__:
+                raise AttributeError(f"can't access {item} before initialisation") from e
+
             if item in self.behaviour:
                 value = self.behaviour[item]
                 if value is None:
-                    raise AttributeError(f"Attribute {item} not implemented in {self}")
+                    raise AttributeError(f"Attribute {item} not implemented.")
                 else:
                     return value
             else:

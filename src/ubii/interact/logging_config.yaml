@@ -5,7 +5,7 @@ formatters:
   precise:
     format: '%(asctime)s - %(name)s - %(levelname)s - %(message)s'
     datefmt: '%Y-%m-%d %H:%M:%S'
-  socket:
+  http:
     format: '%(asctime)s - %(levelname)s - %(message)s'
     datefmt: '%Y-%m-%d %H:%M:%S'
 handlers:
@@ -22,19 +22,29 @@ handlers:
     mode: w
   websocket:
     class : logging.FileHandler
-    formatter: socket
+    formatter: http
     level: DEBUG
     filename: websocket.log
+    mode: w
+  services:
+    class : logging.FileHandler
+    formatter: http
+    level: DEBUG
+    filename: services.log
     mode: w
 loggers:
   ubii.interact:
     propagate: yes
+  aiohttp.client:
+    propagate: no
+    handlers: [services]
+  ubii.interact.services:
+    propagate: no
+    handlers: [services]
   ubii.interact.connections.sock:
     propagate: no
     handlers: [websocket]
   codestare:
-    propagate: yes
-  aiohttp.client:
     propagate: yes
 root:
   handlers: [console, log]

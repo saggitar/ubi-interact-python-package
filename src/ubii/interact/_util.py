@@ -3,28 +3,28 @@ from __future__ import annotations
 from warnings import warn
 
 import pickle
-from collections import defaultdict
+from collections import defaultdict, namedtuple
 
 import asyncio
 import sys
 import typing as t
 from difflib import SequenceMatcher
-from functools import partial, wraps
+from functools import partial, wraps, reduce
 from itertools import chain
 
 import ubii.proto as ub
 import codestare.async_utils as utils
 
-from . import _typing
+from ._typing import Decorator, S, T, ExcInfo, T_EnumFlag
 
 
-def similar(choices, item, cutoff=0.75):
+def similar(choices, item, cutoff=0.70):
     _similarity = lambda k: SequenceMatcher(None, k, item).ratio()  # noqa
     return list(sorted(filter(lambda item: _similarity(item) > cutoff, choices), key=_similarity, reverse=True))
 
 
 class EnumMatcher:
-    _enum_tuple = t.Tuple[_typing.T_EnumFlag, ...]
+    _enum_tuple = t.Tuple[T_EnumFlag, ...]
     _no_default = object()
 
     @classmethod
@@ -42,8 +42,8 @@ class EnumMatcher:
 
     @classmethod
     def get_matching_value(cls, key: _enum_tuple, default: t.Any = _no_default, *,
-                           mapping: t.Mapping[_enum_tuple, _typing.T],
-                           ) -> _typing.T:
+                           mapping: t.Mapping[_enum_tuple, T],
+                           ) -> T:
         matching = [value for enums, value in mapping.items() if cls.matches(enums, key)]
         if len(matching) != 1 and default is EnumMatcher._no_default:
             raise KeyError(f"Found matching values {matching} for query {key}, not exactly one match")
@@ -51,39 +51,19 @@ class EnumMatcher:
         return matching[0] if matching else default
 
 
-class apply:
-    """
-    Proxy decorator to apply multiple decorators
-    """
-    decorators: t.Set[_typing.Decorator]
-
-    def __init__(self, decorators: t.Set[_typing.Decorator] | None = None):
-        self.decorators = set() if decorators is None else decorators
-
-    def __call__(self, func: t.Callable):
-        for dec in self.decorators:
-            func = dec(func)
-
-        return func
-
-
-class decorator_property:
-    _decorators_for_owner: t.Dict[t.Type[t.Any], t.Set[_typing.Decorator]] = defaultdict(set)
-
-    def __init__(self, func, registry=None, decorators=None):
-        self._registry = {} if registry is None else registry
+class hook(t.Generic[T]):
+    def __init__(self: hook[T], func: T, decorators=None):
         self.func = func
-        self._applied = None
-        self.name: str | None = None
         self._decorators = decorators or set()
+        self._applied = None
+        wraps(func)(self)
 
     @property
     def decorators(self):
-        # decorator access might change the decorators
-        return self._decorators_for_owner
+        return self._decorators
 
-    def register_decorator(self, owner, decorator):
-        self._decorators_for_owner[owner].add(decorator)
+    def register_decorator(self, decorator):
+        self._decorators.add(decorator)
         self.cache_clear()
 
     def cache_clear(self):
@@ -92,32 +72,37 @@ class decorator_property:
         """
         self._applied = None
 
-    def __set_name__(self, owner, name):
-        self._registry[(owner, name)] = self
-        self._decorators_for_owner[owner].update(self._decorators)
-        del self._decorators
-        self.name = name
+    def __call__(self, *args, **kwargs):
+        if self._applied is None:
+            self._applied = compose(*self.decorators)(self.func)
+
+        return self._applied(*args, **kwargs)
 
     def __get__(self, instance=None, owner=None):
         if instance is None:
             return self
 
-        if self._applied is None:
-            owner = owner or type(instance)
-            self._applied = apply(self.decorators[owner])(self.func)
-
-        return partial(self._applied, instance)
+        return partial(self, instance)
 
 
-def register_for_decorator(func=None, *, registry: t.Mapping | None = None,
-                           decorators: t.Set[_typing.Decorator] | None = None):
-    if func is None:
-        return partial(decorator_property, registry=registry, decorators=decorators)
-    else:
-        return decorator_property(func=func, registry=registry, decorators=decorators)
+class registry:
+    def __init__(self, instance_key: t.Callable[[t.Any], t.Any], fn: t.Callable):
+        self.key = instance_key
+        self.func = fn
+        self._registry = {}
+        wraps(fn)(self)
+
+    @property
+    def registry(self):
+        return self._registry
+
+    def __call__(self, *args, **kwargs):
+        instance = self.func(*args, **kwargs)
+        self._registry[self.key(instance)] = instance
+        return instance
 
 
-def exc_handler(exc_handler: t.Callable[[_typing.ExcInfo], None]):
+def exc_handler(exc_handler: t.Callable[[ExcInfo], None]):
     def decorator(fun):
         @wraps(fun)
         async def _inner(*args, **kwargs):
@@ -161,7 +146,7 @@ class ProtoRegistry(ub.ProtoMeta, utils.RegistryMeta):
         return {key: cls.serialize(obj) for key, obj in cls.registry.items()}
 
     def _deserialize_all(cls, mapping: t.Mapping):
-        return {key: cls.deserialize(obj) for key, obj in mapping}
+        return {key: cls.deserialize(obj) for key, obj in mapping.items()}
 
     def save_specs(cls, path):
         """
@@ -186,3 +171,70 @@ class ProtoRegistry(ub.ProtoMeta, utils.RegistryMeta):
                 continue
 
             cls.copy_from(item, spec)
+
+
+class function_chain:
+    def __init__(self, *funcs):
+        self.funcs = funcs
+
+    def __call__(self):
+        for f in self.funcs:
+            f()
+
+
+class compose:
+    def __init__(self, *fns):
+        self.reduced = reduce(lambda g, f: lambda *a: f(g(*a)), fns) if fns else (lambda x: x)
+
+    def __call__(self, *args):
+        return self.reduced(*args)
+
+
+class make_dict(t.Callable[[t.Iterable], t.Dict[S, T]], t.Generic[S, T]):
+    def __init__(self: make_dict[S, T],
+                 key: t.Callable[[t.Any], S],
+                 value: t.Callable[[t.Any], T],
+                 filter_none=False):
+        self._key = key
+        self._value = value
+        self._filter = filter_none
+
+    def __call__(self, iterable: t.Iterable) -> t.Dict[S, T]:
+        return {
+            self._key(item): self._value(item)
+            for item in iterable
+            if not self._filter or self._value(item)
+        }
+
+
+class async_compose(t.Callable[..., t.Coroutine]):
+    def __init__(self, *fns):
+        def __compose(g: t.Callable[[t.Any], t.Coroutine], f: t.Callable[[t.Any], t.Coroutine]):
+            async def composed(*args):
+                return await(f(await g(*args)))
+
+            return composed
+
+        self._reduced = reduce(__compose, fns)
+
+    def __call__(self, *args):
+        return self._reduced(*args)
+
+
+class attach_info:
+    result = namedtuple('result', ['value', 'info'])
+
+    def __init__(self, info, func: t.Callable):
+        if asyncio.iscoroutinefunction(func):
+            async def attach(result):
+                return self.result(value=result, info=info)
+
+            self._reduced = async_compose(func, attach)
+        else:
+            def attach(result):
+                return self.result(value=result, info=info)
+
+            self._reduced = compose(func, attach)
+
+    def __call__(self, *args):
+        return self._reduced(*args)

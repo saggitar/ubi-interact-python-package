@@ -1,16 +1,24 @@
+from __future__ import annotations
+
 import asyncio
 import logging
 import pytest
-
-import ubii.interact
-import ubii.interact.logging
-
-__verbosity__ = None
+import typing as t
 
 from ubii.interact._default import DefaultProtocol
 from ubii.interact.client import DeviceManager, UbiiClient
 
+__verbosity__: int | None = None
 ALWAYS_VERBOSE = True
+
+
+def configure_logging(config: t.Dict | t.Literal['DEFAULT'] | None = 'DEFAULT'):
+    from ubii.interact.logging import set_logging
+    if config == 'DEFAULT':
+        assert __verbosity__ is not None
+        set_logging(verbosity=__verbosity__)
+    else:
+        set_logging(config)
 
 
 def pytest_configure(config):
@@ -21,14 +29,9 @@ def pytest_configure(config):
         if not ALWAYS_VERBOSE else
         logging.DEBUG
     )
-
-    from ubii.interact.logging import set_logging
-    set_logging(verbosity=__verbosity__)
-
-
+    configure_logging()
     import ubii.proto
     assert ubii.proto.__proto_package__ is not None, "No proto package set, aborting test setup."
-
 
 
 @pytest.fixture(scope='session', autouse=True)
@@ -44,10 +47,11 @@ def service_url_env():
 
 @pytest.fixture(autouse=True, scope='session')
 def enable_debug():
-    previous = ubii.interact.logging.debug()
-    ubii.interact.logging.debug(enabled=True)
+    from ubii.interact.logging import debug
+    previous = debug()
+    debug(enabled=True)
     yield
-    ubii.interact.logging.debug(enabled=previous)
+    debug(enabled=previous)
 
 
 @pytest.fixture(scope='session', autouse=True)
@@ -66,20 +70,24 @@ async def client() -> UbiiClient:
     protocol = DefaultProtocol()
     client = UbiiClient(protocol=protocol)
     protocol.client = client
+
     yield client
     client = await client
     await client.protocol.stop()
 
 
 @pytest.fixture
-async def register_device(client):
-    client = await client
-    await client.implements(DeviceManager)
-    yield client.register_device
+def register_device(client):
+    async def _register(*args, **kwargs):
+        _client = await client
+        await _client.implements(DeviceManager)
+        _client.register_device(*args, **kwargs)
+
+    yield _register
 
 
 @pytest.fixture(scope='class')
-async def start_session(client):
+def start_session(client):
     _started = {}
 
     async def _start(session):

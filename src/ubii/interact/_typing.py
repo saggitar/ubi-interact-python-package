@@ -19,6 +19,7 @@ Decorator = t.Callable[[t.Callable], t.Callable]
 ExcInfo = t.Tuple[t.Optional[t.Type[T_Exception]], t.Optional[T_Exception], t.Any]
 
 
+@t.runtime_checkable
 class Descriptor(t.Protocol[T_co]):
     def __get__(self, instance: t.Any | None = None, owner: t.Type[t.Any] | None = None) -> T_co: ...
 

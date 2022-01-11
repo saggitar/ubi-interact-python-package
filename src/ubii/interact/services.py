@@ -8,7 +8,7 @@ from functools import lru_cache
 from warnings import warn
 
 import ubii.proto as ub
-from ._util import register_for_decorator, decorator_property
+from ._util import hook
 from .logging import ProtoFormatMixin, debug
 
 __protobuf__ = ub.__protobuf__
@@ -41,6 +41,7 @@ class ServiceCall(ub.Service, metaclass=ub.ProtoMeta):
     Optional parameter decorator: a decorator to applied to the __call__ method, e.g. for error handling.
     Can also be adjusted by setting the call_decorator attribute.
     """
+
     def __init__(self, mapping=None, *, transport: ServiceConnection, **kwargs):
         """
 
@@ -59,7 +60,7 @@ class ServiceCall(ub.Service, metaclass=ub.ProtoMeta):
         self._transport = transport
         self._orig_call = type(self).__call__
 
-    @register_for_decorator
+    @hook
     async def __call__(self, **payload) -> ub.ServiceReply:
         """
         async send the ServiceRequest defined by the ```request`` arguments and the ServiceCall's ```topic``
@@ -80,8 +81,9 @@ class ServiceCall(ub.Service, metaclass=ub.ProtoMeta):
         else:
             return reply
 
-    def register_decorator(self, decorator):
-        type(self).__call__.register_decorator(owner=type(self), decorator=decorator)
+    @classmethod
+    def register_decorator(cls, decorator):
+        cls.__call__.register_decorator(decorator)
 
 
 T_Service = t.TypeVar('T_Service', bound=ServiceCall)

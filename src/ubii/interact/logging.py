@@ -4,8 +4,8 @@ import argparse
 import logging.config
 import re
 import sys
+import typing as t
 import yaml
-from functools import wraps
 from importlib.resources import read_text
 
 import ubii.interact
@@ -14,7 +14,10 @@ import ubii.proto as ub
 __config__ = yaml.safe_load(read_text(ubii.interact, 'logging_config.yaml'))
 
 
-def set_logging(config=__config__, verbosity=logging.INFO):
+def set_logging(config: t.Dict | None = __config__, verbosity: int = logging.INFO):
+    if config is None:
+        config = {'version': 1}
+
     logging.config.dictConfig(config)
     logging.getLogger().setLevel(level=verbosity)
     logging.captureWarnings(True)

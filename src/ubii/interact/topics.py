@@ -12,6 +12,7 @@ from functools import cached_property
 from warnings import warn
 
 import codestare.async_utils as util
+from . import _util
 import ubii.proto as ub
 
 _Buffer = t.TypeVar('_Buffer')
@@ -75,14 +76,15 @@ class Topic(util.TaskNursery, t.AsyncIterator[_Buffer], t.Generic[_Buffer, _Toke
         return await self.buffer.get()
 
     def __init__(self: Topic[_Buffer, _Token],
+                 pattern,
                  *,
                  token_factory: t.Callable[[], _Token],
                  task_manager: util.TaskNursery | None) -> None:
         super().__init__()
-        token_factory = token_factory
+        self.pattern = pattern
         self._task_nursery = task_manager or self
         self._exit_stack = AsyncExitStack()
-        self._next_token = lambda: token_factory()
+        self._next_token = token_factory
         self._callback_tasks: t.Dict[_Token, asyncio.Task] = {}
         self.add_sentinel_callback(self.aclose())
 
@@ -166,11 +168,20 @@ class DefaultTopic(Topic[ub.TopicDataRecord, int]):
             self.__last_token__ += 1
             return self.__last_token__
 
-    def __init__(self, **kwargs) -> None:
+    def __init__(self, *args, **kwargs) -> None:
         if 'token_factory' in kwargs:
             warn(f"passing `token_factory={kwargs.pop('token_factory')}` to {self.__class__} is deprecated, "
                  f"will use default factory instead.", DeprecationWarning)
-        super().__init__(token_factory=self.default_token_factory(), **kwargs)
+        super().__init__(*args, token_factory=self.default_token_factory(), **kwargs)
+        self._buffer: ub.TopicDataRecord | None = None
+
+    @_util.hook
+    def _set_buffer(self, value):
+        self._buffer = value
+
+    @_util.hook
+    def _get_buffer(self):
+        return self._buffer
 
     @cached_property
     def buffer(self) -> util.accessor[ub.TopicDataRecord]:
@@ -216,12 +227,12 @@ _Topic_co = t.TypeVar('_Topic_co', bound=Topic, covariant=True)
 
 
 class TopicStore(MatchMapping, t.Generic[_Topic_co]):
-    def __init__(self: TopicStore[_Topic_co], default_factory: t.Callable[[], _Topic_co]):
+    def __init__(self: TopicStore[_Topic_co], default_factory: t.Callable[[str], _Topic_co]):
         self._default_factory = default_factory
         self.data: t.Dict[str, _Topic_co] = {}
 
     def __getitem__(self, key: str) -> _Topic_co:
-        return self.data.setdefault(key, self._default_factory())
+        return self.data.setdefault(key, self._default_factory(key))
 
     def __len__(self) -> int:
         return len(self.data)

@@ -1,17 +1,27 @@
+from functools import partial
+
+import logging
+
 import asyncio
 import pytest
 
 import codestare.async_utils as util
 import ubii.proto as ub
 from ubii.interact import processing
-from ubii.interact.client import DeviceManager, UbiiClient, ProcessingModuleManager
+from ubii.interact._util import make_dict
+from ubii.interact.client import UbiiClient, ProcessingModuleManager
 
 pytestmark = pytest.mark.asyncio
 
+__protobuf__ = ub.__protobuf__
+
+log = logging.getLogger(__name__)
+
 
 class TestProcessing:
+
     @pytest.fixture(scope='class')
-    def test_module(self, client):
+    def base_module(self):
         processing_module = ub.ProcessingModule(
             name="example-processing-module",
             processing_mode={'trigger_on_input': {'min_delay_ms': 0,
@@ -30,55 +40,25 @@ class TestProcessing:
                     'message_format': 'bool'
                 }
             ],
-            language=ub.ProcessingModule.Language.PY,
         )
-
-        client.processing_modules.append(processing_module)
-        client.is_dedicated_processing_node = True
         return processing_module
 
     @pytest.fixture(scope='class')
-    async def test_device(self, client, test_module):
-        client = await client
-        device_name = 'test_device'
-        topic_prefix = f"/{client.id}/{device_name}"
-        client_bool_topic = topic_prefix + '/client_bool'
-        server_bool_topic = topic_prefix + '/server_bool'
-        device = ub.Device(
-            name=device_name,
-            device_type=ub.Device.DeviceType.PARTICIPANT,
-            components=[
-                {
-                    'io_type': ub.Component.IOType.PUBLISHER,
-                    'topic': client_bool_topic,
-                    'message_format': 'bool'
-                },
-                {
-                    'io_type': ub.Component.IOType.SUBSCRIBER,
-                    'topic': server_bool_topic,
-                    'message_format': 'bool'
-                }
-            ],
-        )
-
-        return device
-
-    @pytest.fixture(scope='class')
-    async def test_session(self, test_module, test_device: ub.Device):
-        client_bool_topic = test_device.components[0].topic
-        server_bool_topic = test_device.components[1].topic
+    def base_session(self, client, base_module):
+        client_bool_topic = f"{client.name}/client_bool"
+        server_bool_topic = f"{client.name}/server_bool"
         io_mappings = [
             {
-                'processing_module_name': test_module.name,
+                'processing_module_name': base_module.name,
                 'input_mappings': [
                     {
-                        'input_name': test_module.inputs[0].internal_name,
+                        'input_name': base_module.inputs[0].internal_name,
                         'topic': client_bool_topic
                     },
                 ],
                 'output_mappings': [
                     {
-                        'output_name': test_module.outputs[0].internal_name,
+                        'output_name': base_module.outputs[0].internal_name,
                         'topic': server_bool_topic
                     }
                 ]
@@ -86,65 +66,84 @@ class TestProcessing:
         ]
 
         session = ub.Session(name="Example Session",
-                             processing_modules=[test_module],
+                             processing_modules=[base_module],
                              io_mappings=io_mappings)
+
+        type(session).server_bool = property(lambda _: server_bool_topic)
+        type(session).client_bool = property(lambda _: client_bool_topic)
+
         return session
 
-    @pytest.mark.xfail(reason="Not allowed to reregister device", raises=ValueError)
-    async def test_device_reregistration(self, client, test_device):
-        client = await client
-        # Device Manager is not a required behaviour
-        await client.implements(DeviceManager)
-
-        await client.register_device(device=test_device)
-        assert test_device in client.devices
-        await client.register_device(device=test_device)
-
     @pytest.fixture(scope='class')
-    async def server_bool_test_value(self, client, test_module, test_device: ub.Device, test_session, start_session):
-        test_module.on_processing_stringified = (
+    async def server_side_processing_setup(self, client, base_session, base_module, start_session):
+        base_module.on_processing_stringified = (
             "function processingCallback(deltaTime, inputs) {"
             "  let outputs = {};\n"
             "  outputs.serverBool = !inputs.clientBool;\n"
             "  return {outputs};\n"
             "}"
         )
-        test_module.language = test_module.Language.JS
-        test_session.processing_modules = [test_module]
+        base_module.language = base_module.Language.JS
+        base_session.processing_modules = [base_module]
+        client.is_dedicated_processing_node = False
 
-        server_bool_topic = test_device.components[1].topic
         client = await client
-        value = util.accessor()
-        topic, = await client.subscribe_topic(server_bool_topic)
-        _ = topic.register_callback(value.set)
-        await start_session(test_session)
-        yield value
+        value_accessor = util.accessor()
+        topic, = await client.subscribe_topic(base_session.server_bool)
+        _ = topic.register_callback(value_accessor.set)
+        await start_session(base_session)
 
-    @pytest.mark.parametrize('data', [
-        False,
-        True,
-        False,
-        False,
-        False,
-        True,
-        False,
-    ])
-    async def test_server_processing(self, client, test_device: ub.Device, server_bool_test_value, data):
-        client_bool_topic = test_device.components[0].topic
-        await client.publish({'topic': client_bool_topic, 'bool': data})
-        result = await asyncio.wait_for(server_bool_test_value.get(), timeout=1)
+        yield value_accessor, base_session
+
+    @pytest.mark.parametrize('data', [False, True, False, False, False, True, False])
+    async def test_server_processing(self, client, server_side_processing_setup, data):
+        value, session = server_side_processing_setup
+        await client.publish({'topic': session.client_bool, 'bool': data})
+        result = await asyncio.wait_for(value.get(), timeout=1)
         assert result is not None and result != data
 
-    async def test_processing_module(self, client: UbiiClient, start_session, test_module, test_session):
+    @pytest.fixture(scope='class')
+    async def client_processing_setup(self, client, base_session, base_module, start_session):
+        base_module.language = base_module.Language.PY
+        base_module.on_created_stringified = '\n'.join((
+            'def on_created(self, context):',
+            '    import logging',
+            '    log = logging.getLogger("ubii.interact.protocol")',
+            '    log.info(f"------- TEST: {context} ---------")',
+            '',
+        ))
+
+        base_module.on_processing_stringified = '\n'.join((
+            'def on_processing(self, context):',
+            '    import logging',
+            '    log = logging.getLogger("ubii.interact.protocol")',
+            '    log.info(f"------- VALUE: {context.delta_time} ---------")',
+            '    context.outputs.serverBool = not context.inputs.clientBool',
+        ))
+
+        client.processing_modules = [base_module]
+        client.is_dedicated_processing_node = True
+        base_session.processing_modules = [base_module]
         client = await client
+
+        value_accessor = util.accessor()
+        topic, = await client.subscribe_topic(base_session.server_bool)
+        _ = topic.register_callback(value_accessor.set)
+
         await client.implements(ProcessingModuleManager)
-        await start_session(test_session)
 
-        pm = processing.ProcessingRoutine.registry.get(test_module.name)
+        await start_session(base_session)
+
+        pm: processing.ProcessingRoutine = processing.ProcessingRoutine.registry[base_module.name]
         async with pm.change_specs:
-            await pm.change_specs.wait_for(lambda: pm.input_mapping)
+            await pm.change_specs.wait_for(lambda: pm.status == pm.Status.CREATED or pm.status == pm.Status.PROCESSING)
 
-        client_bool_topic = ""
-        await client.publish({'topic': client_bool_topic, 'bool': True})
-        await asyncio.sleep(400)
+        yield value_accessor, base_session
 
+    @pytest.mark.parametrize('delay', [2, 5, 0.01, 0.01, 0.01, 0.01, 0.01, 4])
+    @pytest.mark.parametrize('data', [False, True, False, False, False, True, False])
+    async def test_processing_module(self, client, client_processing_setup, base_module, delay, data):
+        value, session = client_processing_setup
+        await client.publish({'topic': session.client_bool, 'bool': data})
+        result = await asyncio.wait_for(value.get(), timeout=1)
+        assert result is not None and result != data
