@@ -27,7 +27,9 @@ class AIOHttpConnection:
 
     @property
     def headers(self):
-        return {'origin': f"http{'s' if self.https else ''}://{self.host_ip}:8080"}
+        localhost_prefix = '127.0.0.'  # actually check for 127.0.0/8 some time
+        host = 'localhost' if self.host_ip.startswith(localhost_prefix) else self.host_ip
+        return {'origin': f"http{'s' if self.https else ''}://{host}:8080"}
 
     @property
     def session(self):

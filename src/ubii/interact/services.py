@@ -8,11 +8,10 @@ from functools import lru_cache
 from warnings import warn
 
 import ubii.proto as ub
-from ._util import hook
 from .logging import ProtoFormatMixin, debug
+from .. import util
 
 __protobuf__ = ub.__protobuf__
-
 log = logging.getLogger(__name__)
 
 
@@ -60,7 +59,7 @@ class ServiceCall(ub.Service, metaclass=ub.ProtoMeta):
         self._transport = transport
         self._orig_call = type(self).__call__
 
-    @hook
+    @util.hook
     async def __call__(self, **payload) -> ub.ServiceReply:
         """
         async send the ServiceRequest defined by the ```request`` arguments and the ServiceCall's ```topic``
@@ -222,12 +221,3 @@ class DefaultServiceMap(ServiceMap[T_Service]):
             else:
                 raise
 
-    def _get_debug_info(self, missing_key):
-        from ._util import similar
-        matches = similar(self._defaults, missing_key)
-
-        info = f"No attribute {missing_key} found in {self.__class__.__name__}."
-        if matches:
-            info += f" Best match[es] in default topics: {', '.join(matches)}"
-            warn(info)
-        return info

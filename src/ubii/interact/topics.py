@@ -1,7 +1,5 @@
 from __future__ import annotations
 
-import warnings
-
 import abc
 import asyncio
 import logging
@@ -11,9 +9,8 @@ from fnmatch import fnmatch
 from functools import cached_property
 from warnings import warn
 
-import codestare.async_utils as util
-from . import _util
 import ubii.proto as ub
+from .. import util
 
 _Buffer = t.TypeVar('_Buffer')
 _Token = t.TypeVar('_Token')
@@ -35,7 +32,7 @@ class DataConnection(t.AsyncIterator[ub.TopicData]):
     async def send(self, data: ub.TopicData): ...
 
 
-class TopicCoroutine(t.Generic[_Buffer], util.wrapper.CoroutineWrapper[t.Any, t.Any, None]):
+class TopicCoroutine(t.Generic[_Buffer], util.CoroutineWrapper[t.Any, t.Any, None]):
     """
     A topic coroutine waits until a value is written to the topic and then runs it's callback.
     """
@@ -43,15 +40,14 @@ class TopicCoroutine(t.Generic[_Buffer], util.wrapper.CoroutineWrapper[t.Any, t.
     def __init__(self, *,
                  shared_resource_accessor: util.accessor[_Buffer],
                  callback: Consumer[_Buffer]):
-        self._get = shared_resource_accessor.get
-        self._set = shared_resource_accessor.set
-        self._callback = util.helper.make_async(callback)
+        self.accessor = shared_resource_accessor
+        self.callback = util.make_async(callback)
         super().__init__(coroutine=self._run())
 
     async def _run(self):
         while True:
-            value: _Buffer = await self._get()
-            await self._callback(value)
+            value: _Buffer = await self.accessor.get()
+            await self.callback(value)
 
 
 class Topic(util.TaskNursery, t.AsyncIterator[_Buffer], t.Generic[_Buffer, _Token], abc.ABC):
@@ -79,7 +75,7 @@ class Topic(util.TaskNursery, t.AsyncIterator[_Buffer], t.Generic[_Buffer, _Toke
                  pattern,
                  *,
                  token_factory: t.Callable[[], _Token],
-                 task_manager: util.TaskNursery | None) -> None:
+                 task_manager: util.TaskNursery | None = None) -> None:
         super().__init__()
         self.pattern = pattern
         self._task_nursery = task_manager or self
@@ -175,11 +171,11 @@ class DefaultTopic(Topic[ub.TopicDataRecord, int]):
         super().__init__(*args, token_factory=self.default_token_factory(), **kwargs)
         self._buffer: ub.TopicDataRecord | None = None
 
-    @_util.hook
+    @util.hook
     def _set_buffer(self, value):
         self._buffer = value
 
-    @_util.hook
+    @util.hook
     def _get_buffer(self):
         return self._buffer
 
@@ -231,8 +227,15 @@ class TopicStore(MatchMapping, t.Generic[_Topic_co]):
         self._default_factory = default_factory
         self.data: t.Dict[str, _Topic_co] = {}
 
+    @util.hook
+    def create_topic(self, key):
+        self.data[key] = self._default_factory(key)
+
     def __getitem__(self, key: str) -> _Topic_co:
-        return self.data.setdefault(key, self._default_factory(key))
+        if key not in self.data:
+            self.create_topic(key)
+        assert key in self.data
+        return self.data[key]
 
     def __len__(self) -> int:
         return len(self.data)
@@ -244,7 +247,7 @@ class TopicStore(MatchMapping, t.Generic[_Topic_co]):
         return item in self.data
 
 
-class StreamSplitRoutine(util.wrapper.CoroutineWrapper[t.Any, t.Any, None]):
+class StreamSplitRoutine(util.CoroutineWrapper[t.Any, t.Any, None]):
     """
     A StreamSplitRoutine splits TopicDataRecords form a TopicData to the buffers of topics from a TopicStore container
     (letting the TopicStorethe matching topics for the topic of the record and then setting the buffer with

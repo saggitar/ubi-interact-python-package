@@ -5,8 +5,9 @@ import logging
 import pytest
 import typing as t
 
+import ubii.proto as ub
 from ubii.interact._default import DefaultProtocol
-from ubii.interact.client import DeviceManager, UbiiClient
+from ubii.interact.client import Devices, UbiiClient, Services
 
 __verbosity__: int | None = None
 ALWAYS_VERBOSE = True
@@ -63,9 +64,9 @@ def event_loop():
 
 
 @pytest.fixture(scope='class')
-async def client() -> UbiiClient:
+async def base_client() -> UbiiClient:
     """
-    We need more control over the client, so don't use the default client fixture
+    We need more control over the client, so don't use the default client interface
     """
     protocol = DefaultProtocol()
     client = UbiiClient(protocol=protocol)
@@ -76,28 +77,99 @@ async def client() -> UbiiClient:
     await client.protocol.stop()
 
 
+@pytest.fixture(scope='session')
+def base_module():
+    yield ub.ProcessingModule()
+
+
+@pytest.fixture(scope='session')
+def base_session():
+    yield ub.Session()
+
+
 @pytest.fixture
 def register_device(client):
     async def _register(*args, **kwargs):
         _client = await client
-        await _client.implements(DeviceManager)
-        _client.register_device(*args, **kwargs)
+        await _client.implements(Devices)
+        _client[Devices].register_device(*args, **kwargs)
 
     yield _register
 
 
 @pytest.fixture(scope='class')
-def start_session(client):
-    _started = {}
+async def start_session(client_spec):
+    _started = []
 
     async def _start(session):
-        _client = await client
+        client = await client_spec
         if session.id:
             raise ValueError(f"Session {session} already started.")
 
         nonlocal _started
-        response = await _client.services.session_runtime_start(session=session)
-        await asyncio.sleep(5)  # session needs to start up
-        _started[response.session.id] = response.session
+        assert client.implements(Services)
+        response = await client[Services].services.session_runtime_start(session=session)
+        await asyncio.sleep(3)  # session needs to start up
+        _started.append(response.session)
 
     yield _start
+
+    for session in _started:
+        pass
+        # raises error
+        # await client_spec.services.session_runtime_stop(session=session)
+
+
+P = t.TypeVar('P', bound=ub.ProtoMessage)
+
+
+def _change_specs(proto: P, *specs: P):
+    base = type(proto).pb(proto)
+    for change in specs:
+        base.MergeFrom(type(change).pb(change))
+
+    type(proto).copy_from(proto, base)
+
+
+get_param = (lambda request: request.param if hasattr(request, 'param') else ())
+
+
+@pytest.fixture(scope='class')
+def module_spec(base_module, request):
+    _change_specs(base_module, *get_param(request))
+    yield base_module
+
+
+@pytest.fixture(scope='class')
+def client_spec(base_client, module_spec, request):
+    _change_specs(base_client, *get_param(request))
+    if module_spec not in base_client.processing_modules:
+        base_client.processing_modules += [module_spec]
+
+    yield base_client
+
+
+@pytest.fixture(scope='class')
+def session_spec(base_session, module_spec, request):
+    _change_specs(base_session, *get_param(request))
+    if module_spec not in base_session.processing_modules:
+        base_session.processing_modules += [module_spec]
+    yield base_session
+
+
+# convenience
+@pytest.fixture(scope='class')
+def client(client_spec):
+    return client_spec
+
+
+def pytest_generate_tests(metafunc):
+    specs = [
+        'client_spec',
+        'module_spec',
+        'session_spec'
+    ]
+
+    for spec in specs:
+        if hasattr(metafunc.cls, spec) and spec in metafunc.fixturenames:
+            metafunc.parametrize(spec, getattr(metafunc.cls, spec), indirect=[spec])

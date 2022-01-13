@@ -1,7 +1,5 @@
 from __future__ import annotations
 
-from itertools import product
-
 import abc
 import asyncio
 import logging
@@ -10,37 +8,37 @@ import typing as t
 import warnings
 from contextlib import AsyncExitStack
 from functools import partial, cached_property
+from itertools import product
 
-import codestare.async_utils as util
-import ubii.interact as ub
 from . import topics, constants, client
-from ._typing import Decorator, Descriptor, T_EnumFlag
-from ._util import EnumMatcher, hook, registry
+from .. import util
+from ..util.typing import _T_EnumFlag, _Descriptor, _Decorator
 
 Callback = t.Callable[..., t.Coroutine[t.Any, t.Any, None]]
-_StateChange = t.Tuple[T_EnumFlag, T_EnumFlag]
+_StateChange = t.Tuple[_T_EnumFlag, _T_EnumFlag]
 
 log = logging.getLogger(__name__)
 
 
-class UbiiProtocol(t.Generic[T_EnumFlag], util.TaskNursery, abc.ABC):
+class UbiiProtocol(t.Generic[_T_EnumFlag], util.TaskNursery, abc.ABC):
+    __name__: str
 
     @classmethod
     @property
     @abc.abstractmethod
-    def state_changes(cls) -> t.Mapping[t.Tuple[T_EnumFlag | None, ...], Descriptor[Callback]]:
+    def state_changes(cls) -> t.Mapping[t.Tuple[_T_EnumFlag | None, ...], Callback]:
         ...
 
     @classmethod
     @property
     @abc.abstractmethod
-    def starting_state(cls) -> T_EnumFlag:
+    def starting_state(cls) -> _T_EnumFlag:
         ...
 
     @classmethod
     @property
     @abc.abstractmethod
-    def end_state(cls) -> T_EnumFlag:
+    def end_state(cls) -> _T_EnumFlag:
         ...
 
     @cached_property
@@ -49,15 +47,16 @@ class UbiiProtocol(t.Generic[T_EnumFlag], util.TaskNursery, abc.ABC):
 
     def __init__(self) -> None:
         super().__init__()
+        self.__name__ = type(self).__name__
         self.change_context = asyncio.Condition()
         self._state = self.starting_state
         self._run = None
-        self._get_state_change_callback = partial(EnumMatcher.get_matching_value, mapping=self.state_changes)
+        self._get_state_change_callback = partial(util.EnumMatcher.get_matching_value, mapping=self.state_changes)
 
-    def _get_state(self) -> T_EnumFlag:
+    def _get_state(self) -> _T_EnumFlag:
         return self._state
 
-    def _set_state(self, new_state: T_EnumFlag):
+    def _set_state(self, new_state: _T_EnumFlag):
         current = self._state
         if new_state == current:
             return
@@ -124,11 +123,12 @@ class UbiiProtocol(t.Generic[T_EnumFlag], util.TaskNursery, abc.ABC):
         await self.stop()
 
 
-class RunProtocol(util.wrapper.CoroutineWrapper):
+class RunProtocol(util.CoroutineWrapper):
 
     def __init__(self, protocol: UbiiProtocol):
         self._protocol = protocol
         super().__init__(coroutine=self._run())
+        self.__name__ = self._protocol.__name__
 
     async def _no_callback_found(self, protocol, context):
         raise RuntimeError(f"No callback found for context {context} in {protocol}")
@@ -138,7 +138,7 @@ class RunProtocol(util.wrapper.CoroutineWrapper):
         end_state = self._protocol.end_state
         current = self._protocol.starting_state
         context = self._protocol.context
-        get_state = partial(EnumMatcher.get_matching_value, mapping=self._protocol.state_changes)
+        get_state = partial(util.EnumMatcher.get_matching_value, mapping=self._protocol.state_changes)
 
         while previous != end_state:
             callback = get_state((previous, current), self._no_callback_found)
@@ -146,7 +146,7 @@ class RunProtocol(util.wrapper.CoroutineWrapper):
             log.debug(f"Changed state {previous!r}->{current!r} in {self._protocol}, got callback {callback}")
 
             # also functions are descriptors
-            assert isinstance(callback, Descriptor), f"{callback} needs to be a descriptor"
+            assert isinstance(callback, _Descriptor), f"{callback} needs to be a descriptor, e.g. a function"
             coro = callback.__get__(self._protocol, type(self._protocol))(context)
 
             if not asyncio.iscoroutine(coro):
@@ -164,9 +164,10 @@ class RunProtocol(util.wrapper.CoroutineWrapper):
                 )
 
 
-class StandardProtocol(UbiiProtocol[T_EnumFlag], t.Generic[T_EnumFlag], abc.ABC):
-    hook_function = registry(lambda h: h.__name__, hook)
-    __hooks__ = set()
+class StandardProtocol(UbiiProtocol[_T_EnumFlag], t.Generic[_T_EnumFlag], abc.ABC):
+    _get_name = (lambda h: h.__name__)  # type: ignore
+    hook_function = util.registry(_get_name, util.hook)
+    __hooks__: t.Set[_Decorator] = set()
 
     def __init__(self, config: constants.UbiiConfig = constants.GLOBAL_CONFIG, log: logging.Logger | None = None):
         super().__init__()
@@ -175,6 +176,10 @@ class StandardProtocol(UbiiProtocol[T_EnumFlag], t.Generic[T_EnumFlag], abc.ABC)
         self.client: client.UbiiClient | None = None
         self.exit_stack = AsyncExitStack()
         self.add_sentinel_callback(self.exit_stack.aclose())
+        self.fallback_handler = util.function_chain(
+            self.log.exception,
+            lambda _: self.trigger_sentinel.set()
+        )
 
     @abc.abstractmethod
     async def create_service_map(self, context):
@@ -214,7 +219,7 @@ class StandardProtocol(UbiiProtocol[T_EnumFlag], t.Generic[T_EnumFlag], abc.ABC)
         """
 
     @abc.abstractmethod
-    async def create_topic_connection(self, context: ub.client.UbiiClient):
+    async def create_topic_connection(self, context):
         """
         It's expected that ``context.topic_connection`` is a fully functional topic connection after this coroutine
         is completed.
@@ -262,7 +267,7 @@ class StandardProtocol(UbiiProtocol[T_EnumFlag], t.Generic[T_EnumFlag], abc.ABC)
         """
         Register decorators
         """
-        hook_function: hook
+        hook_function: util.hook
         for hook_function, hk in product(cls.hook_function.registry.values(), cls.__hooks__):
             hook_function.register_decorator(hk)
 

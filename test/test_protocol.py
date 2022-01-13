@@ -72,7 +72,7 @@ async def protocol(request):
 
 @pytest.mark.parametrize('protocol', [DefaultProtocol], indirect=True)
 async def test_default_protocol(protocol: DefaultProtocol):
-    await asyncio.wait_for(protocol.state.get(predicate=lambda: protocol.peek_state() == UbiiStates.CONNECTED),
+    await asyncio.wait_for(protocol.state.get(predicate=lambda state: state == UbiiStates.CONNECTED),
                            timeout=5)
     client = protocol.client
     assert client.id
@@ -80,10 +80,10 @@ async def test_default_protocol(protocol: DefaultProtocol):
 
 @pytest.mark.parametrize('protocol', [DefaultProtocol], indirect=True)
 async def test_default_protocol_stop(protocol: DefaultProtocol):
-    await asyncio.wait_for(protocol.state.get(predicate=lambda: protocol.peek_state() == UbiiStates.CONNECTED),
+    await asyncio.wait_for(protocol.state.get(predicate=lambda state: state == UbiiStates.CONNECTED),
                            timeout=5)
     client = protocol.client
     assert client.id
     await protocol.stop()
 
-    assert protocol.peek_state() == protocol.end_state
+    assert protocol.state.value == protocol.end_state

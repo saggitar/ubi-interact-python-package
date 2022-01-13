@@ -1,15 +1,13 @@
-from functools import partial
-
 import logging
 
 import asyncio
+import logging
 import pytest
 
 import codestare.async_utils as util
 import ubii.proto as ub
 from ubii.interact import processing
-from ubii.interact._util import make_dict
-from ubii.interact.client import UbiiClient, ProcessingModuleManager
+from ubii.interact.client import ProcessingModules, Subscriptions, Publish
 
 pytestmark = pytest.mark.asyncio
 
@@ -17,9 +15,41 @@ __protobuf__ = ub.__protobuf__
 
 log = logging.getLogger(__name__)
 
+js_on_processing_stringified = ub.ProcessingModule(
+    on_processing_stringified='\n'.join((
+        "function processingCallback(deltaTime, inputs) {",
+        "  let outputs = {};",
+        "  outputs.serverBool = !inputs.clientBool;",
+        "  return {outputs};",
+        "}",
+    )),
+    language=ub.ProcessingModule.Language.JS,
+)
 
-class TestProcessing:
+py_on_processing_stringified = ub.ProcessingModule(
+    on_processing_stringified='\n'.join((
+        'def on_processing(self, context):',
+        '    import logging',
+        '    log = logging.getLogger("ubii.interact.protocol")',
+        '    log.info(f"------- delta_time: {context.delta_time} ---------")',
+        '    context.outputs.serverBool = not context.inputs.clientBool',
+    )),
+    language=ub.ProcessingModule.Language.PY,
+)
 
+py_on_created_stringified = ub.ProcessingModule(
+    on_created_stringified='\n'.join((
+        'def on_created(self, context):',
+        '    import logging',
+        '    log = logging.getLogger("ubii.interact.protocol")',
+        '    log.info(f"------- TEST: {context} ---------")',
+        '',
+    )),
+    language=ub.ProcessingModule.Language.PY,
+)
+
+
+class Processing:
     @pytest.fixture(scope='class')
     def base_module(self):
         processing_module = ub.ProcessingModule(
@@ -44,9 +74,10 @@ class TestProcessing:
         return processing_module
 
     @pytest.fixture(scope='class')
-    def base_session(self, client, base_module):
-        client_bool_topic = f"{client.name}/client_bool"
-        server_bool_topic = f"{client.name}/server_bool"
+    async def base_session(self, client, base_module):
+        await client
+        client_bool_topic = f"{client.id}/client_bool"
+        server_bool_topic = f"{client.id}/server_bool"
         io_mappings = [
             {
                 'processing_module_name': base_module.name,
@@ -75,75 +106,58 @@ class TestProcessing:
         return session
 
     @pytest.fixture(scope='class')
-    async def server_side_processing_setup(self, client, base_session, base_module, start_session):
-        base_module.on_processing_stringified = (
-            "function processingCallback(deltaTime, inputs) {"
-            "  let outputs = {};\n"
-            "  outputs.serverBool = !inputs.clientBool;\n"
-            "  return {outputs};\n"
-            "}"
-        )
-        base_module.language = base_module.Language.JS
-        base_session.processing_modules = [base_module]
-        client.is_dedicated_processing_node = False
-
-        client = await client
-        value_accessor = util.accessor()
-        topic, = await client.subscribe_topic(base_session.server_bool)
-        _ = topic.register_callback(value_accessor.set)
-        await start_session(base_session)
-
-        yield value_accessor, base_session
-
-    @pytest.mark.parametrize('data', [False, True, False, False, False, True, False])
-    async def test_server_processing(self, client, server_side_processing_setup, data):
-        value, session = server_side_processing_setup
-        await client.publish({'topic': session.client_bool, 'bool': data})
-        result = await asyncio.wait_for(value.get(), timeout=1)
-        assert result is not None and result != data
+    def startup(self):
+        pass
 
     @pytest.fixture(scope='class')
-    async def client_processing_setup(self, client, base_session, base_module, start_session):
-        base_module.language = base_module.Language.PY
-        base_module.on_created_stringified = '\n'.join((
-            'def on_created(self, context):',
-            '    import logging',
-            '    log = logging.getLogger("ubii.interact.protocol")',
-            '    log.info(f"------- TEST: {context} ---------")',
-            '',
-        ))
-
-        base_module.on_processing_stringified = '\n'.join((
-            'def on_processing(self, context):',
-            '    import logging',
-            '    log = logging.getLogger("ubii.interact.protocol")',
-            '    log.info(f"------- VALUE: {context.delta_time} ---------")',
-            '    context.outputs.serverBool = not context.inputs.clientBool',
-        ))
-
-        client.processing_modules = [base_module]
-        client.is_dedicated_processing_node = True
-        base_session.processing_modules = [base_module]
-        client = await client
-
+    async def test_value(self, startup, client, base_session, start_session):
         value_accessor = util.accessor()
-        topic, = await client.subscribe_topic(base_session.server_bool)
-        _ = topic.register_callback(value_accessor.set)
+        topic, = await client[Subscriptions].subscribe_topic(base_session.server_bool)
 
-        await client.implements(ProcessingModuleManager)
+        _ = topic.register_callback(lambda rec: value_accessor.set(rec.bool))
+        yield value_accessor
 
-        await start_session(base_session)
+    @pytest.mark.parametrize('data', [False, True, False, True, False, False, False])
+    @pytest.mark.parametrize('delay', [1, 0.1, 0.01])
+    async def test_processing_module(self, client, test_value, base_session, delay, data):
+        await asyncio.sleep(delay)
+        await client[Publish].publish({'topic': base_session.client_bool, 'bool': data})
+        result = await asyncio.wait_for(test_value.get(), timeout=0.3)
 
-        pm: processing.ProcessingRoutine = processing.ProcessingRoutine.registry[base_module.name]
+        assert isinstance(result, bool)
+        assert result != data
+
+
+class TestPy(Processing):
+    module_spec = [
+        pytest.param((py_on_processing_stringified, py_on_created_stringified), id='python')
+    ]
+
+    client_spec = [
+        pytest.param((ub.Client(is_dedicated_processing_node=True),), id='processing_node')
+    ]
+
+    @pytest.fixture(scope='class', autouse=True)
+    async def startup(self, client, session_spec, module_spec, start_session):
+        await client.implements(ProcessingModules)
+        await start_session(session_spec)
+        pm: processing.ProcessingRoutine = processing.ProcessingRoutine.registry[module_spec.name]
         async with pm.change_specs:
-            await pm.change_specs.wait_for(lambda: pm.status == pm.Status.CREATED or pm.status == pm.Status.PROCESSING)
+            await pm.change_specs.wait_for(
+                lambda: pm.status == pm.Status.CREATED or pm.status == pm.Status.PROCESSING)
 
-        yield value_accessor, base_session
 
-    @pytest.mark.parametrize('delay', [2, 5, 0.01, 0.01, 0.01, 0.01, 0.01, 4])
-    @pytest.mark.parametrize('data', [False, True, False, False, False, True, False])
-    async def test_processing_module(self, client, client_processing_setup, base_module, delay, data):
-        value, session = client_processing_setup
-        await client.publish({'topic': session.client_bool, 'bool': data})
-        result = await asyncio.wait_for(value.get(), timeout=1)
-        assert result is not None and result != data
+class TestJS(Processing):
+    module_spec = [
+        pytest.param((js_on_processing_stringified,), id='js')
+    ]
+
+    client_spec = [
+        pytest.param((ub.Client(is_dedicated_processing_node=False),), id='server_processing')
+    ]
+
+    @pytest.fixture(scope='class', autouse=True)
+    async def startup(self, client, session_spec, module_spec, start_session):
+        client.processing_modules = []
+        await client
+        yield True
