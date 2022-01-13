@@ -323,7 +323,11 @@ class DefaultProtocol(protocol.StandardProtocol[States]):
                 task.add_done_callback(lambda _: self.trigger_sentinel.set())
 
                 async with pm.change_specs:
-                    ub.ProcessingModule.pb(pm).MergeFrom(ub.ProcessingModule.pb(specs))
+                    # MergeFrom appends outputs and inputs, CopyFrom overwrites stuff, so we first need to "merge"
+                    values = ub.ProcessingModule.to_dict(pm)
+                    values.update(**ub.ProcessingModule.to_dict(specs))
+                    # then copy
+                    ub.ProcessingModule.copy_from(pm, ub.ProcessingModule(mapping=values))
                     pm.change_specs.notify_all()
 
                 assert specs.name in processing.ProcessingRoutine.registry
