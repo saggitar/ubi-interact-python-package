@@ -10,7 +10,7 @@ from functools import cached_property
 from warnings import warn
 
 import ubii.proto as ub
-from .. import util
+from . import util
 
 _Buffer = t.TypeVar('_Buffer')
 _Token = t.TypeVar('_Token')

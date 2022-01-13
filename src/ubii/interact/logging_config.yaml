@@ -34,7 +34,7 @@ handlers:
     mode: w
 loggers:
   ubii.interact:
-    propagate: yes
+    propagate: no
   aiohttp.client:
     propagate: no
     handlers: [services]

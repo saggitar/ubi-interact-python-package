@@ -15,8 +15,8 @@ from . import (
     protocol as protocol_,
     logging,
 )
-from ..util import ProtoRegistry, function_chain, awaitable_predicate
-from ..util.typing import _SimpleCoroutine, _T
+from .util import ProtoRegistry, function_chain, awaitable_predicate
+from .util.typing import _SimpleCoroutine, _T
 
 __protobuf__ = ub.__protobuf__
 

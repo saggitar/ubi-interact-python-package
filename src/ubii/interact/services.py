@@ -5,11 +5,10 @@ import copy
 import logging
 import typing as t
 from functools import lru_cache
-from warnings import warn
 
 import ubii.proto as ub
+from . import util
 from .logging import ProtoFormatMixin, debug
-from .. import util
 
 __protobuf__ = ub.__protobuf__
 log = logging.getLogger(__name__)

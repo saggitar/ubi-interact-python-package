@@ -11,8 +11,8 @@ from functools import partial, cached_property
 from itertools import product
 
 from . import topics, constants, client
-from .. import util
-from ..util.typing import _T_EnumFlag, _Descriptor, _Decorator
+from . import util
+from .util.typing import _T_EnumFlag, _Descriptor, _Decorator
 
 Callback = t.Callable[..., t.Coroutine[t.Any, t.Any, None]]
 _StateChange = t.Tuple[_T_EnumFlag, _T_EnumFlag]
@@ -239,6 +239,9 @@ class StandardProtocol(UbiiProtocol[_T_EnumFlag], t.Generic[_T_EnumFlag], abc.AB
         await self.update_config(context)
         await self.update_services(context)
         await self.create_client(context)
+
+    @hook_function
+    async def on_create(self, context):
         await self.exit_stack.enter_async_context(self.register_client(context))
 
     @hook_function

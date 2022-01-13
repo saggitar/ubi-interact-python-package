@@ -11,7 +11,7 @@ from functools import wraps, partial
 import ubii.proto as ub
 from . import protocol, topics
 from .logging import debug
-from .. import util
+from . import util
 
 __protobuf__ = ub.__protobuf__
 log = logging.Logger(__name__)
@@ -165,7 +165,7 @@ class ProcessingRoutine(util.CoroutineWrapper, ub.ProcessingModule, metaclass=ut
         get_name = (lambda io: io.internal_name)
         get_input_mapping = {mapping.input_name: mapping for mapping in io_mapping.input_mappings}.get
         get_output_mapping = {mapping.output_name: mapping for mapping in io_mapping.output_mappings}.get
-        get_topic = (lambda mapping: topic_map.get(mapping.topic or mapping.topic_mux))
+        get_topic = (lambda mapping: topic_map.get(mapping.topic or mapping.topic_mux.topic_selector))
 
         _input_decorators = self.get_input_topic.decorators
         _output_decorators = self.get_output_topic.decorators
@@ -266,8 +266,14 @@ class ProcessingProtocol(protocol.UbiiProtocol[ub.ProcessingModule.Status]):
         def write_scheduler_data_to_context(scheduler: Scheduler, ctx):
             ctx.delta_time = scheduler.delta_time
             inputs = vars(ctx.inputs)
+
+            # dirty fix
+            def extract_value(result: ub.TopicDataRecord, name: str):
+                attr_name = name.split('.')[-1]
+                return getattr(result, f"{attr_name[0].lower()}{attr_name[1:]}")
+
             inputs.update(**{
-                result.info[0]: getattr(result.value, result.info[1])
+                result.info[0]: extract_value(result.value, result.info[1])
                 for result in map(lambda task: task.result(), ctx.scheduler.done)
             })
             ctx.inputs = types.SimpleNamespace(**inputs)
@@ -307,7 +313,7 @@ class ProcessingProtocol(protocol.UbiiProtocol[ub.ProcessingModule.Status]):
         """
         log.info(f"created processing module {self.pm}")
         # create inputs
-        context.inputs = types.SimpleNamespace()
+        context.inputs = types.SimpleNamespace(**dict.fromkeys(map(lambda io: io.internal_name, self.pm.inputs)))
 
         # create outputs (use dataclass to get better error reporting)
         fields = [

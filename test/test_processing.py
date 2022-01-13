@@ -4,10 +4,11 @@ import asyncio
 import logging
 import pytest
 
-import codestare.async_utils as util
 import ubii.proto as ub
+from ubii.interact import util
 from ubii.interact import processing
 from ubii.interact.client import ProcessingModules, Subscriptions, Publish
+from ubii.interact.protocol import StandardProtocol
 
 pytestmark = pytest.mark.asyncio
 
@@ -161,3 +162,37 @@ class TestJS(Processing):
         client.processing_modules = []
         await client
         yield True
+
+
+class TestCoco():
+    client_spec = [
+        pytest.param((ub.Client(is_dedicated_processing_node=True),), id='processing_node')
+    ]
+
+    @pytest.fixture(scope='class', autouse=True)
+    async def startup(self, client):
+        from ubii.interact._default import States
+
+        def __add_pms(on_create):
+            """
+            We need to wait until constants are retrieved from the server before initializing PM,
+            and add them before registering the client
+            """
+
+            async def __inner(protocol, *args):
+                from .data.coco_ssd_fake import CocoSSDPM
+                protocol.client.processing_modules = [CocoSSDPM()]
+                await on_create(protocol, *args)
+
+            return __inner
+
+        assert isinstance(client.protocol, StandardProtocol)
+        type(client.protocol).on_create.register_decorator(__add_pms)
+        await client
+        await client.implements(ProcessingModules)
+        yield
+
+    async def test_processing(self, client, startup):
+        while True:
+            await asyncio.sleep(10)
+            print("PING")

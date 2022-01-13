@@ -21,19 +21,20 @@ from . import (
     constants as constants_,
 )
 from .logging import debug
-from .. import util
+from . import util
 
 log = logging.getLogger(__name__)
 
 
 class States(enum.IntFlag):
     STARTING = enum.auto()
+    CREATED = enum.auto()
     REGISTERED = enum.auto()
     CONNECTED = enum.auto()
     STOPPED = enum.auto()
     WAITING = enum.auto()
 
-    ANY = STARTING | REGISTERED | CONNECTED | STOPPED | WAITING
+    ANY = STARTING | REGISTERED | CONNECTED | STOPPED | WAITING | CREATED
 
 
 def _aiohttp_session():
@@ -153,6 +154,8 @@ class DefaultProtocol(protocol.StandardProtocol[States]):
         self.client = context.client
         assert context.client.protocol == self, \
             f"{context.client} uses a different protocol ({context.client.protocol}) instead of {self}"
+
+        await self.state.set(States.CREATED)
 
     def register_client(self, context: Context):
         @asynccontextmanager
@@ -320,7 +323,7 @@ class DefaultProtocol(protocol.StandardProtocol[States]):
                 task.add_done_callback(lambda _: self.trigger_sentinel.set())
 
                 async with pm.change_specs:
-                    ub.ProcessingModule.copy_from(pm, specs)
+                    ub.ProcessingModule.pb(pm).MergeFrom(ub.ProcessingModule.pb(specs))
                     pm.change_specs.notify_all()
 
                 assert specs.name in processing.ProcessingRoutine.registry
@@ -343,12 +346,15 @@ class DefaultProtocol(protocol.StandardProtocol[States]):
                     # subscribe
                     mapping: ub.TopicInputMapping
                     for mapping in io_mapping.input_mappings or ():
-                        subscriber = (
-                            context.client[client_.Subscriptions].subscribe_regex(mapping.topic_mux)
-                            if mapping.topic_mux else
-                            context.client[client_.Subscriptions].subscribe_topic(mapping.topic)
-                        )
-                        await subscriber
+                        if mapping.topic_mux:
+                            subscriber = context.client[client_.Subscriptions].subscribe_regex(mapping.topic_mux)
+                        elif mapping.topic:
+                            subscriber = context.client[client_.Subscriptions].subscribe_topic(mapping.topic)
+                        else:
+                            subscriber = None
+
+                        if subscriber:
+                            await subscriber
 
                     # publish
                     async with instance.change_specs:
@@ -372,10 +378,10 @@ class DefaultProtocol(protocol.StandardProtocol[States]):
         assert subscribe_topic is not None
 
         # create processing routines for all pms
-        assert all(
-            pm.name in processing.ProcessingRoutine.registry
-            for pm in map(processing.ProcessingRoutine, context.client.processing_modules)
-        )
+        for pm in context.client.processing_modules:
+            if pm.name not in processing.ProcessingRoutine.registry:
+                # add to registry by creating an instance
+                _ = processing.ProcessingRoutine(mapping=pm)
 
         # register callbacks
         default_topics = context.constants.DEFAULT_TOPICS
@@ -390,7 +396,7 @@ class DefaultProtocol(protocol.StandardProtocol[States]):
         context.client[client_.ProcessingModules].get_processing_modules = processing.ProcessingRoutine.registry.get
 
     async def on_wait(self, context: Context):
-        pass
+        log.info(f"Halted {self}")
 
     async def on_stop(self, context):
         for topic in context.topic_store:
@@ -399,9 +405,10 @@ class DefaultProtocol(protocol.StandardProtocol[States]):
     # changed callbacks means state changes have to be adjusted
     state_changes = {
         (None, starting_state): protocol.StandardProtocol.on_start,
-        (starting_state, States.REGISTERED): on_registration,
+        (starting_state, States.CREATED): protocol.StandardProtocol.on_create,
+        (States.CREATED, States.REGISTERED): on_registration,
         (States.REGISTERED, States.CONNECTED): protocol.StandardProtocol.on_connect,
         (States.ANY, States.WAITING): on_wait,
-        (States.WAITING, States.STARTING): protocol.StandardProtocol.on_start,
+        (States.WAITING, States.ANY): protocol.StandardProtocol.on_start,
         (States.ANY, end_state): protocol.StandardProtocol.on_stop,
     }
