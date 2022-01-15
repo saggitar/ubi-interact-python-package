@@ -1,12 +1,11 @@
-import logging
-
 import asyncio
 import logging
+
 import pytest
 
 import ubii.proto as ub
-from ubii.interact import util
 from ubii.interact import processing
+from ubii.interact import util
 from ubii.interact.client import ProcessingModules, Subscriptions, Publish
 from ubii.interact.protocol import StandardProtocol
 
@@ -119,7 +118,7 @@ class Processing:
         yield value_accessor
 
     @pytest.mark.parametrize('data', [False, True, False, True, False, False, False])
-    @pytest.mark.parametrize('delay', [1, 0.1, 0.01])
+    @pytest.mark.parametrize('delay', [1, 0.1, 0.01, 0.001])
     async def test_processing_module(self, client, test_value, base_session, delay, data):
         await asyncio.sleep(delay)
         await client[Publish].publish({'topic': base_session.client_bool, 'bool': data})
@@ -171,8 +170,6 @@ class TestCoco():
 
     @pytest.fixture(scope='class', autouse=True)
     async def startup(self, client):
-        from ubii.interact._default import States
-
         def __add_pms(on_create):
             """
             We need to wait until constants are retrieved from the server before initializing PM,

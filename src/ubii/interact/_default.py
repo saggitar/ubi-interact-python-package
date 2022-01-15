@@ -325,7 +325,8 @@ class DefaultProtocol(protocol.StandardProtocol[States]):
                 async with pm.change_specs:
                     # MergeFrom appends outputs and inputs, CopyFrom overwrites stuff, so we first need to "merge"
                     values = ub.ProcessingModule.to_dict(pm)
-                    values.update(**ub.ProcessingModule.to_dict(specs))
+                    changes = ub.ProcessingModule.to_dict(specs)
+                    values.update(**{k:v for k,v in changes.items() if v})
                     # then copy
                     ub.ProcessingModule.copy_from(pm, ub.ProcessingModule(mapping=values))
                     pm.change_specs.notify_all()
