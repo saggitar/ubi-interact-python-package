@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from abc import ABCMeta
 from collections import namedtuple
 
 import asyncio
@@ -8,12 +9,11 @@ import sys
 import typing as t
 from difflib import SequenceMatcher
 from functools import partial, wraps, reduce
-from itertools import chain
 from warnings import warn
 
-import codestare.async_utils as utils
 import ubii.proto as ub
-from .typing import _S, _T, _ExcInfo, _T_EnumFlag
+from . import RegistryMeta
+from .typing import S, T, ExcInfo
 
 
 def similar(choices, item, cutoff=0.70):
@@ -21,35 +21,18 @@ def similar(choices, item, cutoff=0.70):
     return list(sorted(filter(lambda item: _similarity(item) > cutoff, choices), key=_similarity, reverse=True))
 
 
-class EnumMatcher:
-    _enum_tuple = t.Tuple[_T_EnumFlag, ...]
-    _no_default = object()
-
-    @classmethod
-    def matches(cls, base: _enum_tuple, query: _enum_tuple) -> bool:
-        if not len(base) == len(query):
-            return False
-
-        if base == query:
-            return True
-
-        if any(x is None for x in chain(base, query)):
-            return False
-
-        return all(b & q == q for b, q in zip(base, query))
-
-    @classmethod
-    def get_matching_value(cls, key: _enum_tuple, default: t.Any = _no_default, *,
-                           mapping: t.Mapping[_enum_tuple, _T],
-                           ) -> _T:
-        matching = [value for enums, value in mapping.items() if cls.matches(enums, key)]
-        if len(matching) != 1 and default is EnumMatcher._no_default:
-            raise KeyError(f"Found matching values {matching} for query {key}, not exactly one match")
-
-        return matching[0] if matching else default
-
-
 T_Callable = t.TypeVar('T_Callable', bound=t.Callable[..., t.Any])
+
+
+class calc_delta:
+    def __init__(self, get_value):
+        self.get_value = get_value
+        self.value = get_value()
+
+    def __call__(self):
+        previous = self.value
+        self.value = self.get_value()
+        return self.value - previous
 
 
 class hook(t.Generic[T_Callable]):
@@ -88,11 +71,11 @@ class hook(t.Generic[T_Callable]):
         return partial(self, instance)
 
 
-class registry(t.Generic[_S, _T]):
-    def __init__(self: registry[_S, _T], instance_key: t.Callable[[_T], _S], fn: t.Callable[..., _T]):
+class registry(t.Generic[S, T]):
+    def __init__(self: registry[S, T], instance_key: t.Callable[[T], S], fn: t.Callable[..., T]):
         self.key = instance_key
         self.func = fn
-        self._registry: t.Dict[_S, _T] = {}
+        self._registry: t.Dict[S, T] = {}
         wraps(fn)(self)
 
     @property
@@ -111,19 +94,20 @@ class registry(t.Generic[_S, _T]):
         return partial(self, instance)
 
 
-def exc_handler(handler: t.Callable[[_ExcInfo], None]):
+def exc_handler_decorator(handler: t.Callable[[ExcInfo], t.Awaitable[None | bool] | None | bool]):
     def decorator(fun):
         @wraps(fun)
         async def _inner(*args, **kwargs):
             try:
                 result = fun(*args, **kwargs)
-                if asyncio.iscoroutine(result):
+                if asyncio.isfuture(result) or asyncio.iscoroutine(result):
                     result = await result
                 return result
-            except Exception as e:
+            except:  # noqa
                 exception_info = sys.exc_info()
-                handler(*exception_info)
-                raise e
+                result = handler(*exception_info)
+                if asyncio.isfuture(result) or asyncio.iscoroutine(result):
+                    await result
 
         return _inner
 
@@ -142,7 +126,7 @@ def log_call(logger):
     return decorator
 
 
-class ProtoRegistry(ub.ProtoMeta, utils.RegistryMeta):
+class ProtoRegistry(ub.ProtoMeta, RegistryMeta):
     """
 
     """
@@ -217,32 +201,32 @@ class awaitable_predicate:
     def __init__(self, predicate: t.Callable[[], bool], condition: asyncio.Condition | None = None):
         self.condition = condition or asyncio.Condition()
         self.predicate = predicate
-        self._waiter: t.Awaitable | None = None
+        self.waiting = None
 
-    async def __waiter(self):
+    async def _waiter(self):
         async with self.condition:
             await self.condition.wait_for(self.predicate)
+
+    def __await__(self):
+        if self.waiting is None:
+            self.waiting = self._waiter()
+
+        return self.waiting.__await__()
 
     def __bool__(self):
         return self.predicate()
 
-    def __await__(self):
-        if self._waiter is None:
-            self._waiter = self.__waiter()
 
-        return self._waiter.__await__()
-
-
-class make_dict(t.Generic[_S, _T]):
-    def __init__(self: make_dict[_S, _T],
-                 key: t.Callable[[t.Any], _S],
-                 value: t.Callable[[t.Any], _T],
+class make_dict(t.Generic[S, T]):
+    def __init__(self: make_dict[S, T],
+                 key: t.Callable[[t.Any], S],
+                 value: t.Callable[[t.Any], T],
                  filter_none=False):
         self._key = key
         self._value = value
         self._filter = filter_none
 
-    def __call__(self, iterable: t.Iterable) -> t.Dict[_S, _T]:
+    def __call__(self, iterable: t.Iterable) -> t.Dict[S, T]:
         return {
             self._key(item): self._value(item)
             for item in iterable
@@ -286,10 +270,9 @@ class attach_info:
 
 __all__ = (
     'similar',
-    'EnumMatcher',
     'hook',
     'registry',
-    'exc_handler',
+    'exc_handler_decorator',
     'log_call',
     'ProtoRegistry',
     'function_chain',
@@ -297,5 +280,6 @@ __all__ = (
     'awaitable_predicate',
     'make_dict',
     'async_compose',
-    'attach_info'
+    'attach_info',
+    'calc_delta',
 )

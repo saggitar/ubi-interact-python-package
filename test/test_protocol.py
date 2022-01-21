@@ -6,7 +6,7 @@ from contextlib import suppress
 import pytest
 
 from ubii.interact.protocol import UbiiProtocol, RunProtocol
-from ubii.interact._default import DefaultProtocol, States as UbiiStates
+from ubii.interact.default_protocol import DefaultProtocol, States as UbiiStates
 
 pytestmark = pytest.mark.asyncio
 log = logging.getLogger(__name__)
@@ -52,7 +52,7 @@ async def test_mock_protocol():
 @pytest.fixture
 async def protocol(request):
     protocol: UbiiProtocol = request.param()
-    run: asyncio.Task = protocol.run()
+    run: asyncio.Task = protocol.start()
     yield protocol
 
     run.cancel()

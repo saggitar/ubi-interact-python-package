@@ -98,32 +98,32 @@ async def test_task_manager(make_connection, container, items):
     b_received = []
 
     # register tasks with task manager, tasks for topic 'a' should be automatically unregistered after async with block
-    async with a.exit_stack:
+    async with a.task_nursery:
         a.register_callback(a_received.append)
         b.register_callback(b_received.append)
         await asyncio.create_task(
             StreamSplitRoutine(container=container, stream=make_connection(max_items_send=items))
         )
 
-    assert not a._callback_tasks  # should be cancelled
-    assert b._callback_tasks  # should not be cancelled
+    assert not a.callback_tasks  # should be cancelled
+    assert b.callback_tasks  # should not be cancelled
 
     # check results to see if tasks ran correctly and were not cancelled prematurely
     assert [record.bool for record in a_received] == list(map(lambda i: i % 3 != 0, range(len(a_received))))
     assert [record.int32 for record in b_received] == list(filter(lambda x: x % 2, range(items)))
 
     # register again ...
-    async with a.exit_stack:
+    async with a.task_nursery:
         a.register_callback(a_received.append)
         # ... but change task_manager
-        a.exit_stack = b.exit_stack
+        a.task_manager = b.task_nursery
 
-    assert b._callback_tasks  # should not be cancelled
-    assert a._callback_tasks  # should not be cancelled since task_manager was changed before block was closed
+    assert b.callback_tasks  # should not be cancelled
+    assert a.callback_tasks  # should not be cancelled since task_manager was changed before block was closed
 
-    await b.exit_stack.aclose()  # should cancel all tasks (also for topic 'a')
-    assert not a._callback_tasks
-    assert not b._callback_tasks
+    await b.task_nursery.aclose()  # should cancel all tasks (also for topic 'a')
+    assert not a.callback_tasks
+    assert not b.callback_tasks
 
 
 @pytest.mark.parametrize('items', [15])

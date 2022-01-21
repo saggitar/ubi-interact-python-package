@@ -4,16 +4,18 @@ from codestare.async_utils import (
     make_async,
     CoroutineWrapper,
     TaskNursery,
-    Sentinel,
     RegistryMeta,
-    Registry
+    Registry,
+    async_exit_on_exc,
 )
-from ._util import (
+from .collections import merge_dicts
+from .enum import EnumMatcher
+from .functools import (
     similar,
-    EnumMatcher,
     hook,
     registry,
-    exc_handler,
+    exc_handler_decorator,
+    calc_delta,
     log_call,
     ProtoRegistry,
     function_chain,
@@ -21,7 +23,7 @@ from ._util import (
     awaitable_predicate,
     make_dict,
     async_compose,
-    attach_info
+    attach_info,
 )
 
 __all__ = (
@@ -30,20 +32,21 @@ __all__ = (
     "make_async",
     "CoroutineWrapper",
     "TaskNursery",
-    "Sentinel",
+    "async_exit_on_exc",
     "RegistryMeta",
     "Registry",
     "similar",
-    "EnumMatcher",
     "hook",
     "registry",
-    "exc_handler",
+    "exc_handler_decorator",
     "log_call",
     "ProtoRegistry",
     "function_chain",
     "compose",
     "awaitable_predicate",
     "make_dict",
+    "merge_dicts",
     "async_compose",
-    "attach_info"
+    "attach_info",
+    "calc_delta",
 )

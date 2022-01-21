@@ -3,20 +3,22 @@ from __future__ import annotations
 import asyncio
 import dataclasses
 import typing as t
-import warnings
 from contextlib import asynccontextmanager
-from functools import wraps
+
 from itertools import chain
 
 import ubii.proto as ub
 from . import (
-    services,
-    topics,
+    services as _services,
+    topics as topics_,
+    logging as logging_,
     protocol as protocol_,
-    logging,
 )
-from .util import ProtoRegistry, function_chain, awaitable_predicate
-from .util.typing import _SimpleCoroutine, _T
+from .util import ProtoRegistry, awaitable_predicate
+from .util.typing import (
+    SimpleCoroutine as _SimpleCoro,
+    T as _T
+)
 
 __protobuf__ = ub.__protobuf__
 
@@ -26,15 +28,15 @@ class Services:
     """
     Behavior of the client that needs to be injected
     """
-    services: services.DefaultServiceMap | None = None
+    services: _services.DefaultServiceMap | None = None
 
 
 class subscribe_call(t.Protocol):
-    def __call__(self, *pattern: str) -> t.Awaitable[t.Tuple[topics.Topic, ...]]: ...
+    def __call__(self, *pattern: str) -> t.Awaitable[t.Tuple[topics_.Topic, ...]]: ...
 
 
 class unsubscribe_call(t.Protocol):
-    def __call__(self, *pattern: str) -> t.Awaitable[t.Tuple[topics.Topic, ...]]: ...
+    def __call__(self, *pattern: str) -> t.Awaitable[t.Tuple[topics_.Topic, ...]]: ...
 
 
 @dataclasses.dataclass
@@ -47,7 +49,7 @@ class Subscriptions:
 
 @dataclasses.dataclass
 class Publish:
-    publish: t.Callable[[t.Tuple[ub.TopicDataRecord, ...]], _SimpleCoroutine[None]] | None = None
+    publish: t.Callable[[t.Tuple[ub.TopicDataRecord, ...]], _SimpleCoro[None]] | None = None
 
 
 @dataclasses.dataclass
@@ -61,8 +63,8 @@ class Devices:
     """
     Behavior to register and deregister Devices (optional)
     """
-    register_device: t.Callable[[ub.Device], _SimpleCoroutine[ub.Device]] | None = None
-    deregister_device: t.Callable[[ub.Device], _SimpleCoroutine[None]] | None = None
+    register_device: t.Callable[[ub.Device], _SimpleCoro[ub.Device]] | None = None
+    deregister_device: t.Callable[[ub.Device], _SimpleCoro[None]] | None = None
 
 
 @dataclasses.dataclass
@@ -73,7 +75,14 @@ class ProcessingModules:
     get_processing_modules: t.Callable[[str], ub.ProcessingModule] | None = None
 
 
-class UbiiClient(ub.Client, t.Awaitable['UbiiClient'], logging.ProtoFormatMixin, metaclass=ProtoRegistry):
+_T_Protocol = t.TypeVar('_T_Protocol', bound=protocol_.UbiiProtocol)
+
+
+class UbiiClient(ub.Client,
+                 t.Awaitable['UbiiClient'],
+                 logging_.ProtoFormatMixin,
+                 t.Generic[_T_Protocol],
+                 metaclass=ProtoRegistry):
     """
     A Client is a wrapper around a ``Client`` proto message.
     It can perform the following additional features:
@@ -107,41 +116,57 @@ class UbiiClient(ub.Client, t.Awaitable['UbiiClient'], logging.ProtoFormatMixin,
     # key for registry
     __unique_key_attr__ = 'id'
 
-    def __init__(self, mapping=None, *,
-                 protocol: protocol_.UbiiProtocol,
+    def __init__(self: UbiiClient[_T_Protocol], mapping=None, *,
+                 protocol: _T_Protocol,
                  required_behaviours: t.Tuple[t.Type, ...] = (Services, Subscriptions, Publish),
                  optional_behaviours: t.Tuple[t.Type, ...] = (Register, Devices, ProcessingModules),
                  **kwargs):
         super().__init__(mapping=mapping, **kwargs)
 
         if not self.name:
-            self.name = f"{self.__class__.__name__}"  # type: str
+            self.name = f"Python-Client-{self.__class__.__name__}"  # type: str
 
-        self._required_behaviours = required_behaviours or ()
-
-        self._change_specs = asyncio.Condition()
         self._protocol = protocol
 
+        self._required_behaviours = required_behaviours or ()
         behaviours = list(chain(required_behaviours or (), optional_behaviours or ()))
         if not all(dataclasses.is_dataclass(b) for b in behaviours):
             raise ValueError(f"Only dataclasses can be passed as behaviours")
 
-        for behaviour in behaviours:
-            # patch attribute access
-            wrapped = function_chain(behaviour.__setattr__,
-                                     lambda *_: self.notify())
-            behaviour.__setattr__ = wraps(behaviour.__setattr__)(wrapped)
+        self._change_specs = asyncio.Condition()
+        self._notifier = None
+        self._behaviours = {kls: self._patch_behaviour(kls)() for kls in behaviours}
 
-        self._behaviours = {kls: kls() for kls in behaviours}
-        self.__ctx: t.AsyncContextManager = self.__with_running_protocol()
-        self.__init = self.protocol.create_task(self._initialize())
+        self._ctx: t.AsyncContextManager = self._with_running_protocol()
+        self._init = self.protocol.task_nursery.create_task(self._initialize())
+
+    def _patch_behaviour(self, behaviour: t.Type):
+        """
+        Setting attributes of the behaviour should notify the tasks waiting for changed specs of this client,
+        e.g. the tasks waiting for implementation state.
+        """
+        client = self
+
+        # see if (https://github.com/python/mypy/issues/5865) is resolved to check if mypy gets this
+        class _(behaviour):  # type: ignore
+            def __setattr__(self, key, value):
+                super().__setattr__(key, value)
+                client.notify()
+
+        return _
 
     def notify(self):
-        async def __notify():
+        assert self.protocol
+        assert self._change_specs
+        assert hasattr(self, '_notifier')
+
+        async def _notify():
             async with self._change_specs:
                 self._change_specs.notify_all()
+                self._notifier = None
 
-        self.protocol.create_task(__notify())
+        if not self._notifier:
+            self._notifier = self.protocol.task_nursery.create_task(_notify())
 
     @property
     def change_specs(self):
@@ -152,34 +177,32 @@ class UbiiClient(ub.Client, t.Awaitable['UbiiClient'], logging.ProtoFormatMixin,
             return all(getattr(self._behaviours[b], field.name) is not None
                        for b in behaviours for field in dataclasses.fields(b))
 
-        return awaitable_predicate(fields_not_none, condition=self._change_specs)
+        return awaitable_predicate(predicate=fields_not_none, condition=self._change_specs)
 
     async def _initialize(self):
         await self.implements(*self._required_behaviours)
         return self
 
-    def __await__(self):
-        with warnings.catch_warnings():
-            # this might not be the first call to run() but we know this, so it's ok.
-            warnings.simplefilter('ignore', UserWarning)
-            self.protocol.run()
-
-        return self.__init.__await__()
-
     @asynccontextmanager
-    async def __with_running_protocol(self):
+    async def _with_running_protocol(self):
         async with self.protocol:
             client = await self
             yield client
 
+    def __await__(self):
+        if self.protocol.state.value is None:
+            self.protocol.start()
+
+        return self._init.__await__()
+
     def __aenter__(self):
-        return self.__ctx.__aenter__()
+        return self._ctx.__aenter__()
 
     def __aexit__(self, *exc_info):
-        return self.__ctx.__aexit__(*exc_info)
+        return self._ctx.__aexit__(*exc_info)
 
     @property
-    def protocol(self) -> protocol_.UbiiProtocol:
+    def protocol(self) -> _T_Protocol:
         return self._protocol
 
     def __getitem__(self, behaviour: t.Type[_T]) -> _T:
@@ -191,3 +214,6 @@ class UbiiClient(ub.Client, t.Awaitable['UbiiClient'], logging.ProtoFormatMixin,
 
         self._behaviours[key] = value
         self.notify()
+
+
+

@@ -1,0 +1,2 @@
+processing_modules:
+  - coco_ssd_fake.CocoSSDPM

@@ -3,39 +3,94 @@ from __future__ import annotations
 import argparse
 import logging.config
 import re
-import sys
 import typing as t
-import yaml
+from collections import namedtuple
 from importlib.resources import read_text
 
-import ubii.interact
+import sys
+import yaml
+
 import ubii.proto as ub
+from . import util
 
-__config__ = yaml.safe_load(read_text(ubii.interact, 'logging_config.yaml'))
+__config__ = yaml.safe_load(read_text(util, 'logging_config.yaml'))
 
 
-def set_logging(config: t.Dict | None = __config__, verbosity: int = logging.INFO):
-    if config is None:
-        config = {'version': 1}
+class _logging_setup:
+    log_config = namedtuple('log_config', ['config', 'level', 'warning_filter'])
 
-    logging.config.dictConfig(config)
-    logging.getLogger().setLevel(level=verbosity)
-    logging.captureWarnings(True)
+    def __init__(self, base_config=__config__, log_level=logging.INFO, warning_filter: str = 'default'):
+        self.base_config = self.log_config(config=base_config, warning_filter=warning_filter, level=log_level)
+        self._configs: t.List[_logging_setup.log_config] = [self.base_config]
+        self._apply()
 
-    if not sys.warnoptions:
-        import os, warnings
-        warnings.simplefilter("default")  # Change the filter in this process
-        os.environ["PYTHONWARNINGS"] = "default"  # Also affect subprocesses
+    @property
+    def effective_config(self):
+        return self.log_config(**self._configs[-1]._asdict())
+
+    def change(self, config: t.Dict | None = None, verbosity: int | None = None):
+        if config is None and verbosity is None:
+            raise ValueError(f"All arguments are None, can' apply change to logging.")
+
+        verbosity = self.effective_config.level if verbosity is None else verbosity
+
+        config = config or {}
+
+        if config.get('incremental', False):
+            config = util.merge_dicts(self.effective_config.config, config)
+            config['incremental'] = False  # we do the merging, logging framework should just eat the config
+
+        config = config or self.effective_config.config
+        config['version'] = 1  # other versions are not supported by the logging framework
+
+        self._configs.append(self.log_config(
+            level=verbosity,
+            config=config,
+            warning_filter=self.effective_config.warning_filter
+        ))
+        self._apply()
+        return self
+
+    def _apply(self):
+        logging.config.dictConfig(self.effective_config.config)
+        logging.captureWarnings(True)
+        logging.getLogger().setLevel(level=self.effective_config.level)
+
+        if not sys.warnoptions:
+            import os, warnings
+            warnings.simplefilter(self.effective_config.warning_filter)  # Change the filter in this process
+            os.environ["PYTHONWARNINGS"] = self.effective_config.warning_filter  # Also affect subprocesses
+
+    def reset(self):
+        self._configs[:] = self._configs[0]
+        self._apply()
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *exc_info):
+        if any(exc_info):
+            self.reset()
+        else:
+            _ = self._configs.pop()
+            self._apply()
+
+
+logging_setup = _logging_setup(base_config=__config__, log_level=logging.INFO, warning_filter='default')
 
 
 def parse_args():
     parser = argparse.ArgumentParser()
     parser.add_argument('--verbose', '-v', action='count', default=0)
     parser.add_argument('--debug', action='store_true', default=False)
+    parser.add_argument('--config', action='store', default=None)
+    parser.add_argument('--log-config', action='store', default=__config__)
     args = parser.parse_args()
 
-    set_logging(verbosity=logging.ERROR - 10 * args.verbose)
+    logging_setup.change(config=args.log_config, verbosity=logging.ERROR - 10 * args.verbose)
     debug(args.debug)
+
+    return args
 
 
 def shorten_json(message: str, max_len=50):

@@ -1,0 +1,23 @@
+version: 1
+formatters:
+  test:
+    format: '%(asctime)s - %(levelname)s - %(message)s'
+    datefmt: '%Y-%m-%d %H:%M:%S'
+handlers:
+  test:
+    class: logging.FileHandler
+    formatter: test
+    level: DEBUG
+    filename: test.log
+    mode: w
+loggers:
+  ubii.interact:
+    propagate: yes
+  test:
+    propagate: yes
+    handlers: [ test ]
+  coco_ssd_object_detection:
+    propagate: yes
+    handlers: [ test ]
+
+incremental: True

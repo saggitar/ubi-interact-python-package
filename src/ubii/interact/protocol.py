@@ -6,39 +6,39 @@ import logging
 import types
 import typing as t
 import warnings
-from contextlib import AsyncExitStack
 from functools import partial, cached_property
+
 from itertools import product
 
+import ubii.interact.util.enum
 from . import topics, constants, client
 from . import util
-from .util.typing import _T_EnumFlag, _Descriptor, _Decorator
+from .util.typing import T_EnumFlag, Descriptor, Decorator
 
 Callback = t.Callable[..., t.Coroutine[t.Any, t.Any, None]]
-_StateChange = t.Tuple[_T_EnumFlag, _T_EnumFlag]
+_StateChange = t.Tuple[T_EnumFlag, T_EnumFlag]
 
 log = logging.getLogger(__name__)
 
 
-class UbiiProtocol(t.Generic[_T_EnumFlag], util.TaskNursery, abc.ABC):
-    __name__: str
+class UbiiProtocol(t.Generic[T_EnumFlag]):
 
     @classmethod
     @property
     @abc.abstractmethod
-    def state_changes(cls) -> t.Mapping[t.Tuple[_T_EnumFlag | None, ...], Callback]:
+    def state_changes(cls) -> t.Mapping[t.Tuple[T_EnumFlag | None, ...], Callback]:
         ...
 
     @classmethod
     @property
     @abc.abstractmethod
-    def starting_state(cls) -> _T_EnumFlag:
+    def starting_state(cls) -> T_EnumFlag:
         ...
 
     @classmethod
     @property
     @abc.abstractmethod
-    def end_state(cls) -> _T_EnumFlag:
+    def end_state(cls) -> T_EnumFlag:
         ...
 
     @cached_property
@@ -47,22 +47,24 @@ class UbiiProtocol(t.Generic[_T_EnumFlag], util.TaskNursery, abc.ABC):
 
     def __init__(self) -> None:
         super().__init__()
-        self.__name__ = type(self).__name__
+        self.__name__: str = self.__class__.__name__
         self.change_context = asyncio.Condition()
-        self._state = self.starting_state
+        self._state = None
         self._run = None
-        self._get_state_change_callback = partial(util.EnumMatcher.get_matching_value, mapping=self.state_changes)
+        self.task_nursery = util.TaskNursery(name=f"Task Nursery for {self}")
+        self.get_state_change_callback = partial(ubii.interact.util.enum.EnumMatcher.get_matching_value,
+                                                 mapping=self.state_changes)
 
-    def _get_state(self) -> _T_EnumFlag:
+    def _get_state(self) -> T_EnumFlag:
         return self._state
 
-    def _set_state(self, new_state: _T_EnumFlag):
+    def _set_state(self, new_state: T_EnumFlag):
         current = self._state
         if new_state == current:
             return
 
         # it is allowed to change the state if a matching callback is defined
-        if not self._get_state_change_callback((current, new_state), None):
+        if not self.get_state_change_callback((current, new_state), None):
             raise ValueError(f"Can't change state {current!r} -> {new_state!r}")
 
         self._state = new_state
@@ -71,7 +73,7 @@ class UbiiProtocol(t.Generic[_T_EnumFlag], util.TaskNursery, abc.ABC):
     # https://youtrack.jetbrains.com/issue/PY-15176 and related issues.
     state = util.condition_property(fget=_get_state, fset=_set_state)
 
-    def run(self):
+    def start(self):
         """
         Start the protocol
         :return: Task running the protocol.
@@ -84,102 +86,116 @@ class UbiiProtocol(t.Generic[_T_EnumFlag], util.TaskNursery, abc.ABC):
         schedules async tasks during its teardown.
         """
         if not self._run:
-            self._run = self.create_task(RunProtocol(self))
-            # clean up when the task finishes
-            self._run.add_done_callback(lambda _: self.trigger_sentinel.set())
+            self._run = self.task_nursery.create_task(RunProtocol(self))
         else:
             warnings.warn(f"{self} already running.")
 
-        return self._run
-
-    def __await__(self):
-        with warnings.catch_warnings():
-            # this might not be the first call to run() but we know this, so it's ok.
-            warnings.simplefilter('ignore', UserWarning)
-            yield from self.run().__await__()
-        # try to complete the teardown (callbacks might schedule tasks i.e. it's not safe to assume that everything
-        # is torn down fully after the sentinel task completed).
-        yield from self.sentinel.__await__()
+        self.task_nursery.push_async_callback(self.stop)
+        return self
 
     async def stop(self) -> None:
         """
         Gracefully shut down the protocol by setting the protocol state to the end state.
         This will call appropriate state change callbacks (make sure those are defined, else ``stop`` will raise an
-        exception) and finish the ``run()`` task, which will in turn trigger the sentinel task to handle the
-        protocol teardown.
+        exception) and finish the ``run()`` task.
 
         Stop returns control back to the caller after the ``run()`` task stopped and all teardown callbacks
         have been scheduled.
         """
+        assert self._run, "Protocol not running, `start()` first"
         await self.state.set(self.end_state)
-        await self
+        await self._run
 
     async def __aenter__(self):
-        # run the protocol
-        _ = self.run()
+        self.start()
         return self
 
-    async def __aexit__(self, *exc_infos):
-        await self.stop()
+    def __aexit__(self, *exc_info):
+        return self.task_nursery.__aexit__(*exc_info)
 
 
 class RunProtocol(util.CoroutineWrapper):
 
     def __init__(self, protocol: UbiiProtocol):
-        self._protocol = protocol
+        self.protocol = protocol
+        self.__name__ = repr(self.protocol)
         super().__init__(coroutine=self._run())
-        self.__name__ = self._protocol.__name__
 
     async def _no_callback_found(self, protocol, context):
         raise RuntimeError(f"No callback found for context {context} in {protocol}")
 
     async def _run(self):
-        previous = None
-        end_state = self._protocol.end_state
-        current = self._protocol.starting_state
-        context = self._protocol.context
-        get_state = partial(util.EnumMatcher.get_matching_value, mapping=self._protocol.state_changes)
 
-        while previous != end_state:
-            callback = get_state((previous, current), self._no_callback_found)
-            context.state_change = (previous, current)
-            log.debug(f"Changed state {previous!r}->{current!r} in {self._protocol}, got callback {callback}")
+        previous = None
+        await self.protocol.state.set(self.protocol.starting_state)
+        current = self.protocol.state.value
+
+        end_state = self.protocol.end_state
+        context = self.protocol.context
+
+        async def _run_state_change_callback(prev, cur, ctx):
+            cb = self.protocol.get_state_change_callback((prev, cur), self._no_callback_found)
+            ctx.state_change = (prev, cur)
+            log.debug(f"Changed state {prev!r}->{cur!r} in {self.protocol}, got callback {cb}")
 
             # also functions are descriptors
-            assert isinstance(callback, _Descriptor), f"{callback} needs to be a descriptor, e.g. a function"
-            coro = callback.__get__(self._protocol, type(self._protocol))(context)
+            assert isinstance(cb, Descriptor), f"{cb} needs to be a descriptor, e.g. a function"
+            coro = cb.__get__(self.protocol, type(self.protocol))(ctx)
 
-            if not asyncio.iscoroutine(coro):
-                raise RuntimeError(f"{callback} did not return a coroutine (not using `async def`?)")
+            if not isinstance(coro, t.Awaitable):
+                raise RuntimeError(f"{cb} is not awaitable (not using `async def`?)")
 
-            async with self._protocol.change_context:
-                await coro
-                self._protocol.change_context.notify_all()
+            await coro
+
+        while previous != end_state:
+            async with self.protocol.change_context:
+                try:
+                    await _run_state_change_callback(previous, current, context)
+                    self.protocol.change_context.notify_all()
+                except Exception as initial:
+                    state = self.protocol.state.value
+                    if state == current:
+                        raise
+                    else:
+                        log.debug(f"Changed state during exception {initial}")
+                        try:
+                            result = await _run_state_change_callback(current, self.protocol.state.value, context)
+                        except Exception as nested:
+                            raise nested from initial
+                        else:
+                            if not result:
+                                raise initial
 
             previous = current
             if current != end_state:
                 # wait until a state is set that is not the previous state
-                current = await self._protocol.state.get(
-                    predicate=lambda value: value != current
+                current = await self.protocol.state.get(
+                    predicate=lambda value: value != previous
                 )
 
 
-class StandardProtocol(UbiiProtocol[_T_EnumFlag], t.Generic[_T_EnumFlag], abc.ABC):
-    _get_name = (lambda h: h.__name__)  # type: ignore
-    hook_function = util.registry(_get_name, util.hook)
-    __hooks__: t.Set[_Decorator] = set()
+class StandardProtocol(UbiiProtocol, t.Generic[T_EnumFlag], util.Registry, abc.ABC):
+    hook_function: util.registry[str, util.hook] = util.registry(lambda h: h.__name__, util.hook)
+    __hook_decorators__: t.Set[Decorator] = set()
+
+    @property
+    def __registry_key__(self):
+        """
+        A Standard Protocol can ba associated with _one_ client, so if we have a registered client with
+        unique id, we use this id as the key for the registry view.
+        During initialisation of the client the key is the default value (~ __module__.__qualname__.#id)
+        """
+        default = type(self).__default_key_value__
+        if not hasattr(self, 'client') or not self.client or not self.client.id:
+            return default
+
+        return self.client.id
 
     def __init__(self, config: constants.UbiiConfig = constants.GLOBAL_CONFIG, log: logging.Logger | None = None):
         super().__init__()
         self.config = config
         self.log = log or logging.getLogger(__name__)
         self.client: client.UbiiClient | None = None
-        self.exit_stack = AsyncExitStack()
-        self.add_sentinel_callback(self.exit_stack.aclose())
-        self.fallback_handler = util.function_chain(
-            self.log.exception,
-            lambda _: self.trigger_sentinel.set()
-        )
 
     @abc.abstractmethod
     async def create_service_map(self, context):
@@ -242,7 +258,7 @@ class StandardProtocol(UbiiProtocol[_T_EnumFlag], t.Generic[_T_EnumFlag], abc.AB
 
     @hook_function
     async def on_create(self, context):
-        await self.exit_stack.enter_async_context(self.register_client(context))
+        await self.task_nursery.enter_async_context(self.register_client(context))
 
     @hook_function
     async def on_registration(self, context):
@@ -256,11 +272,9 @@ class StandardProtocol(UbiiProtocol[_T_EnumFlag], t.Generic[_T_EnumFlag], abc.AB
 
     @hook_function
     async def on_connect(self, context):
-        splitter = self.create_task(
+        self.task_nursery.create_task(
             topics.StreamSplitRoutine(container=context.topic_store, stream=context.topic_connection)
         )
-        # when the splitter task is finished (e.g. when the topic connection closes), stop the protocol
-        splitter.add_done_callback(lambda _: self.trigger_sentinel.set())
 
     @hook_function
     async def on_stop(self, context):
@@ -268,10 +282,41 @@ class StandardProtocol(UbiiProtocol[_T_EnumFlag], t.Generic[_T_EnumFlag], abc.AB
 
     def __init_subclass__(cls, **kwargs):
         """
-        Register decorators
+        Register decorators for hook functions
         """
         hook_function: util.hook
-        for hook_function, hk in product(cls.hook_function.registry.values(), cls.__hooks__):
+        for hook_function, hk in product(cls.hook_function.registry.values(), cls.__hook_decorators__):
             hook_function.register_decorator(hk)
 
         super().__init_subclass__(**kwargs)
+
+
+class LoadStorageProtocol(StandardProtocol, abc.ABC):
+    """
+    Try loading Protobuf Specs from files during setup
+    """
+    hook_function = StandardProtocol.hook_function
+
+    def __init__(self,
+                 config: constants.UbiiConfig | None = None,
+                 log: logging.Logger | None = None):
+        import yaml
+        import dataclasses
+
+        if config.CONFIG_FILE:
+            with open(config.CONFIG_FILE) as conf:
+                base_config = constants.UbiiConfig(**yaml.safe_load(conf))
+
+            diff = {} if not config else {k: v for k, v in dataclasses.asdict(config).items() if v}
+            config = dataclasses.replace(base_config, **diff)
+
+        super().__init__(config, log)
+
+    @hook_function
+    async def on_create(self, context):
+        await self.load_specs(context)
+        return await super().on_create(context)
+
+    @abc.abstractmethod
+    async def load_specs(self, context):
+        """Load PM specs and other protobuf data"""

@@ -4,7 +4,7 @@ import abc
 import copy
 import logging
 import typing as t
-from functools import lru_cache
+from functools import lru_cache, partial
 
 import ubii.proto as ub
 from . import util
@@ -135,17 +135,18 @@ class ServiceMap(ub.ServiceList, t.Mapping[str, T_Service], t.Generic[T_Service]
             mapping = ub.ServiceList.pb(mapping)
 
         super().__init__(mapping=mapping, **kwargs)
-        self._factory = service_call_factory
 
         # apply the lru cache wrapper per instance since the ServiceMap itself is not hashable
-        self._make_service_call = lru_cache(maxsize=128, typed=False)(self._make_service_call)  # type: ignore
+        self._make_service_call = lru_cache(maxsize=128, typed=False)(
+            partial(self._get_service_call, service_call_factory)
+        )
 
-    def _make_service_call(self: 'ServiceMap[T_Service]', topic) -> T_Service:
+    def _get_service_call(self: 'ServiceMap[T_Service]', default_factory, topic) -> T_Service:
         found = [service for service in self.elements if service.topic == topic]
         if not len(found) == 1:
             raise KeyError(f"found {found or 'no services'} for topic {topic}")
 
-        return self._factory(found[0])
+        return default_factory(found[0])
 
     def cache_clear(self):
         """
@@ -190,11 +191,11 @@ class DefaultServiceMap(ServiceMap[T_Service]):
     def defaults(self) -> t.MutableMapping[str, str]:
         return self._defaults
 
-    def _make_service_call(self: DefaultServiceMap[T_Service], topic) -> T_Service:
+    def _get_service_call(self: DefaultServiceMap[T_Service], default_factory, topic) -> T_Service:
         service_call = None
 
         try:
-            service_call = super()._make_service_call(topic)
+            service_call = super()._get_service_call(default_factory, topic)
         except KeyError as e:
             # no service found
             if topic not in self._defaults.values() and self._defaults:
@@ -204,7 +205,7 @@ class DefaultServiceMap(ServiceMap[T_Service]):
             self.elements += [ub.Service(topic=topic)]
             self.cache_clear()
         finally:
-            return service_call or super()._make_service_call(topic)  # try again
+            return service_call or super()._get_service_call(default_factory, topic)  # try again
 
     def __getattr__(self, item):
         if item in self._defaults:
@@ -213,10 +214,9 @@ class DefaultServiceMap(ServiceMap[T_Service]):
         try:
             return super().__getattr__(item)
         except AttributeError as e:
-            # we want to give some additonal info because maybe
+            # we want to give some additonal info because maybe it's just a typo
             info = self._get_debug_info(missing_key=item)
             if debug():
                 raise AttributeError(info) from e
             else:
                 raise
-

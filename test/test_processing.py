@@ -168,6 +168,13 @@ class TestCoco():
         pytest.param((ub.Client(is_dedicated_processing_node=True),), id='processing_node')
     ]
 
+    logging_config = {
+        'loggers': {
+            'coco_ssd_object_detection': {'propagate': 'yes'},
+            'ubii.interact.connections.out.sock': {'propagate': 'yes'}
+        }
+    }
+
     @pytest.fixture(scope='class', autouse=True)
     async def startup(self, client):
         def __add_pms(on_create):
@@ -190,6 +197,6 @@ class TestCoco():
         yield
 
     async def test_processing(self, client, startup):
-        while True:
+        for _ in range(30):
             await asyncio.sleep(10)
-            print("PING")
+            log.info("PING")

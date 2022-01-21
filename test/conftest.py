@@ -4,22 +4,15 @@ import asyncio
 import logging
 import pytest
 import typing as t
+import yaml
 
 import ubii.proto as ub
-from ubii.interact._default import DefaultProtocol
+from ubii.interact.default_protocol import DefaultProtocol
+from ubii.interact.logging import logging_setup
 from ubii.interact.client import Devices, UbiiClient, Services
 
 __verbosity__: int | None = None
 ALWAYS_VERBOSE = True
-
-
-def configure_logging(config: t.Dict | t.Literal['DEFAULT'] | None = 'DEFAULT'):
-    from ubii.interact.logging import set_logging
-    if config == 'DEFAULT':
-        assert __verbosity__ is not None
-        set_logging(verbosity=__verbosity__)
-    else:
-        set_logging(config)
 
 
 def pytest_configure(config):
@@ -30,9 +23,23 @@ def pytest_configure(config):
         if not ALWAYS_VERBOSE else
         logging.DEBUG
     )
-    configure_logging()
+
+    logging_setup.change(verbosity=__verbosity__)
+
+    from importlib.resources import read_text
+    from . import data
+
+    test_logging_config = yaml.safe_load(read_text(data, 'logging_config.yaml'))
+    logging_setup.change(config=test_logging_config)
+
     import ubii.proto
     assert ubii.proto.__proto_package__ is not None, "No proto package set, aborting test setup."
+
+
+@pytest.fixture
+def configure_logging(request):
+    with logging_setup.change(config=request.param):
+        yield
 
 
 @pytest.fixture(scope='session', autouse=True)

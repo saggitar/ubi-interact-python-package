@@ -13,8 +13,8 @@ import ubii.proto as ub
 from .services import ServiceConnection
 from .topics import DataConnection
 
-log = logging.getLogger(f"{__name__}.sock")
 local_ip = socket.gethostbyname(socket.gethostname())
+log = logging.getLogger(__name__)
 
 
 class AIOHttpConnection:
@@ -57,6 +57,9 @@ class AIOHttpConnection:
 
 
 class AIOHttpWebsocketConnection(AIOHttpConnection, DataConnection):
+    log_socket_in = logging.getLogger(f"{__name__}.in.socket")
+    log_socket_out = logging.getLogger(f"{__name__}.out.socket")
+
     def __anext__(self) -> t.Awaitable[ub.TopicData]:
         return self._stream.__anext__()  # type: ignore
 
@@ -91,15 +94,15 @@ class AIOHttpWebsocketConnection(AIOHttpConnection, DataConnection):
                 if message.data == "PING":
                     await self.ws.send_str('PONG')
                 else:
-                    log.error(message.data)
+                    self.log_socket_in.error(message.data)
             elif message.type == aiohttp.WSMsgType.ERROR:
-                log.error(message)
+                self.log_socket_in.error(message)
             elif message.type == aiohttp.WSMsgType.BINARY:
                 data = ub.TopicData.deserialize(message.data)
-                log.debug(f"Received {data}")
+                self.log_socket_in.debug(f"Received {data}")
                 yield data
             else:
-                log.warning(f"Unknown message Type for message: {message}")
+                self.log_socket_in.warning(f"Unknown message Type for message: {message}")
 
         log.info(f"Closing Websocket connection")
 
@@ -143,11 +146,15 @@ class AIOHttpWebsocketConnection(AIOHttpConnection, DataConnection):
     async def send(self, data: ub.TopicData, timeout=None):
         await asyncio.wait_for(self._ws_connected.wait(), timeout=timeout)
         assert self.ws is not None
-        log.debug(f"Sending {data}")
+        self.log_socket_out.debug(f"Sending {data}")
         await asyncio.wait_for(self.ws.send_bytes(ub.TopicData.serialize(data)), timeout=timeout)
 
 
 class AIOHttpRestConnection(AIOHttpConnection, ServiceConnection):
+    """
+    Send Service Request Messages
+    """
+
     async def send(self, request: ub.ServiceRequest, timeout=None) -> ub.ServiceReply:
         await asyncio.wait_for(self._session_is_set.wait(), timeout=timeout)
         async with self.session.post(self.url, headers=self.headers, json=request, timeout=timeout) as resp:

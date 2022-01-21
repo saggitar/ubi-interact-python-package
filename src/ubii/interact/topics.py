@@ -4,18 +4,16 @@ import abc
 import asyncio
 import logging
 import typing as t
-from contextlib import AsyncExitStack, suppress
 from fnmatch import fnmatch
 from functools import cached_property
 from warnings import warn
 
 import ubii.proto as ub
 from . import util
+from .util.typing import T_co as _T_co, T_contra as _T_contra
 
 _Buffer = t.TypeVar('_Buffer')
 _Token = t.TypeVar('_Token')
-_T_contra = t.TypeVar('_T_contra', contravariant=True)
-_T_co = t.TypeVar('_T_co', covariant=True)
 
 
 class Consumer(t.Protocol[_T_contra]):
@@ -32,7 +30,7 @@ class DataConnection(t.AsyncIterator[ub.TopicData]):
     async def send(self, data: ub.TopicData): ...
 
 
-class TopicCoroutine(t.Generic[_Buffer], util.CoroutineWrapper[t.Any, t.Any, None]):
+class TopicCoroutine(util.CoroutineWrapper[t.Any, t.Any, None], t.Generic[_Buffer]):
     """
     A topic coroutine waits until a value is written to the topic and then runs it's callback.
     """
@@ -40,6 +38,7 @@ class TopicCoroutine(t.Generic[_Buffer], util.CoroutineWrapper[t.Any, t.Any, Non
     def __init__(self, *,
                  shared_resource_accessor: util.accessor[_Buffer],
                  callback: Consumer[_Buffer]):
+        self.__name__ = callback.__name__ if hasattr(callback, '__name__') else repr(callback)  # type: ignore
         self.accessor = shared_resource_accessor
         self.callback = util.make_async(callback)
         super().__init__(coroutine=self._run())
@@ -50,7 +49,7 @@ class TopicCoroutine(t.Generic[_Buffer], util.CoroutineWrapper[t.Any, t.Any, Non
             await self.callback(value)
 
 
-class Topic(util.TaskNursery, t.AsyncIterator[_Buffer], t.Generic[_Buffer, _Token], abc.ABC):
+class Topic(t.AsyncIterator[_Buffer], t.Generic[_Buffer, _Token], abc.ABC):
     """
     A Topic can be used to asynchronously iterate over TopicDataRecords that are published to the topic.
     It can also register (and unregister) callbacks to handle the published values in a background task.
@@ -63,10 +62,12 @@ class Topic(util.TaskNursery, t.AsyncIterator[_Buffer], t.Generic[_Buffer, _Toke
     instead use
     :TODO:
     """
+    __unique_key_attr__ = 'pattern'
 
     @property
     @abc.abstractmethod
-    def buffer(self: Topic[_Buffer, _Token]) -> util.accessor[_Buffer]: ...
+    def buffer(self: Topic[_Buffer, _Token]) -> util.accessor[_Buffer]:
+        ...
 
     async def __anext__(self) -> _Buffer:
         return await self.buffer.get()
@@ -75,17 +76,12 @@ class Topic(util.TaskNursery, t.AsyncIterator[_Buffer], t.Generic[_Buffer, _Toke
                  pattern,
                  *,
                  token_factory: t.Callable[[], _Token],
-                 task_manager: util.TaskNursery | None = None) -> None:
+                 task_nursery: util.TaskNursery | None = None) -> None:
         super().__init__()
         self.pattern = pattern
-        self._task_nursery = task_manager or self
-        self._exit_stack = AsyncExitStack()
-        self._next_token = token_factory
-        self._callback_tasks: t.Dict[_Token, asyncio.Task] = {}
-        self.add_sentinel_callback(self.aclose())
-
-    async def aclose(self):
-        await self._exit_stack.aclose()
+        self.task_nursery = task_nursery or util.TaskNursery()
+        self.token_factory = token_factory
+        self.callback_tasks: t.Dict[_Token, asyncio.Task] = {}
 
     def register_callback(self, callback: Consumer[_Buffer]) -> _Token:
         """
@@ -107,9 +103,8 @@ class Topic(util.TaskNursery, t.AsyncIterator[_Buffer], t.Generic[_Buffer, _Toke
         :param callback: some callable which acts on a TopicDataRecord
         :return: a unique token (supplied by the ``token_factory``) to deregister the callback later
         """
-        token = self._next_token()
-        self._exit_stack.push_async_callback(lambda *exc_info: self.unregister_callback(token))
-        self._callback_tasks[token] = self._task_nursery.create_task(
+        token = self.token_factory()
+        self.callback_tasks[token] = self.task_nursery.create_task(
             TopicCoroutine(shared_resource_accessor=self.buffer, callback=callback)
         )
         return token
@@ -126,33 +121,13 @@ class Topic(util.TaskNursery, t.AsyncIterator[_Buffer], t.Generic[_Buffer, _Toke
         :param token: get it from ``register_callback``
         :return: boolean indicating success
         """
-        task = self._callback_tasks.pop(token, None)
+        task = self.callback_tasks.pop(token, None)
         if task is None:
             warn(f"No callback for {token} found in {self}")
             return False
 
-        task.cancel()
-        with suppress(asyncio.CancelledError):
-            await asyncio.wait([task], timeout=timeout)
+        await self.task_nursery.stop_task(task)
         return True
-
-    @property
-    def exit_stack(self) -> AsyncExitStack:
-        """
-        This context manager unregisters the callbacks and stops the tasks on exit.
-        Setting this values transfers handling of all callbacks to the new AsyncExitStack.
-
-        :return: a exit stack context manager
-        """
-        return self._exit_stack
-
-    @exit_stack.setter
-    def exit_stack(self, manager: AsyncExitStack):
-        """
-        make temporary stack (so exiting the previous one does not unregister) and close it when the new context exits.
-        """
-        manager.push_async_exit(self._exit_stack.pop_all())
-        self._exit_stack = manager
 
 
 class DefaultTopic(Topic[ub.TopicDataRecord, int]):
@@ -164,11 +139,8 @@ class DefaultTopic(Topic[ub.TopicDataRecord, int]):
             self.__last_token__ += 1
             return self.__last_token__
 
-    def __init__(self, *args, **kwargs) -> None:
-        if 'token_factory' in kwargs:
-            warn(f"passing `token_factory={kwargs.pop('token_factory')}` to {self.__class__} is deprecated, "
-                 f"will use default factory instead.", DeprecationWarning)
-        super().__init__(*args, token_factory=self.default_token_factory(), **kwargs)
+    def __init__(self, pattern, *, task_nursery: util.TaskNursery) -> None:
+        super().__init__(pattern, token_factory=self.default_token_factory(), task_nursery=task_nursery)
         self._buffer: ub.TopicDataRecord | None = None
 
     @util.hook
@@ -181,7 +153,7 @@ class DefaultTopic(Topic[ub.TopicDataRecord, int]):
 
     @cached_property
     def buffer(self) -> util.accessor[ub.TopicDataRecord]:
-        return util.accessor[ub.TopicDataRecord]()
+        return util.accessor(funcs=(self._get_buffer, self._set_buffer))
 
 
 class MatchMapping(t.Mapping[str, _T_co], abc.ABC):
@@ -222,7 +194,7 @@ class MatchMapping(t.Mapping[str, _T_co], abc.ABC):
 _Topic_co = t.TypeVar('_Topic_co', bound=Topic, covariant=True)
 
 
-class TopicStore(MatchMapping, t.Generic[_Topic_co]):
+class TopicStore(MatchMapping[_Topic_co]):
     def __init__(self: TopicStore[_Topic_co], default_factory: t.Callable[[str], _Topic_co]):
         self._default_factory = default_factory
         self.data: t.Dict[str, _Topic_co] = {}

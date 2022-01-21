@@ -1,3 +1,5 @@
+from __future__ import annotations
+
 import dataclasses
 import os
 
@@ -33,6 +35,8 @@ class UbiiConfig:
     SERVER: ub.Server = _default_server
     CONSTANTS: ub.Constants = _default_constants
     DEFAULT_SERVICE_URL: str = os.getenv(UBII_URL_ENV, 'http://localhost:8102/services')
+    CONFIG_FILE: str | None = None
+    PROTO_SPEC_STORAGE: dict | None = None
 
 
 # shared config

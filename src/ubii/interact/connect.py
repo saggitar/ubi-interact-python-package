@@ -2,24 +2,23 @@ from __future__ import annotations
 
 import typing as t
 
-from ubii.interact import client, constants, protocol, _default
-
-T_Client = t.TypeVar('T_Client', bound=client.UbiiClient)
+from ubii.interact import client, constants, protocol, default_protocol
 
 
-class connect(t.Awaitable[client.UbiiClient], t.AsyncContextManager):
+class connect(t.Awaitable[client.UbiiClient[protocol.StandardProtocol]],
+              t.AsyncContextManager[client.UbiiClient[protocol.StandardProtocol]]):
     class ClientFactory(t.Protocol):
         def __call__(self,
                      instance: connect,
                      *,
-                     client_type: t.Type[T_Client],
-                     protocol_type: t.Type[protocol.UbiiProtocol]) -> T_Client: ...
+                     client_type: t.Type[client.UbiiClient],
+                     protocol_type: t.Type[protocol.UbiiProtocol]) -> client.UbiiClient[protocol.UbiiProtocol]: ...
 
     def __init__(self,
                  url=None,
                  config: constants.UbiiConfig = constants.GLOBAL_CONFIG,
                  client_type: t.Type[client.UbiiClient] = client.UbiiClient,
-                 protocol_type: t.Type[protocol.UbiiProtocol] = _default.DefaultProtocol):
+                 protocol_type: t.Type[protocol.UbiiProtocol] = default_protocol.DefaultProtocol):
         if url is not None:
             config.DEFAULT_SERVICE_URL = url
         self.config = config
@@ -34,7 +33,7 @@ class connect(t.Awaitable[client.UbiiClient], t.AsyncContextManager):
         )
 
     def default_create(self, *, client_type, protocol_type):
-        if client_type == client.UbiiClient and protocol_type == _default.DefaultProtocol:
+        if client_type == client.UbiiClient and protocol_type == default_protocol.DefaultProtocol:
             _protocol = protocol_type(config=self.config)
             _client = client_type(protocol=_protocol)
             _protocol.client = _client
@@ -52,6 +51,12 @@ class connect(t.Awaitable[client.UbiiClient], t.AsyncContextManager):
     def __aexit__(self, *exc_infos):
         return self.client.__aexit__(*exc_infos)
 
+    def __enter__(self):
+        return self.client
+
+    def __exit__(self, *exc_info):
+        self.client.protocol.task_nursery.create_task(self.client.protocol.stop())
+
     client_factories: t.Dict[t.Tuple[t.Type[client.UbiiClient], t.Type[protocol.UbiiProtocol]], ClientFactory] = {
-        (client.UbiiClient, _default.DefaultProtocol): default_create
+        (client.UbiiClient, default_protocol.DefaultProtocol): default_create
     }

@@ -20,11 +20,17 @@ handlers:
     level: DEBUG
     filename: ubii.log
     mode: w
-  websocket:
+  websocket-in:
     class : logging.FileHandler
     formatter: http
     level: DEBUG
-    filename: websocket.log
+    filename: websocket.in.log
+    mode: w
+  websocket-out:
+    class : logging.FileHandler
+    formatter: http
+    level: DEBUG
+    filename: websocket.out.log
     mode: w
   services:
     class : logging.FileHandler
@@ -34,6 +40,8 @@ handlers:
     mode: w
 loggers:
   ubii.interact:
+    propagate: yes
+  ubii.interact.topics:
     propagate: no
   aiohttp.client:
     propagate: no
@@ -41,9 +49,12 @@ loggers:
   ubii.interact.services:
     propagate: no
     handlers: [services]
-  ubii.interact.connections.sock:
+  ubii.interact.connections.in.socket:
     propagate: no
-    handlers: [websocket]
+    handlers: [websocket-in]
+  ubii.interact.connections.out.socket:
+    propagate: no
+    handlers: [websocket-out]
   codestare:
     propagate: yes
 root:

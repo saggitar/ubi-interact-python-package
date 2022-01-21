@@ -47,3 +47,7 @@ class ErrorRule(MessageRule):
 
 
 Marshal(name=__protobuf__.marshal).register(ub.Error.pb(), ErrorRule(ub.Error.pb(), UbiiError))  # type: ignore
+
+
+class RestartError(Exception):
+    pass
