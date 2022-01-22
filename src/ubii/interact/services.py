@@ -3,7 +3,13 @@ from __future__ import annotations
 import abc
 import copy
 import logging
-import typing as t
+from typing import TypeVar, Generic, Iterator, Mapping, MutableMapping, Union
+
+try:
+    from typing import Protocol
+except ImportError:
+    from typing_extensions import Protocol
+
 from functools import lru_cache, partial
 
 import ubii.proto as ub
@@ -84,15 +90,15 @@ class ServiceCall(ub.Service, metaclass=ub.ProtoMeta):
         cls.__call__.register_decorator(decorator)
 
 
-T_Service = t.TypeVar('T_Service', bound=ServiceCall)
-T_Service_Cov = t.TypeVar('T_Service_Cov', bound=ServiceCall, covariant=True)
+T_Service = TypeVar('T_Service', bound=ServiceCall)
+T_Service_Cov = TypeVar('T_Service_Cov', bound=ServiceCall, covariant=True)
 
 
-class ServiceCallFactory(t.Protocol[T_Service_Cov]):
+class ServiceCallFactory(Protocol[T_Service_Cov]):
     def __call__(self, mapping: ub.Service) -> T_Service_Cov: ...
 
 
-class ServiceMap(ub.ServiceList, t.Mapping[str, T_Service], t.Generic[T_Service], ProtoFormatMixin,
+class ServiceMap(ub.ServiceList, Mapping[str, T_Service], Generic[T_Service], ProtoFormatMixin,
                  metaclass=ub.ProtoMeta):
     """
     A ServiceMap is a wrapper around a ServiceList proto message which provides a Mapping for ServiceCalls by topic.
@@ -160,13 +166,13 @@ class ServiceMap(ub.ServiceList, t.Mapping[str, T_Service], t.Generic[T_Service]
 
         super().__setattr__(key, value)
 
-    def __getitem__(self: 'ServiceMap[T_Service]', topic: t.Union[ub.ProtoField, str]) -> T_Service:
+    def __getitem__(self: 'ServiceMap[T_Service]', topic: Union[ub.ProtoField, str]) -> T_Service:
         return self._make_service_call(topic)
 
     def __len__(self) -> int:
         return len(self.elements)
 
-    def __iter__(self) -> t.Iterator[str]:
+    def __iter__(self) -> Iterator[str]:
         return (service.data for service in self.elements)
 
 
@@ -183,12 +189,12 @@ class DefaultServiceMap(ServiceMap[T_Service]):
         > ServiceCall(topic='services/bar' ...)
     """
 
-    def __init__(self, *args, defaults: t.MutableMapping[str, str] | None = None, **kwargs):
+    def __init__(self, *args, defaults: MutableMapping[str, str] | None = None, **kwargs):
         super().__init__(*args, **kwargs)
         self._defaults = defaults or {}
 
     @property
-    def defaults(self) -> t.MutableMapping[str, str]:
+    def defaults(self) -> MutableMapping[str, str]:
         return self._defaults
 
     def _get_service_call(self: DefaultServiceMap[T_Service], default_factory, topic) -> T_Service:

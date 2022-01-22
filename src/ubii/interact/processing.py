@@ -13,9 +13,11 @@ from functools import wraps, partial
 
 import ubii.proto as ub
 from ubii.util import get_import_name
+
 from . import protocol, topics
 from . import util
 from .logging import debug
+from .util.typing import Protocol
 
 __protobuf__ = ub.__protobuf__
 log = logging.Logger(__name__)
@@ -42,7 +44,7 @@ class Scheduler(util.CoroutineWrapper):
 
     """
 
-    class Executor(t.Protocol):
+    class Executor(Protocol):
         def __call__(self, max_workers: int) -> concurrent.futures.Executor: ...
 
     def __init__(self,
@@ -128,7 +130,7 @@ class Scheduler(util.CoroutineWrapper):
         return _trigger_loop()
 
 
-class ProcessingRoutine(util.CoroutineWrapper, ub.ProcessingModule, metaclass=util.ProtoRegistry):
+class ProcessingRoutine(ub.ProcessingModule, metaclass=util.ProtoRegistry):
     __unique_key_attr__ = 'name'
 
     class helpers:
@@ -150,7 +152,8 @@ class ProcessingRoutine(util.CoroutineWrapper, ub.ProcessingModule, metaclass=ut
 
         self._protocol = ProcessingProtocol(pm=self)
         self._change_specs = asyncio.Condition()
-        super().__init__(coroutine=protocol.RunProtocol(protocol=self._protocol), mapping=mapping, **kwargs)
+
+        super().__init__(mapping=mapping, **kwargs)
 
         # eval stringified
         if eval_strings or debug():
@@ -159,7 +162,7 @@ class ProcessingRoutine(util.CoroutineWrapper, ub.ProcessingModule, metaclass=ut
         self.validate()
 
         self._local_output_topics = topics.TopicStore(
-            default_factory=partial(topics.DefaultTopic, task_nursery=self._protocol.task_nursery)
+            default_factory=partial(topics.BasicTopic, task_nursery=self._protocol.task_nursery)
         )
 
         self._input_topic_getter = util.hook(lambda _: None)
@@ -252,9 +255,24 @@ class ProcessingRoutine(util.CoroutineWrapper, ub.ProcessingModule, metaclass=ut
             rule(self)
 
     @classmethod
-    def stop(cls, pm: ProcessingRoutine):
+    @util.hook
+    async def start(cls, pm: ProcessingRoutine):
+        assert pm.name in cls.registry
+        pm._protocol.start()
+        return pm
+
+    @classmethod
+    @util.hook
+    async def stop(cls, pm: ProcessingRoutine):
         assert cls.registry.pop(pm.name) == pm
-        pm._protocol.stop()
+        await pm._protocol.stop()
+        return pm
+
+    @classmethod
+    @util.hook
+    async def halt(cls, pm: ProcessingRoutine):
+        assert pm.name in cls.registry
+        await pm._protocol.state.set(PM_STAT.HALTED)
         return pm
 
     validation_rules: t.List[t.Callable[[ProcessingRoutine], None]] = [
@@ -361,6 +379,7 @@ class ProcessingProtocol(protocol.UbiiProtocol[ub.ProcessingModule.Status]):
     def __init__(self, pm: ProcessingRoutine):
         super().__init__()
         self.pm: ProcessingRoutine = pm
+        self.created_tasks: t.List[asyncio.Task] = []
 
     @pm_proxy.callback_in_pm('on_created')
     @pm_proxy.set_status_in_pm(ub.ProcessingModule.Status.CREATED)
@@ -410,7 +429,11 @@ class ProcessingProtocol(protocol.UbiiProtocol[ub.ProcessingModule.Status]):
     @pm_proxy.callback_in_pm('on_destroyed')
     @pm_proxy.set_status_in_pm(ub.ProcessingModule.Status.DESTROYED)
     async def on_destroyed(self, context):
-        pass
+
+        for task in self.created_tasks:
+            task.cancel()
+            with suppress(asyncio.CancelledError):
+                await task
 
     @pm_proxy.callback_in_pm('on_init')
     @pm_proxy.set_status_in_pm(ub.ProcessingModule.Status.INITIALIZED)
@@ -448,7 +471,8 @@ class ProcessingProtocol(protocol.UbiiProtocol[ub.ProcessingModule.Status]):
             inputs=[util.attach_info((name, msg_fmt), topic.buffer.get) for (name, msg_fmt), topic in inputs.items()],
             mode=self.pm.processing_mode
         )
-        context.nursery.create_task(context.scheduler)
+
+        self.created_tasks += [context.nursery.create_task(context.scheduler)]
 
         await self.state.set(PM_STAT.CREATED)
 
@@ -457,5 +481,5 @@ class ProcessingProtocol(protocol.UbiiProtocol[ub.ProcessingModule.Status]):
         (AnyState, PM_STAT.CREATED): on_created,
         (AnyState, PM_STAT.PROCESSING): on_processing,
         (AnyState, PM_STAT.HALTED): on_halted,
-        (AnyState, PM_STAT.DESTROYED): on_destroyed,
+        (PM_STAT.HALTED, PM_STAT.DESTROYED): on_destroyed,
     }

@@ -4,10 +4,10 @@ import asyncio
 import dataclasses
 import typing as t
 from contextlib import asynccontextmanager
-
 from itertools import chain
 
 import ubii.proto as ub
+
 from . import (
     services as _services,
     topics as topics_,
@@ -17,7 +17,8 @@ from . import (
 from .util import ProtoRegistry, awaitable_predicate
 from .util.typing import (
     SimpleCoroutine as _SimpleCoro,
-    T as _T
+    T as _T,
+    Protocol as _Protocol
 )
 
 __protobuf__ = ub.__protobuf__
@@ -31,11 +32,11 @@ class Services:
     services: _services.DefaultServiceMap | None = None
 
 
-class subscribe_call(t.Protocol):
+class subscribe_call(_Protocol):
     def __call__(self, *pattern: str) -> t.Awaitable[t.Tuple[topics_.Topic, ...]]: ...
 
 
-class unsubscribe_call(t.Protocol):
+class unsubscribe_call(_Protocol):
     def __call__(self, *pattern: str) -> t.Awaitable[t.Tuple[topics_.Topic, ...]]: ...
 
 
@@ -123,18 +124,17 @@ class UbiiClient(ub.Client,
                  **kwargs):
         super().__init__(mapping=mapping, **kwargs)
 
-        if not self.name:
-            self.name = f"Python-Client-{self.__class__.__name__}"  # type: str
-
-        self._protocol = protocol
-
-        self._required_behaviours = required_behaviours or ()
         behaviours = list(chain(required_behaviours or (), optional_behaviours or ()))
         if not all(dataclasses.is_dataclass(b) for b in behaviours):
             raise ValueError(f"Only dataclasses can be passed as behaviours")
 
+        if not self.name:
+            self.name = f"Python-Client-{self.__class__.__name__}"  # type: str
+
         self._change_specs = asyncio.Condition()
         self._notifier = None
+        self._protocol = protocol
+        self._required_behaviours = required_behaviours or ()
         self._behaviours = {kls: self._patch_behaviour(kls)() for kls in behaviours}
 
         self._ctx: t.AsyncContextManager = self._with_running_protocol()
@@ -166,7 +166,11 @@ class UbiiClient(ub.Client,
                 self._notifier = None
 
         if not self._notifier:
-            self._notifier = self.protocol.task_nursery.create_task(_notify())
+            self._notifier = self.task_nursery.create_task(_notify())
+
+    @property
+    def task_nursery(self):
+        return self.protocol.task_nursery
 
     @property
     def change_specs(self):
@@ -214,6 +218,3 @@ class UbiiClient(ub.Client,
 
         self._behaviours[key] = value
         self.notify()
-
-
-

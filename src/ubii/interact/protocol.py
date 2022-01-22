@@ -6,7 +6,12 @@ import logging
 import types
 import typing as t
 import warnings
-from functools import partial, cached_property
+from functools import partial
+
+try:
+    from functools import cached_property
+except ImportError:
+    from backports.cached_property import cached_property
 
 from itertools import product
 
@@ -124,33 +129,31 @@ class RunProtocol(util.CoroutineWrapper):
     async def _no_callback_found(self, protocol, context):
         raise RuntimeError(f"No callback found for context {context} in {protocol}")
 
+    async def _run_state_change_callback(self, prev, cur, ctx):
+        cb = self.protocol.get_state_change_callback((prev, cur), self._no_callback_found)
+        ctx.state_change = (prev, cur)
+        log.debug(f"Changed state {prev!r}->{cur!r} in {self.protocol}, got callback {cb}")
+
+        # all functions are also descriptors
+        assert isinstance(cb, Descriptor), f"{cb} needs to be a descriptor, e.g. a function"
+        coro = cb.__get__(self.protocol, type(self.protocol))(ctx)
+
+        if not isinstance(coro, t.Awaitable):
+            raise RuntimeError(f"{cb} is not awaitable (not using `async def`?)")
+
+        await coro
+
     async def _run(self):
-
-        previous = None
         await self.protocol.state.set(self.protocol.starting_state)
+        previous = None
         current = self.protocol.state.value
-
         end_state = self.protocol.end_state
         context = self.protocol.context
-
-        async def _run_state_change_callback(prev, cur, ctx):
-            cb = self.protocol.get_state_change_callback((prev, cur), self._no_callback_found)
-            ctx.state_change = (prev, cur)
-            log.debug(f"Changed state {prev!r}->{cur!r} in {self.protocol}, got callback {cb}")
-
-            # also functions are descriptors
-            assert isinstance(cb, Descriptor), f"{cb} needs to be a descriptor, e.g. a function"
-            coro = cb.__get__(self.protocol, type(self.protocol))(ctx)
-
-            if not isinstance(coro, t.Awaitable):
-                raise RuntimeError(f"{cb} is not awaitable (not using `async def`?)")
-
-            await coro
 
         while previous != end_state:
             async with self.protocol.change_context:
                 try:
-                    await _run_state_change_callback(previous, current, context)
+                    await self._run_state_change_callback(previous, current, context)
                     self.protocol.change_context.notify_all()
                 except Exception as initial:
                     state = self.protocol.state.value
@@ -159,7 +162,7 @@ class RunProtocol(util.CoroutineWrapper):
                     else:
                         log.debug(f"Changed state during exception {initial}")
                         try:
-                            result = await _run_state_change_callback(current, self.protocol.state.value, context)
+                            result = await self._run_state_change_callback(current, self.protocol.state.value, context)
                         except Exception as nested:
                             raise nested from initial
                         else:
@@ -289,34 +292,3 @@ class StandardProtocol(UbiiProtocol, t.Generic[T_EnumFlag], util.Registry, abc.A
             hook_function.register_decorator(hk)
 
         super().__init_subclass__(**kwargs)
-
-
-class LoadStorageProtocol(StandardProtocol, abc.ABC):
-    """
-    Try loading Protobuf Specs from files during setup
-    """
-    hook_function = StandardProtocol.hook_function
-
-    def __init__(self,
-                 config: constants.UbiiConfig | None = None,
-                 log: logging.Logger | None = None):
-        import yaml
-        import dataclasses
-
-        if config.CONFIG_FILE:
-            with open(config.CONFIG_FILE) as conf:
-                base_config = constants.UbiiConfig(**yaml.safe_load(conf))
-
-            diff = {} if not config else {k: v for k, v in dataclasses.asdict(config).items() if v}
-            config = dataclasses.replace(base_config, **diff)
-
-        super().__init__(config, log)
-
-    @hook_function
-    async def on_create(self, context):
-        await self.load_specs(context)
-        return await super().on_create(context)
-
-    @abc.abstractmethod
-    async def load_specs(self, context):
-        """Load PM specs and other protobuf data"""

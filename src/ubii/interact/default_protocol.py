@@ -6,8 +6,15 @@ import enum
 import logging
 import typing as t
 from contextlib import asynccontextmanager
-from functools import cached_property, partial
-from pathlib import Path
+from functools import partial
+
+from .connections import aiohttp_session
+from .topics import Topic
+
+try:
+    from functools import cached_property
+except ImportError:
+    from backports.cached_property import cached_property
 from warnings import warn
 
 import aiohttp
@@ -44,31 +51,6 @@ class States(enum.IntFlag):
     ANY = STARTING | REGISTERED | CONNECTED | STOPPED | HALTED | CREATED
 
 
-def aiohttp_session():
-    """
-    We create a aiohttp session with our custom json encoder and some logging handlings
-    in debug mode
-    """
-    if debug():
-        trace_config = aiohttp.TraceConfig()
-
-        async def on_request_start(session, context, params):
-            logging.getLogger('aiohttp.client').debug(f'Starting request <{params}>')
-
-        trace_config.on_request_start.append(on_request_start)
-        trace_configs = [trace_config]
-        timeout = aiohttp.ClientTimeout(total=1)
-    else:
-        timeout = aiohttp.ClientTimeout(total=300)
-        trace_configs = []
-
-    from ubii.proto import serialize as proto_serialize
-    return aiohttp.ClientSession(raise_for_status=True,
-                                 json_serialize=proto_serialize,
-                                 trace_configs=trace_configs,
-                                 timeout=timeout)
-
-
 class DefaultProtocol(protocol_.StandardProtocol[States]):
     """
     The standard protocol creates one UbiiClient, registers it, implements all required behaviours and
@@ -94,7 +76,7 @@ class DefaultProtocol(protocol_.StandardProtocol[States]):
         service_map: services_.ServiceMap | None = None
         topic_connection: connections_.AIOHttpWebsocketConnection | None = None
         register_manager: t.AsyncContextManager[client_.UbiiClient] | None = None
-        topic_store: topics_.TopicStore | None = None
+        topic_store: topics_.TopicStore[topics_.BasicTopic] | None = None
         exc_info: t.Tuple[Exception | None, t.Type[Exception] | None, t.Any] | None = None
 
     def __init__(self,
@@ -127,11 +109,14 @@ class DefaultProtocol(protocol_.StandardProtocol[States]):
         context.service_connection = connections_.AIOHttpRestConnection(self.config.DEFAULT_SERVICE_URL)
         context.service_connection.session = self.aiohttp_session
 
-        services_.ServiceCall.register_decorator(util.exc_handler_decorator(self._set_exc_info))
-
-        def create_service_call(mapping: ub.Service):
+        def create_service_call(service: ub.Service):
             assert context.service_connection is not None
-            service_call = services_.ServiceCall(transport=context.service_connection, mapping=mapping)
+            service_call = services_.ServiceCall(transport=context.service_connection, mapping=service)
+
+            # add exception handling
+            modified = util.exc_handler_decorator(self._set_exc_info)(type(service_call).__call__)
+            service_call.__call__ = modified.__get__(service_call, type(service_call))
+
             return service_call
 
         context.service_map = services_.DefaultServiceMap(
@@ -201,9 +186,13 @@ class DefaultProtocol(protocol_.StandardProtocol[States]):
             ub.Client.copy_from(context.client, response.client)
 
             await self.state.set(States.REGISTERED)
-            yield context.client
 
-            # deregister when context is closed
+            # ----------- setup ---------------
+            yield context.client
+            # ----------- teardown ------------
+            if context.client.id is None:
+                return
+
             result = await deregister_service(client=context.client)
             assert result.success, f"Client did not deregister correctly! Error: {result.error}"
 
@@ -239,21 +228,54 @@ class DefaultProtocol(protocol_.StandardProtocol[States]):
         assert context.client is not None
 
         context.topic_store = topics_.TopicStore(
-            default_factory=partial(topics_.DefaultTopic, task_nursery=self.task_nursery)
+            default_factory=partial(topics_.BasicTopic, task_nursery=self.task_nursery)
         )
 
-        async def _handle_subscribe(*topic_patterns, as_regex=False, unsubscribe=False):
-            if not topic_patterns:
-                raise ValueError(f"No topics passed")
-
+        async def on_subscribe_callback(
+                client_id: str,
+                *topic_patterns,
+                as_regex=False,
+                unsubscribe=False,
+        ):
             message = {
-                'client_id': context.client.id,
+                'client_id': client_id,
                 f"{'un' if unsubscribe else ''}"
                 f"{'subscribe_topic_regexp' if as_regex else 'subscribe_topics'}": topic_patterns
             }
+
             await context.service_map.topic_subscription(topic_subscription=message)
 
+        class OnSubscribersChanged(topics_.OnSubscribersChange):
+            def __init__(self, client_id, as_regex, callback: topics_.OnSubscribeCallback):
+                super().__init__(client_id, as_regex, callback)
+                self.topic_store = context.topic_store
+
+            def __call__(self, topic: Topic, change: t.Tuple[int, int]):
+                super().__call__(topic, change)
+                old, new = change
+                if new == 0 and old > 0:
+                    del self.topic_store[topic.pattern]
+
+        async def _handle_subscribe(*topic_patterns, as_regex=False, unsubscribe=False):
+            assert context.topic_store is not None
+            if not topic_patterns:
+                raise ValueError(f"No topics passed")
+
             _topics = tuple(context.topic_store[topic] for topic in topic_patterns)
+
+            for topic in _topics:
+                if not topic.on_subscribers_change:
+                    topic.on_subscribers_change = OnSubscribersChanged(
+                        client_id=context.client.id,
+                        as_regex=as_regex,
+                        callback=on_subscribe_callback
+                    )
+
+                if unsubscribe:
+                    await topic.remove_all_subscribers()
+                else:
+                    await topic.add_subscriber()
+
             return _topics
 
         context.client[client_.Subscriptions] = client_.Subscriptions(
@@ -370,7 +392,7 @@ class DefaultProtocol(protocol_.StandardProtocol[States]):
                     raise ValueError(f"No processing module routine with name {specs.name} found")
 
                 # start processing
-                self.task_nursery.create_task(pm)
+                await processing_.ProcessingRoutine.start(pm)
 
                 async with pm.change_specs:
                     # MergeFrom appends outputs and inputs, CopyFrom overwrites stuff, so we first need to "merge"
@@ -441,13 +463,26 @@ class DefaultProtocol(protocol_.StandardProtocol[States]):
 
         async def on_stop_session(record):
             session: ub.Session = record.session
-            pm: processing_.ProcessingRoutine
-            stopped = []
-            for name, pm in processing_.ProcessingRoutine.registry.items():
-                if pm.session_id == session.id:
-                    stopped += [processing_.ProcessingRoutine.stop(pm)]
-                    log.debug(f"Stopping processing module {name}")
+            halted = []
+            module: processing_.ProcessingRoutine
+            for name, module in processing_.ProcessingRoutine.registry.items():
+                if module.session_id != session.id:
+                    continue
+                halted += [await processing_.ProcessingRoutine.halt(module)]
+                log.debug(f"Stopping processing module {name}")
 
+                async with module.change_specs:
+                    await module.change_specs.wait_for(lambda: module.status == ub.ProcessingModule.Status.HALTED)
+
+                for topic in map(module.get_input_topic, module.inputs):
+                    if not topic.on_subscribers_change:
+                        warn(f"No callback subscriber change on {topic}")
+                        continue
+
+                    # triggers unsubscribe if necessary
+                    await topic.remove_subscriber()
+
+            stopped = await asyncio.gather(*map(processing_.ProcessingRoutine.stop, halted))
             remove_service = context.client[client_.Services].services.pm_runtime_remove
             await remove_service(processing_module_list={'elements': stopped})
 
@@ -497,9 +532,16 @@ class DefaultProtocol(protocol_.StandardProtocol[States]):
             await self.state.set(States.STARTING)
             return True
 
-    async def on_stop(self, context):
-        for topic in context.topic_store:
-            print()
+    async def on_stop(self, context: Context):
+        assert context.topic_store is not None
+
+        for topic in context.topic_store.values():
+            await topic.remove_all_subscribers()
+
+            if topic.task_nursery is not self.task_nursery:
+                await topic.task_nursery.aclose()
+
+        await self.task_nursery.aclose()
 
     # changed callbacks means state changes have to be adjusted
     state_changes = {
@@ -511,43 +553,3 @@ class DefaultProtocol(protocol_.StandardProtocol[States]):
         (States.HALTED, States.ANY): protocol_.StandardProtocol.on_start,
         (States.ANY, end_state): protocol_.StandardProtocol.on_stop,
     }
-
-
-class UpdatedProtocol(protocol_.LoadStorageProtocol, DefaultProtocol):
-    starting_state = DefaultProtocol.starting_state
-
-    def __init__(self,
-                 config: constants_.UbiiConfig | None = None,
-                 log: logging.Logger | None = None):
-        super().__init__(config, log)
-
-        self.proto_spec_storage = self.config.PROTO_SPEC_STORAGE
-
-    async def load_specs(self, context):
-        import yaml
-        if self.proto_spec_storage:
-            client_spec_location = self.proto_spec_storage.get('client')
-            with open(Path(client_spec_location) / 'client.yaml') as client_spec_conf:
-                client_spec = yaml.safe_load(client_spec_conf)
-                for key in client_spec:
-                    import_location = self.proto_spec_storage.get(key)
-                    print()
-
-    state_changes = DefaultProtocol.state_changes
-    state_changes[(starting_state, States.CREATED)] = protocol_.LoadStorageProtocol.on_create
-
-
-LegacyProtocol = DefaultProtocol
-del DefaultProtocol
-
-
-def __getattr__(name):
-    if name is 'DefaultProtocol':
-        warn(
-            f"The default protocol was upgraded recently, use {LegacyProtocol!r} instead if you experience bugs with"
-            f"the new DefaultProtocol.",
-            DeprecationWarning
-        )
-        return UpdatedProtocol
-
-    raise AttributeError(f"{__name__} has no attribute {name}")

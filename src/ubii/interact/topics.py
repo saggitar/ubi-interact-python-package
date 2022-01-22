@@ -4,19 +4,24 @@ import abc
 import asyncio
 import logging
 import typing as t
+from contextlib import asynccontextmanager
 from fnmatch import fnmatch
-from functools import cached_property
+
+try:
+    from functools import cached_property
+except ImportError:
+    from backports.cached_property import cached_property
 from warnings import warn
 
 import ubii.proto as ub
 from . import util
-from .util.typing import T_co as _T_co, T_contra as _T_contra
+from .util.typing import T_co as _T_co, T_contra as _T_contra, Protocol
 
 _Buffer = t.TypeVar('_Buffer')
 _Token = t.TypeVar('_Token')
 
 
-class Consumer(t.Protocol[_T_contra]):
+class Consumer(Protocol[_T_contra]):
     def __call__(self, value: _T_contra) -> t.Coroutine[t.Any, t.Any, None] | None: ...
 
 
@@ -79,9 +84,40 @@ class Topic(t.AsyncIterator[_Buffer], t.Generic[_Buffer, _Token], abc.ABC):
                  task_nursery: util.TaskNursery | None = None) -> None:
         super().__init__()
         self.pattern = pattern
-        self.task_nursery = task_nursery or util.TaskNursery()
+        self.task_nursery = task_nursery or util.TaskNursery(name=f"Task Nursery for {self}")
         self.token_factory = token_factory
         self.callback_tasks: t.Dict[_Token, asyncio.Task] = {}
+        self.on_subscribers_change: OnSubscribersChange | None = None
+        self._subscriber_count = 0
+
+    @property
+    def subscriber_count(self):
+        return self._subscriber_count
+
+    @subscriber_count.setter
+    def subscriber_count(self, value):
+        if self.on_subscribers_change:
+            self.on_subscribers_change(self, (self.subscriber_count, value))
+
+        self._subscriber_count = value
+
+    @asynccontextmanager
+    async def _wait_for_event(self):
+        self.on_subscribers_change.event.clear()
+        yield
+        await self.on_subscribers_change.event.wait()
+
+    async def add_subscriber(self):
+        async with self._wait_for_event():
+            self.subscriber_count += 1
+
+    async def remove_subscriber(self):
+        async with self._wait_for_event():
+            self.subscriber_count -= 1
+
+    async def remove_all_subscribers(self):
+        async with self._wait_for_event():
+            self.subscriber_count = 0
 
     def register_callback(self, callback: Consumer[_Buffer]) -> _Token:
         """
@@ -126,11 +162,11 @@ class Topic(t.AsyncIterator[_Buffer], t.Generic[_Buffer, _Token], abc.ABC):
             warn(f"No callback for {token} found in {self}")
             return False
 
-        await self.task_nursery.stop_task(task)
+        await asyncio.wait(self.task_nursery.stop_task(task), timeout=timeout)
         return True
 
 
-class DefaultTopic(Topic[ub.TopicDataRecord, int]):
+class BasicTopic(Topic[ub.TopicDataRecord, int]):
     class default_token_factory:
         """ creates increasing integers. wow."""
         __last_token__ = -1
@@ -218,11 +254,17 @@ class TopicStore(MatchMapping[_Topic_co]):
     def __contains__(self, item):
         return item in self.data
 
+    def __delitem__(self, key):
+        if key not in self.data:
+            raise KeyError(f"Can't delete item with key {key}")
+
+        del self.data[key]
+
 
 class StreamSplitRoutine(util.CoroutineWrapper[t.Any, t.Any, None]):
     """
     A StreamSplitRoutine splits TopicDataRecords form a TopicData to the buffers of topics from a TopicStore container
-    (letting the TopicStorethe matching topics for the topic of the record and then setting the buffer with
+    (letting the TopicStore compute the matching topics for the topic of the record and then setting the buffer with
     the record)
 
     Of course this only works for Topics with TopicDataRecord buffers. If one designs a fancy topic with different
@@ -258,3 +300,33 @@ class StreamSplitRoutine(util.CoroutineWrapper[t.Any, t.Any, None]):
                 warn(f"No topics found for record with topic {record.topic}")
 
             await asyncio.gather(*[topic.buffer.set(record) for topic in topics or ()])
+
+
+class OnSubscribeCallback(Protocol):
+    async def __call__(self, client_id, *topic_patterns, as_regex=..., unsubscribe=...): ...
+
+
+class OnSubscribersChange:
+    def __init__(self,
+                 client_id,
+                 as_regex,
+                 callback: OnSubscribeCallback):
+        self.as_regex = as_regex
+        self.client_id = client_id
+        self.event = asyncio.Event()
+        self.callback = callback
+
+    def __call__(self, topic: Topic, change: t.Tuple[int, int]):
+        old, new = change
+
+        if new == 0 and old > 0:
+            topic.task_nursery.create_task(
+                self.callback(self.client_id, topic.pattern, as_regex=self.as_regex, unsubscribe=True)
+            )
+
+        if new == 1 and old < 1:
+            topic.task_nursery.create_task(
+                self.callback(self.client_id, topic.pattern, as_regex=self.as_regex, unsubscribe=False)
+            )
+
+        self.event.set()

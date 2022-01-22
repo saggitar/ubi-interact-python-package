@@ -1,30 +1,41 @@
 from __future__ import annotations
 
+import logging
 import typing as t
 
-from ubii.interact import client, constants, protocol, default_protocol
+from ubii.interact import (
+    client as client_,
+    constants as constants_,
+    protocol as protocol_,
+    default_protocol as default_protocol_
+)
+from .util.typing import Protocol
+
+log = logging.getLogger(__name__)
 
 
-class connect(t.Awaitable[client.UbiiClient[protocol.StandardProtocol]],
-              t.AsyncContextManager[client.UbiiClient[protocol.StandardProtocol]]):
-    class ClientFactory(t.Protocol):
+class connect(t.Awaitable[client_.UbiiClient[protocol_.StandardProtocol]],
+              t.AsyncContextManager[client_.UbiiClient[protocol_.StandardProtocol]]):
+    class ClientFactory(Protocol):
         def __call__(self,
                      instance: connect,
                      *,
-                     client_type: t.Type[client.UbiiClient],
-                     protocol_type: t.Type[protocol.UbiiProtocol]) -> client.UbiiClient[protocol.UbiiProtocol]: ...
+                     client_type: t.Type[client_.UbiiClient],
+                     protocol_type: t.Type[protocol_.UbiiProtocol]) -> client_.UbiiClient[protocol_.UbiiProtocol]: ...
 
     def __init__(self,
                  url=None,
-                 config: constants.UbiiConfig = constants.GLOBAL_CONFIG,
-                 client_type: t.Type[client.UbiiClient] = client.UbiiClient,
-                 protocol_type: t.Type[protocol.UbiiProtocol] = default_protocol.DefaultProtocol):
+                 config: constants_.UbiiConfig = constants_.GLOBAL_CONFIG,
+                 client_type: t.Type[client_.UbiiClient] = client_.UbiiClient,
+                 protocol_type: t.Type[protocol_.UbiiProtocol] = default_protocol_.DefaultProtocol):
         if url is not None:
             config.DEFAULT_SERVICE_URL = url
         self.config = config
         factory = self.client_factories.get((client_type, protocol_type))
         if not factory:
-            raise ValueError(f"No factory found for {(client_type, protocol_type)}")
+            raise ValueError(f"No client factory found for {(client_type, protocol_type)}")
+        else:
+            log.debug(f"Using {factory} to create {client_type} with {protocol_type}")
 
         self.client = factory(
             self,
@@ -33,16 +44,12 @@ class connect(t.Awaitable[client.UbiiClient[protocol.StandardProtocol]],
         )
 
     def default_create(self, *, client_type, protocol_type):
-        if client_type == client.UbiiClient and protocol_type == default_protocol.DefaultProtocol:
-            _protocol = protocol_type(config=self.config)
-            _client = client_type(protocol=_protocol)
-            _protocol.client = _client
-            return _client
-        else:
-            raise NotImplementedError(f"{self.default_create} can't create a client for client type {client_type} "
-                                      f"and protocol type {protocol_type}.")
+        protocol = protocol_type(config=self.config)
+        client = client_type(protocol=protocol)
+        protocol.client = client
+        return client
 
-    def __await__(self) -> t.Generator[t.Any, None, client.UbiiClient]:
+    def __await__(self) -> t.Generator[t.Any, None, client_.UbiiClient]:
         return self.client.__await__()
 
     def __aenter__(self):
@@ -57,6 +64,6 @@ class connect(t.Awaitable[client.UbiiClient[protocol.StandardProtocol]],
     def __exit__(self, *exc_info):
         self.client.protocol.task_nursery.create_task(self.client.protocol.stop())
 
-    client_factories: t.Dict[t.Tuple[t.Type[client.UbiiClient], t.Type[protocol.UbiiProtocol]], ClientFactory] = {
-        (client.UbiiClient, default_protocol.DefaultProtocol): default_create
+    client_factories: t.Dict[t.Tuple[t.Type[client_.UbiiClient], t.Type[protocol_.UbiiProtocol]], ClientFactory] = {
+        (client_.UbiiClient, default_protocol_.DefaultProtocol): default_create
     }

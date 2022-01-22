@@ -1,6 +1,10 @@
 from __future__ import annotations
 
+import sys
 from functools import lru_cache
+if sys.version_info <= (3, 8):
+    lru_cache = lru_cache(maxsize=None)
+
 from proto.marshal import Marshal
 from proto.marshal.rules.message import MessageRule
 

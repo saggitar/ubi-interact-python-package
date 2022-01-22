@@ -10,6 +10,8 @@ from urllib.parse import urlparse
 from warnings import warn
 
 import ubii.proto as ub
+
+from .logging import debug
 from .services import ServiceConnection
 from .topics import DataConnection
 
@@ -68,7 +70,7 @@ class AIOHttpWebsocketConnection(AIOHttpConnection, DataConnection):
         self._ws_connected = asyncio.Event()
         self._ws: aiohttp.ClientWebSocketResponse | None = None
         self._client_id: str | None = None
-        self._stream = self._stream()
+        self._stream = self._stream_coro()
 
     @asynccontextmanager
     async def connect(self, client_id: str):
@@ -85,18 +87,19 @@ class AIOHttpWebsocketConnection(AIOHttpConnection, DataConnection):
         del self.ws
         log.info(f"Disconnected {self}")
 
-    async def _stream(self) -> ub.TopicData:
+    async def _stream_coro(self) -> ub.TopicData:
         await self._ws_connected.wait()
         assert self.ws is not None
         message: aiohttp.WSMessage
         async for message in self.ws:
-            if message.type == aiohttp.WSMsgType.TEXT:
+            if message.type == aiohttp.WSMsgType.ERROR:
+                self.log_socket_in.error(message.data)
+            elif message.type == aiohttp.WSMsgType.TEXT:
                 if message.data == "PING":
                     await self.ws.send_str('PONG')
-                else:
-                    self.log_socket_in.error(message.data)
-            elif message.type == aiohttp.WSMsgType.ERROR:
-                self.log_socket_in.error(message)
+                    self.log_socket_out.debug(f"Sending 'PONG'")
+
+                self.log_socket_in.debug(f"Received {message.data}")
             elif message.type == aiohttp.WSMsgType.BINARY:
                 data = ub.TopicData.deserialize(message.data)
                 self.log_socket_in.debug(f"Received {data}")
@@ -160,3 +163,28 @@ class AIOHttpRestConnection(AIOHttpConnection, ServiceConnection):
         async with self.session.post(self.url, headers=self.headers, json=request, timeout=timeout) as resp:
             json = await asyncio.wait_for(resp.text(), timeout=timeout)
             return ub.ServiceReply.from_json(json, ignore_unknown_fields=True)  # master node bug requires ignore
+
+
+def aiohttp_session():
+    """
+    We create a aiohttp session with our custom json encoder and some logging handlings
+    in debug mode
+    """
+    if debug():
+        trace_config = aiohttp.TraceConfig()
+
+        async def on_request_start(session, context, params):
+            logging.getLogger('aiohttp.client').debug(f'Starting request <{params}>')
+
+        trace_config.on_request_start.append(on_request_start)
+        trace_configs = [trace_config]
+        timeout = aiohttp.ClientTimeout(total=1)
+    else:
+        timeout = aiohttp.ClientTimeout(total=300)
+        trace_configs = []
+
+    from ubii.proto import serialize as proto_serialize
+    return aiohttp.ClientSession(raise_for_status=True,
+                                 json_serialize=proto_serialize,
+                                 trace_configs=trace_configs,
+                                 timeout=timeout)
