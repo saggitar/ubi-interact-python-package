@@ -74,7 +74,7 @@ class CocoSSDPM(ProcessingRoutine):
         if image:
             loaded = Image.frombuffer('RGB', (image.width, image.height), image.data)
             self.api.SetImage(loaded)
-            boxes = self.api.GetComponentImages(RIL.TEXTLINE, True)
+            boxes = self.api.GetComponentImages(RIL.WORD, True)
             result = []
 
             for i, (im, box, _, _) in enumerate(boxes):
@@ -94,8 +94,8 @@ class CocoSSDPM(ProcessingRoutine):
                         )
                     )
 
+            context.outputs.predictions = ub.Object2DList(elements=result)
             if result:
-                context.outputs.predictions = ub.Object2DList(elements=result)
                 log.info(f"Detected Text[s]:\n" + '\n'.join(map('{!r}'.format, result)))
 
     def on_destroyed(self, context):
@@ -112,7 +112,7 @@ def main():
     import yaml
     with open('logging_config.yaml') as conf:
         test_logging_config = yaml.safe_load(conf)
-        # test_logging_config['incremental'] = False
+        test_logging_config['incremental'] = False
         logging_setup.change(config=test_logging_config, verbosity=logging.DEBUG)
 
     log_outputs = [handler.stream.name for handler in log.handlers or () if hasattr(handler, 'stream')]
@@ -129,7 +129,7 @@ def main():
     config.CONFIG_FILE = 'ubii.yaml'
 
     async def __run():
-        with connect_client(config=config) as client:
+        with connect_client() as client:
             type(client.protocol).on_create.register_decorator(__pms)
             client.is_dedicated_processing_node = True
             await client

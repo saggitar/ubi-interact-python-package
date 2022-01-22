@@ -2,14 +2,15 @@ from __future__ import annotations
 
 import asyncio
 import logging
-import pytest
 import typing as t
+
+import pytest
 import yaml
 
 import ubii.proto as ub
+from ubii.interact.client import Devices, UbiiClient, Services
 from ubii.interact.default_protocol import DefaultProtocol
 from ubii.interact.logging import logging_setup
-from ubii.interact.client import Devices, UbiiClient, Services
 
 __verbosity__: int | None = None
 ALWAYS_VERBOSE = True

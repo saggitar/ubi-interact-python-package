@@ -6,7 +6,7 @@ import typing as t
 import pytest
 import ubii.proto as ub
 
-from ubii.interact.topics import DataConnection, TopicStore, DefaultTopic, StreamSplitRoutine
+from ubii.interact.topics import DataConnection, TopicStore, BasicTopic, StreamSplitRoutine
 
 pytestmark = pytest.mark.asyncio
 log = logging.getLogger(__name__)
@@ -61,7 +61,7 @@ def make_connection(request):
 
 @pytest.fixture
 def container():
-    container = TopicStore(default_factory=DefaultTopic)
+    container = TopicStore(default_factory=BasicTopic)
     yield container
 
 
