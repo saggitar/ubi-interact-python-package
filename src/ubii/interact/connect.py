@@ -14,20 +14,20 @@ from .util.typing import Protocol
 log = logging.getLogger(__name__)
 
 
-class connect(t.Awaitable[client_.UbiiClient[protocol_.StandardProtocol]],
-              t.AsyncContextManager[client_.UbiiClient[protocol_.StandardProtocol]]):
+class connect(t.Awaitable[client_.UbiiClient[protocol_.AbstractClientProtocol]],
+              t.AsyncContextManager[client_.UbiiClient[protocol_.AbstractClientProtocol]]):
     class ClientFactory(Protocol):
         def __call__(self,
                      instance: connect,
                      *,
                      client_type: t.Type[client_.UbiiClient],
-                     protocol_type: t.Type[protocol_.UbiiProtocol]) -> client_.UbiiClient[protocol_.UbiiProtocol]: ...
+                     protocol_type: t.Type[protocol_.AbstractProtocol]) -> client_.UbiiClient[protocol_.AbstractProtocol]: ...
 
     def __init__(self,
                  url=None,
                  config: constants_.UbiiConfig = constants_.GLOBAL_CONFIG,
                  client_type: t.Type[client_.UbiiClient] = client_.UbiiClient,
-                 protocol_type: t.Type[protocol_.UbiiProtocol] = default_protocol_.DefaultProtocol):
+                 protocol_type: t.Type[protocol_.AbstractProtocol] = default_protocol_.DefaultProtocol):
         if url is not None:
             config.DEFAULT_SERVICE_URL = url
         self.config = config
@@ -64,6 +64,6 @@ class connect(t.Awaitable[client_.UbiiClient[protocol_.StandardProtocol]],
     def __exit__(self, *exc_info):
         self.client.protocol.task_nursery.create_task(self.client.protocol.stop())
 
-    client_factories: t.Dict[t.Tuple[t.Type[client_.UbiiClient], t.Type[protocol_.UbiiProtocol]], ClientFactory] = {
+    client_factories: t.Dict[t.Tuple[t.Type[client_.UbiiClient], t.Type[protocol_.AbstractProtocol]], ClientFactory] = {
         (client_.UbiiClient, default_protocol_.DefaultProtocol): default_create
     }

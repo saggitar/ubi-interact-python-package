@@ -2,10 +2,11 @@ from __future__ import annotations
 
 import abc
 import asyncio
-import logging
 import typing as t
 from contextlib import asynccontextmanager
 from fnmatch import fnmatch
+
+import logging
 
 try:
     from functools import cached_property
@@ -303,7 +304,7 @@ class StreamSplitRoutine(util.CoroutineWrapper[t.Any, t.Any, None]):
 
 
 class OnSubscribeCallback(Protocol):
-    async def __call__(self, client_id, *topic_patterns, as_regex=..., unsubscribe=...): ...
+    async def __call__(self, client_id: str, *topic_patterns: str, as_regex: bool = ..., unsubscribe: bool = ...): ...
 
 
 class OnSubscribersChange:

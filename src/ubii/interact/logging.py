@@ -85,6 +85,7 @@ def parse_args():
     parser.add_argument('--debug', action='store_true', default=False)
     parser.add_argument('--config', action='store', default=None)
     parser.add_argument('--log-config', action='store', default=__config__)
+    parser.add_argument('--processing-modules', action='store', default=[])
     args = parser.parse_args()
 
     logging_setup.change(config=args.log_config, verbosity=logging.ERROR - 10 * args.verbose)

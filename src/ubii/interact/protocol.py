@@ -26,25 +26,11 @@ _StateChange = t.Tuple[T_EnumFlag, T_EnumFlag]
 log = logging.getLogger(__name__)
 
 
-class UbiiProtocol(t.Generic[T_EnumFlag]):
-
-    @classmethod
-    @property
-    @abc.abstractmethod
-    def state_changes(cls) -> t.Mapping[t.Tuple[T_EnumFlag | None, ...], Callback]:
-        ...
-
-    @classmethod
-    @property
-    @abc.abstractmethod
-    def starting_state(cls) -> T_EnumFlag:
-        ...
-
-    @classmethod
-    @property
-    @abc.abstractmethod
-    def end_state(cls) -> T_EnumFlag:
-        ...
+@util.AbstractAnnotations('state_changes', 'starting_state', 'end_state')
+class AbstractProtocol(t.Generic[T_EnumFlag], abc.ABC):
+    state_changes: t.Mapping[t.Tuple[T_EnumFlag | None, ...], Callback]
+    starting_state: T_EnumFlag
+    end_state: T_EnumFlag
 
     @cached_property
     def context(self):
@@ -121,7 +107,7 @@ class UbiiProtocol(t.Generic[T_EnumFlag]):
 
 class RunProtocol(util.CoroutineWrapper):
 
-    def __init__(self, protocol: UbiiProtocol):
+    def __init__(self, protocol: AbstractProtocol):
         self.protocol = protocol
         self.__name__ = repr(self.protocol)
         super().__init__(coroutine=self._run())
@@ -177,7 +163,7 @@ class RunProtocol(util.CoroutineWrapper):
                 )
 
 
-class StandardProtocol(UbiiProtocol, t.Generic[T_EnumFlag], util.Registry, abc.ABC):
+class AbstractClientProtocol(AbstractProtocol, t.Generic[T_EnumFlag], util.Registry, abc.ABC):
     hook_function: util.registry[str, util.hook] = util.registry(lambda h: h.__name__, util.hook)
     __hook_decorators__: t.Set[Decorator] = set()
 
@@ -283,12 +269,13 @@ class StandardProtocol(UbiiProtocol, t.Generic[T_EnumFlag], util.Registry, abc.A
     async def on_stop(self, context):
         self.log.info(f"Stopped protocol {self}")
 
-    def __init_subclass__(cls, **kwargs):
+    def __init_subclass__(cls):
         """
         Register decorators for hook functions
         """
         hook_function: util.hook
         for hook_function, hk in product(cls.hook_function.registry.values(), cls.__hook_decorators__):
-            hook_function.register_decorator(hk)
+            if hk not in hook_function.decorators:
+                hook_function.register_decorator(hk)
 
-        super().__init_subclass__(**kwargs)
+        super().__init_subclass__()

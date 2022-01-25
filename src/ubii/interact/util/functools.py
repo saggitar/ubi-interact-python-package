@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-from abc import ABCMeta
 from collections import namedtuple
 
 import asyncio
@@ -126,11 +125,51 @@ def log_call(logger):
     return decorator
 
 
+class AbstractAnnotations:
+    attr_name = '__required_annotations__'
+    wrap_marker = object()
+
+    def __init__(self, *names):
+        self.names = names
+
+    def __call__(self, cls: type):
+        if any(name not in cls.__annotations__ for name in self.names):
+            raise ValueError(f"{cls} needs to have annotation[s] for {', '.join(self.names)}")
+
+        names = getattr(cls, self.attr_name, set())
+        names.update(self.names)
+        setattr(cls, self.attr_name, names)
+
+        original_new = cls.__new__
+
+        wrapped = self.wrap_once(original_new)  # might return original_new if already decorated
+        setattr(cls, original_new.__name__, wrapped)
+
+        return cls
+
+    def wrap_once(self, original_new):
+        wrap_markers = getattr(original_new, 'markers', set())
+        if self.wrap_marker in wrap_markers:
+            return original_new
+
+        @wraps(original_new)
+        def wrapped(cls, *args, **kwargs):
+            instance = original_new(cls, *args, **kwargs)
+
+            # is instance can be created type(instance) can't have abstract methods, so
+            # instance also has to have all required attributes
+            missing = [name for name in getattr(cls, self.attr_name, []) if not hasattr(cls, name)]
+            if missing:
+                raise TypeError(f"Can't create {cls} instance with missing class attribute[s] {', '.join(map(repr, missing))}")
+
+            return instance
+
+        wrap_markers.add(self.wrap_marker)
+        wrapped.markers = wrap_markers
+        return wrapped
+
+
 class ProtoRegistry(ub.ProtoMeta, RegistryMeta):
-    """
-
-    """
-
     def __new__(mcs, *args, **kwargs):
         kls = super().__new__(mcs, *args, **kwargs)
         return kls

@@ -2,13 +2,12 @@ from __future__ import annotations
 
 import asyncio
 import logging
-import typing as t
-
 import pytest
+import typing as t
 import yaml
 
 import ubii.proto as ub
-from ubii.interact.client import Devices, UbiiClient, Services
+from ubii.interact.client import Devices, UbiiClient, Services, InitProcessingModules
 from ubii.interact.default_protocol import DefaultProtocol
 from ubii.interact.logging import logging_setup
 
@@ -78,6 +77,10 @@ async def base_client() -> UbiiClient:
     """
     protocol = DefaultProtocol()
     client = UbiiClient(protocol=protocol)
+
+    from .data.coco_ssd_fake import CocoSSDPM
+    client[InitProcessingModules].late_init_processing_modules = [CocoSSDPM]
+
     protocol.client = client
 
     yield client

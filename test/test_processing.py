@@ -1,13 +1,11 @@
 import asyncio
 import logging
-
 import pytest
 
 import ubii.proto as ub
 from ubii.interact import processing
 from ubii.interact import util
-from ubii.interact.client import ProcessingModules, Subscriptions, Publish
-from ubii.interact.protocol import StandardProtocol
+from ubii.interact.client import RunProcessingModules, InitProcessingModules, Subscriptions, Publish
 
 pytestmark = pytest.mark.asyncio
 
@@ -139,7 +137,7 @@ class TestPy(Processing):
 
     @pytest.fixture(scope='class', autouse=True)
     async def startup(self, client, session_spec, module_spec, start_session):
-        await client.implements(ProcessingModules)
+        await client.implements(InitProcessingModules, RunProcessingModules)
         await start_session(session_spec)
         pm: processing.ProcessingRoutine = processing.ProcessingRoutine.registry[module_spec.name]
         async with pm.change_specs:
@@ -168,32 +166,10 @@ class TestCoco():
         pytest.param((ub.Client(is_dedicated_processing_node=True),), id='processing_node')
     ]
 
-    logging_config = {
-        'loggers': {
-            'coco_ssd_object_detection': {'propagate': 'yes'},
-            'ubii.interact.connections.out.sock': {'propagate': 'yes'}
-        }
-    }
-
     @pytest.fixture(scope='class', autouse=True)
     async def startup(self, client):
-        def __add_pms(on_create):
-            """
-            We need to wait until constants are retrieved from the server before initializing PM,
-            and add them before registering the client
-            """
-
-            async def __inner(protocol, *args):
-                from .data.coco_ssd_fake import CocoSSDPM
-                protocol.client.processing_modules = [CocoSSDPM()]
-                await on_create(protocol, *args)
-
-            return __inner
-
-        assert isinstance(client.protocol, StandardProtocol)
-        type(client.protocol).on_create.register_decorator(__add_pms)
         await client
-        await client.implements(ProcessingModules)
+        await client.implements(InitProcessingModules, RunProcessingModules)
         yield
 
     async def test_processing(self, client, startup):

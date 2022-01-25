@@ -1,13 +1,13 @@
 from __future__ import annotations
 
-import asyncio
 import dataclasses
+
+import asyncio
 import typing as t
 from contextlib import asynccontextmanager
 from itertools import chain
 
 import ubii.proto as ub
-
 from . import (
     services as _services,
     topics as topics_,
@@ -69,14 +69,21 @@ class Devices:
 
 
 @dataclasses.dataclass
-class ProcessingModules:
+class RunProcessingModules:
     """
     Behavior to update and run processing modules
     """
-    get_processing_modules: t.Callable[[str], ub.ProcessingModule] | None = None
+    get_processing_module: t.Callable[[str], ub.ProcessingModule] | None = None
+
+@dataclasses.dataclass
+class InitProcessingModules:
+    """
+    Behavior to initialize ProcessingModules after registration
+    """
+    late_init_processing_modules: t.List[ub.ProcessingModule] | None = None
 
 
-_T_Protocol = t.TypeVar('_T_Protocol', bound=protocol_.UbiiProtocol)
+_T_Protocol = t.TypeVar('_T_Protocol', bound=protocol_.AbstractProtocol)
 
 
 class UbiiClient(ub.Client,
@@ -120,7 +127,9 @@ class UbiiClient(ub.Client,
     def __init__(self: UbiiClient[_T_Protocol], mapping=None, *,
                  protocol: _T_Protocol,
                  required_behaviours: t.Tuple[t.Type, ...] = (Services, Subscriptions, Publish),
-                 optional_behaviours: t.Tuple[t.Type, ...] = (Register, Devices, ProcessingModules),
+                 optional_behaviours: t.Tuple[t.Type, ...] = (
+                         Register, Devices, RunProcessingModules, InitProcessingModules
+                 ),
                  **kwargs):
         super().__init__(mapping=mapping, **kwargs)
 

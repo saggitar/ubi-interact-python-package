@@ -24,6 +24,7 @@ from .functools import (
     make_dict,
     async_compose,
     attach_info,
+    AbstractAnnotations,
 )
 
 __all__ = (
@@ -49,4 +50,5 @@ __all__ = (
     "async_compose",
     "attach_info",
     "calc_delta",
+    "AbstractAnnotations",
 )

@@ -289,7 +289,7 @@ class PM_STAT(enum.IntFlag):
     DESTROYED = enum.auto()
 
 
-class ProcessingProtocol(protocol.UbiiProtocol[ub.ProcessingModule.Status]):
+class ProcessingProtocol(protocol.AbstractProtocol[ub.ProcessingModule.Status]):
     starting_state = PM_STAT.INITIALIZED
     end_state = PM_STAT.DESTROYED
     AnyState = PM_STAT.INITIALIZED | PM_STAT.CREATED | PM_STAT.PROCESSING | PM_STAT.HALTED | PM_STAT.DESTROYED

@@ -1,8 +1,9 @@
 from __future__ import annotations
 
-import asyncio
 import dataclasses
 import enum
+
+import asyncio
 import logging
 import typing as t
 from contextlib import asynccontextmanager
@@ -51,7 +52,7 @@ class States(enum.IntFlag):
     ANY = STARTING | REGISTERED | CONNECTED | STOPPED | HALTED | CREATED
 
 
-class DefaultProtocol(protocol_.StandardProtocol[States]):
+class DefaultProtocol(protocol_.AbstractClientProtocol[States]):
     """
     The standard protocol creates one UbiiClient, registers it, implements all required behaviours and
     device registration as well as handling of processing modules.
@@ -62,7 +63,7 @@ class DefaultProtocol(protocol_.StandardProtocol[States]):
     end_state = States.STOPPED
 
     # decorators applied to DefaultProtocol hooks
-    __hook_decorators__ = protocol_.StandardProtocol.__hook_decorators__.union([util.log_call(log)])
+    __hook_decorators__ = protocol_.AbstractClientProtocol.__hook_decorators__.union([util.log_call(log)])
 
     @dataclasses.dataclass
     class Context:
@@ -233,9 +234,9 @@ class DefaultProtocol(protocol_.StandardProtocol[States]):
 
         async def on_subscribe_callback(
                 client_id: str,
-                *topic_patterns,
-                as_regex=False,
-                unsubscribe=False,
+                *topic_patterns: str,
+                as_regex: bool = False,
+                unsubscribe: bool = False,
         ):
             message = {
                 'client_id': client_id,
@@ -504,7 +505,7 @@ class DefaultProtocol(protocol_.StandardProtocol[States]):
         start.register_callback(on_start_session)
         stop.register_callback(on_stop_session)
 
-        context.client[client_.ProcessingModules].get_processing_modules = processing_.ProcessingRoutine.registry.get
+        context.client[client_.InitProcessingModules].get_processing_module = processing_.ProcessingRoutine.registry.get
 
     async def on_halted(self, context: Context):
         assert context.service_map is not None
@@ -545,11 +546,48 @@ class DefaultProtocol(protocol_.StandardProtocol[States]):
 
     # changed callbacks means state changes have to be adjusted
     state_changes = {
-        (None, starting_state): protocol_.StandardProtocol.on_start,
-        (starting_state, States.CREATED): protocol_.StandardProtocol.on_create,
+        (None, starting_state): protocol_.AbstractClientProtocol.on_start,
+        (starting_state, States.CREATED): protocol_.AbstractClientProtocol.on_create,
         (States.CREATED, States.REGISTERED): on_registration,
-        (States.REGISTERED, States.CONNECTED): protocol_.StandardProtocol.on_connect,
+        (States.REGISTERED, States.CONNECTED): protocol_.AbstractClientProtocol.on_connect,
         (States.ANY, States.HALTED): on_halted,
-        (States.HALTED, States.ANY): protocol_.StandardProtocol.on_start,
-        (States.ANY, end_state): protocol_.StandardProtocol.on_stop,
+        (States.HALTED, States.ANY): protocol_.AbstractClientProtocol.on_start,
+        (States.ANY, end_state): protocol_.AbstractClientProtocol.on_stop,
     }
+
+
+class LatePMInitProtocol(DefaultProtocol):
+
+    async def create_client(self, context: DefaultProtocol.Context):
+        await super().create_client(context)
+
+        assert context.client.implements(client_.InitProcessingModules)
+        context.client.processing_modules += [
+            pm(context) for pm in
+            context.client[client_.InitProcessingModules].late_init_processing_modules
+        ]
+
+    def __setattr__(self, key, value):
+        if key == 'client' and value is not None:
+            assert isinstance(value, client_.UbiiClient)
+            if not value.implements(client_.InitProcessingModules):
+                value[client_.InitProcessingModules].late_init_processing_modules = []
+
+        super(LatePMInitProtocol, self).__setattr__(key, value)
+
+
+LegacyProtocol = DefaultProtocol
+del DefaultProtocol
+
+
+def __getattr__(name):
+    github_url = "TODO"
+
+    if name == 'DefaultProtocol':
+        warn(f"The default Protocol was updated, if you experience bugs with the new DefaultProtocol"
+             f" please use the ``LegacyProtocol`` instead and report the bug at {github_url}.", ImportWarning)
+
+        return LatePMInitProtocol
+
+    else:
+        raise AttributeError(f"{__name__} has no attribute {name}")
