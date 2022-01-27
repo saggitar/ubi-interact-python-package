@@ -1,12 +1,12 @@
 from __future__ import annotations
 
-import abc
-import asyncio
-import typing as t
-from contextlib import asynccontextmanager
 from fnmatch import fnmatch
 
+import abc
+import asyncio
 import logging
+import typing as t
+from contextlib import asynccontextmanager
 
 try:
     from functools import cached_property
@@ -70,6 +70,8 @@ class Topic(t.AsyncIterator[_Buffer], t.Generic[_Buffer, _Token], abc.ABC):
     """
     __unique_key_attr__ = 'pattern'
 
+    on_subscribers_change: OnSubscribersChange | None
+
     @property
     @abc.abstractmethod
     def buffer(self: Topic[_Buffer, _Token]) -> util.accessor[_Buffer]:
@@ -84,11 +86,11 @@ class Topic(t.AsyncIterator[_Buffer], t.Generic[_Buffer, _Token], abc.ABC):
                  token_factory: t.Callable[[], _Token],
                  task_nursery: util.TaskNursery | None = None) -> None:
         super().__init__()
+        self.on_subscribers_change = None
         self.pattern = pattern
         self.task_nursery = task_nursery or util.TaskNursery(name=f"Task Nursery for {self}")
         self.token_factory = token_factory
         self.callback_tasks: t.Dict[_Token, asyncio.Task] = {}
-        self.on_subscribers_change: OnSubscribersChange | None = None
         self._subscriber_count = 0
 
     @property

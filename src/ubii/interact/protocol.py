@@ -118,7 +118,7 @@ class RunProtocol(util.CoroutineWrapper):
     async def _run_state_change_callback(self, prev, cur, ctx):
         cb = self.protocol.get_state_change_callback((prev, cur), self._no_callback_found)
         ctx.state_change = (prev, cur)
-        log.debug(f"Changed state {prev!r}->{cur!r} in {self.protocol}, got callback {cb}")
+        log.debug(f"Changed state {prev!r}->{cur!r} in {self.protocol}, got callback {cb!r}")
 
         # all functions are also descriptors
         assert isinstance(cb, Descriptor), f"{cb} needs to be a descriptor, e.g. a function"

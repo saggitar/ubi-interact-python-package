@@ -168,6 +168,12 @@ class TestCoco():
 
     @pytest.fixture(scope='class', autouse=True)
     async def startup(self, client):
+        from ubii.processing_modules.ocr.tesseract_ocr import TesseractOCR_EAST as TesseractOCR
+        from ubii.processing_modules.ocr import tesseract_ocr
+        tesseract_ocr.log = log
+
+        client[InitProcessingModules].late_init_processing_modules = [TesseractOCR]
+
         await client
         await client.implements(InitProcessingModules, RunProcessingModules)
         yield

@@ -1,10 +1,11 @@
 from __future__ import annotations
 
+import dataclasses
+import enum
+
 import asyncio
 import collections
 import concurrent.futures
-import dataclasses
-import enum
 import logging
 import types
 import typing as t
@@ -13,7 +14,6 @@ from functools import wraps, partial
 
 import ubii.proto as ub
 from ubii.util import get_import_name
-
 from . import protocol, topics
 from . import util
 from .logging import debug
@@ -64,6 +64,7 @@ class Scheduler(util.CoroutineWrapper):
         self.mode = mode
         self.callback = callback
         self.executor = concurrent.futures.ThreadPoolExecutor(max_workers=MAX_WORKERS)
+        self._stop_during_next_iteration = False
 
         super().__init__(coroutine=self.get_trigger_loop())
 
@@ -100,11 +101,13 @@ class Scheduler(util.CoroutineWrapper):
     def delta_time(self):
         return self._delta_times[-1]
 
-    def get_trigger_loop(self):
+    def halt(self):
+        self._stop_during_next_iteration = True
 
+    def get_trigger_loop(self):
         async def _trigger_loop():
             with self.executor as pool:
-                while True:
+                while not self._stop_during_next_iteration:
                     start_time = self._loop.time()
                     self.done, self.pending = await asyncio.wait(
                         [get() for get in self._inputs],
@@ -424,7 +427,7 @@ class ProcessingProtocol(protocol.AbstractProtocol[ub.ProcessingModule.Status]):
     @pm_proxy.callback_in_pm('on_halted')
     @pm_proxy.set_status_in_pm(ub.ProcessingModule.Status.HALTED)
     async def on_halted(self, context):
-        pass
+        context.scheduler.halt()
 
     @pm_proxy.callback_in_pm('on_destroyed')
     @pm_proxy.set_status_in_pm(ub.ProcessingModule.Status.DESTROYED)

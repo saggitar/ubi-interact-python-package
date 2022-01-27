@@ -12,12 +12,13 @@ handlers:
     mode: w
 loggers:
   ubii.interact:
-    propagate: yes
+    propagate: no
   test:
     propagate: yes
     handlers: [ test ]
-  coco_ssd_object_detection:
-    propagate: yes
-    handlers: [ test ]
+  ubii.interact.connections.in.socket:
+    level: WARNING
+  ubii.interact.connections.out.socket:
+    level: INFO
 
 incremental: True

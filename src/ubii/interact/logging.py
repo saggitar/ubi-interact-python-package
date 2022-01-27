@@ -1,14 +1,14 @@
 from __future__ import annotations
 
+from collections import namedtuple
+
 import argparse
 import logging.config
 import re
-import typing as t
-from collections import namedtuple
-from importlib.resources import read_text
-
 import sys
+import typing as t
 import yaml
+from importlib.resources import read_text
 
 import ubii.proto as ub
 from . import util
@@ -19,10 +19,10 @@ __config__ = yaml.safe_load(read_text(util, 'logging_config.yaml'))
 class _logging_setup:
     log_config = namedtuple('log_config', ['config', 'level', 'warning_filter'])
 
-    def __init__(self, base_config=__config__, log_level=logging.INFO, warning_filter: str = 'default'):
+    def __init__(self, base_config=__config__, log_level=logging.INFO, warning_filter: str = 'always'):
         self.base_config = self.log_config(config=base_config, warning_filter=warning_filter, level=log_level)
         self._configs: t.List[_logging_setup.log_config] = [self.base_config]
-        self._apply()
+        self._applied = False
 
     @property
     def effective_config(self):
@@ -43,15 +43,20 @@ class _logging_setup:
         config = config or self.effective_config.config
         config['version'] = 1  # other versions are not supported by the logging framework
 
-        self._configs.append(self.log_config(
-            level=verbosity,
-            config=config,
-            warning_filter=self.effective_config.warning_filter
-        ))
-        self._apply()
+        new_config = self.log_config(level=verbosity,
+                                     config=config,
+                                     warning_filter=self.effective_config.warning_filter)
+
+        if self._applied:
+            self._configs.append(new_config)
+        else:
+            self._configs = [new_config]
+
         return self
 
     def _apply(self):
+        self._applied = True
+
         logging.config.dictConfig(self.effective_config.config)
         logging.captureWarnings(True)
         logging.getLogger().setLevel(level=self.effective_config.level)
@@ -62,33 +67,36 @@ class _logging_setup:
             os.environ["PYTHONWARNINGS"] = self.effective_config.warning_filter  # Also affect subprocesses
 
     def reset(self):
-        self._configs[:] = self._configs[0]
+        self._configs[:] = [self._configs[0]]
         self._apply()
 
     def __enter__(self):
+        self._apply()
         return self
 
     def __exit__(self, *exc_info):
         if any(exc_info):
-            self.reset()
+            self._configs.clear()
         else:
             _ = self._configs.pop()
+
+        if self._configs:
             self._apply()
 
 
 logging_setup = _logging_setup(base_config=__config__, log_level=logging.INFO, warning_filter='default')
 
 
-def parse_args():
-    parser = argparse.ArgumentParser()
+def parse_args(parser=None):
+    parser = parser or argparse.ArgumentParser()
+
     parser.add_argument('--verbose', '-v', action='count', default=0)
     parser.add_argument('--debug', action='store_true', default=False)
     parser.add_argument('--config', action='store', default=None)
     parser.add_argument('--log-config', action='store', default=__config__)
-    parser.add_argument('--processing-modules', action='store', default=[])
     args = parser.parse_args()
 
-    logging_setup.change(config=args.log_config, verbosity=logging.ERROR - 10 * args.verbose)
+    logging_setup.change(config=args.log_config, verbosity=logging.INFO - 10 * args.verbose)
     debug(args.debug)
 
     return args

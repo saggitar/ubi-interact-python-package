@@ -80,7 +80,7 @@ class InitProcessingModules:
     """
     Behavior to initialize ProcessingModules after registration
     """
-    late_init_processing_modules: t.List[ub.ProcessingModule] | None = None
+    late_init_processing_modules: t.List[ub.ProcessingModule] | t.List[t.Type[ub.ProcessingModule]] | None = None
 
 
 _T_Protocol = t.TypeVar('_T_Protocol', bound=protocol_.AbstractProtocol)

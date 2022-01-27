@@ -7,12 +7,19 @@ import typing as t
 import yaml
 
 import ubii.proto as ub
-from ubii.interact.client import Devices, UbiiClient, Services, InitProcessingModules
+from ubii.interact.client import Devices, UbiiClient, Services
 from ubii.interact.default_protocol import DefaultProtocol
 from ubii.interact.logging import logging_setup
 
 __verbosity__: int | None = None
 ALWAYS_VERBOSE = True
+
+
+def pytest_addoption(parser):
+    parser.addoption(
+        "--log-config", action="store", default="./data/logging_config.yaml",
+        help="path to yaml file containing log config"
+    )
 
 
 def pytest_configure(config):
@@ -24,21 +31,24 @@ def pytest_configure(config):
         logging.DEBUG
     )
 
-    logging_setup.change(verbosity=__verbosity__)
-
-    from importlib.resources import read_text
-    from . import data
-
-    test_logging_config = yaml.safe_load(read_text(data, 'logging_config.yaml'))
-    logging_setup.change(config=test_logging_config)
-
     import ubii.proto
     assert ubii.proto.__proto_package__ is not None, "No proto package set, aborting test setup."
 
 
-@pytest.fixture
+@pytest.fixture(autouse=True, scope='session')
 def configure_logging(request):
-    with logging_setup.change(config=request.param):
+    log_config = logging_setup.change(verbosity=__verbosity__)
+
+    from pathlib import Path
+    log_config_path = Path(request.config.getoption('--log-config'))
+    if log_config_path.exists():
+        with log_config_path.open() as f:
+            test_logging_config = yaml.safe_load(f)
+            log_config.change(config=test_logging_config)
+
+    custom = getattr(request, 'param', None)
+
+    with logging_setup.change(config=custom, verbosity=__verbosity__):
         yield
 
 
@@ -77,9 +87,6 @@ async def base_client() -> UbiiClient:
     """
     protocol = DefaultProtocol()
     client = UbiiClient(protocol=protocol)
-
-    from .data.coco_ssd_fake import CocoSSDPM
-    client[InitProcessingModules].late_init_processing_modules = [CocoSSDPM]
 
     protocol.client = client
 

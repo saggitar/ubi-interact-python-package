@@ -441,7 +441,8 @@ class DefaultProtocol(protocol_.AbstractClientProtocol[States]):
                         subscriber = None
 
                     if subscriber:
-                        await subscriber
+                        topic, = await subscriber
+                        assert topic.on_subscribers_change
 
                 # publish
                 for mapping in io_mapping.output_mappings or ():
@@ -477,7 +478,7 @@ class DefaultProtocol(protocol_.AbstractClientProtocol[States]):
 
                 for topic in map(module.get_input_topic, module.inputs):
                     if not topic.on_subscribers_change:
-                        warn(f"No callback subscriber change on {topic}")
+                        warn(f"No callback on_subscribers_change on {topic}")
                         continue
 
                     # triggers unsubscribe if necessary
@@ -505,7 +506,7 @@ class DefaultProtocol(protocol_.AbstractClientProtocol[States]):
         start.register_callback(on_start_session)
         stop.register_callback(on_stop_session)
 
-        context.client[client_.InitProcessingModules].get_processing_module = processing_.ProcessingRoutine.registry.get
+        context.client[client_.RunProcessingModules].get_processing_module = processing_.ProcessingRoutine.registry.get
 
     async def on_halted(self, context: Context):
         assert context.service_map is not None
@@ -562,10 +563,11 @@ class LatePMInitProtocol(DefaultProtocol):
         await super().create_client(context)
 
         assert context.client.implements(client_.InitProcessingModules)
-        context.client.processing_modules += [
-            pm(context) for pm in
-            context.client[client_.InitProcessingModules].late_init_processing_modules
+        initialized = [
+            pm(context) for pm in context.client[client_.InitProcessingModules].late_init_processing_modules
         ]
+        context.client[client_.InitProcessingModules].late_init_processing_modules = initialized
+        context.client.processing_modules += initialized
 
     def __setattr__(self, key, value):
         if key == 'client' and value is not None:
