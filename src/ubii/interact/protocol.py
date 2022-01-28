@@ -26,7 +26,6 @@ _StateChange = t.Tuple[T_EnumFlag, T_EnumFlag]
 log = logging.getLogger(__name__)
 
 
-@util.AbstractAnnotations('state_changes', 'starting_state', 'end_state')
 class AbstractProtocol(t.Generic[T_EnumFlag], abc.ABC):
     state_changes: t.Mapping[t.Tuple[T_EnumFlag | None, ...], Callback]
     starting_state: T_EnumFlag

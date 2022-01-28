@@ -58,7 +58,7 @@ def main():
                 await asyncio.sleep(5)
                 print(".")
 
-    loop = asyncio.get_event_loop()
+    loop = asyncio.get_event_loop_policy().get_event_loop()
     with log_config:
         task = loop.create_task(run())
         loop.run_forever()
