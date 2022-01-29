@@ -11,7 +11,7 @@ build-backend = "setuptools.build_meta"
 filterwarnings = [
     "default",
 ]
+asyncio_mode = "auto"
 
 [tool.setuptools_scm]
-version_scheme = "post-release"
 local_scheme = "no-local-version"

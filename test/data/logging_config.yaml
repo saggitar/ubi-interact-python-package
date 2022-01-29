@@ -1,0 +1,24 @@
+version: 1
+formatters:
+  test:
+    format: '%(asctime)s - %(levelname)s - %(message)s'
+    datefmt: '%Y-%m-%d %H:%M:%S'
+handlers:
+  test:
+    class: logging.FileHandler
+    formatter: test
+    level: DEBUG
+    filename: test.log
+    mode: w
+loggers:
+  ubii.interact:
+    propagate: no
+  test:
+    propagate: yes
+    handlers: [ test ]
+  ubii.interact.connections.in.socket:
+    level: WARNING
+  ubii.interact.connections.out.socket:
+    level: INFO
+
+incremental: True
