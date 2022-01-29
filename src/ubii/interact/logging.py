@@ -92,7 +92,6 @@ def parse_args(parser=None):
 
     parser.add_argument('--verbose', '-v', action='count', default=0)
     parser.add_argument('--debug', action='store_true', default=False)
-    parser.add_argument('--config', action='store', default=None)
     parser.add_argument('--log-config', action='store', default=__config__)
     args = parser.parse_args()
 
