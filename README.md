@@ -42,7 +42,7 @@ Test if everything is working correctly by calling the ``ubii-client`` script wh
 
 
 ```
-$ python -m pip install ubii-interact-python
+$ python -m pip install ubii-node-python
 $ ubii-client --help 
 ```
 
@@ -67,7 +67,7 @@ This packages uses [extras](https://www.python.org/dev/peps/pep-0508/#id12).
 
 
 ## Usage
-To use the ``ubi-interact-python`` package to implement your own python nodes refer to the [package documentation](#ubi-interact-python-node).
+To use the ``ubii-node-python`` package to implement your own python nodes refer to the [package documentation](#ubi-interact-python-node).
 To start a python client refer to (cli)[#CLI].
 
 ### CLI
@@ -99,7 +99,7 @@ Below is a list of processing modules that are compatible with the python node.
 To try them, install them inside the same virtual environment (refer to the documentation of the specific module), and run the client with the correct import path.
 _(Autodetection for installed modules will be implemented soon)_
 
-* [ubii-ocr-module](https://github.com/saggitar/ubii-interact-ocr-module)
+* [ubii-ocr-module](https://github.com/saggitar/ubii-processing-module-ocr)
 
 Example usage after install of module:
 ```
