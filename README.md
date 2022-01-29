@@ -32,10 +32,10 @@ to create the virtual environment with the appropriate python executable (or spe
 * Python version 3.7 of greater
 * Virtual Environment (recommended) with pip installed (e.g. ``python3 -m venv env`` followed by ``source ./env/bin/activate``)
 * Continue at [PyPi](#pypi)
-* 
+
 ## PyPi
 After activating the environment you can install the package from pypi. 
-The package supplies different [extras](https://www.python.org/dev/peps/pep-0508/#id12) see [Extras](#extras), to install additional dependencies
+The package supplies different [extras](#extras), to install additional dependencies
 for optional features. 
 
 Test if everything is working correctly by calling the ``ubii-client`` script which get's installed as part of the package.
@@ -58,6 +58,8 @@ $ ubii-client --help
 
 
 ## Extras
+This packages uses [extras](https://www.python.org/dev/peps/pep-0508/#id12).
+
 * ``[test]``: Requirements to run ``pytest`` suite - mainly useful if you install the package from source, and not from PyPi
 
    > :warning: might depend on some processing-module packages, make sure you have all requirements installed (especially on Windows some processing dependencies are not in pypi)
