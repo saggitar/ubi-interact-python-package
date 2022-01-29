@@ -1,9 +1,8 @@
 from __future__ import annotations
 
+import asyncio
 import dataclasses
 import enum
-
-import asyncio
 import logging
 import typing as t
 from contextlib import asynccontextmanager
@@ -115,8 +114,10 @@ class DefaultProtocol(protocol_.AbstractClientProtocol[States]):
             service_call = services_.ServiceCall(transport=context.service_connection, mapping=service)
 
             # add exception handling
-            modified = util.exc_handler_decorator(self._set_exc_info)(type(service_call).__call__)
-            service_call.__call__ = modified.__get__(service_call, type(service_call))
+            class _(type(service_call)): pass  # noqa
+
+            _.register_decorator(util.exc_handler_decorator(self._set_exc_info))
+            service_call.__class__ = _
 
             return service_call
 
@@ -529,7 +530,7 @@ class DefaultProtocol(protocol_.AbstractClientProtocol[States]):
                     await self.update_services(context)
                 except aiohttp.client.ClientOSError:
                     warn(f"Master node not available, waiting for server...")
-                    await asyncio.sleep(3)
+                    await asyncio.sleep(5)
 
             await self.state.set(States.STARTING)
             return True
