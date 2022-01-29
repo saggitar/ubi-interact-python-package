@@ -14,16 +14,16 @@ use the de-facto standard ``setuptools`` backend. This allows for editable insta
 which are hard to spot, but easy to fix :)
 
 ## Windows:
-Python support for Windows has drastically improved, but some of the interesting computational packages are still naturally used on a Linux system. Nontheless the ``Ubi-Interact-Python-Node`` aims to be cross-platform. Installtion via ``pip`` is recommended, if you use something fancy (e.g. ``Anaconda``) refer to the documentation of your python distribution / package management tool how to install packages from pypi.
+Python support for Windows has drastically improved, but some of the interesting computational packages are basically only usable on a Linux system. Nontheless the ``Ubi-Interact-Python-Node`` aims to be cross-platform. Installtion via ``pip`` is recommended, if you use something fancy (e.g. ``Anaconda``) refer to the documentation of your python distribution / package management tool how to install packages from pypi.
 
-You can use the Windows python wrapper ``py.exe`` (detailed instructions in the [Pyhton Documentation](https://docs.python.org/3/using/windows.html)) to
+You can use the Windows python wrapper ``py.exe`` (detailed instructions in the [Python Documentation](https://docs.python.org/3/using/windows.html)) to
 choose the python version of your environment.
  
    > :warning: If you plan to use a virtual environment - which is recommended - typically an _Unrestricted_ execution policy is needed to run the activation script for the python environment. The following instructions assume you are using _Powershell_, and have the right [_ExecutionPolicy_](https://docs.microsoft.com/en-us/powershell/module/microsoft.powershell.core/about/about_execution_policies) set.
 
 *  Python version 3.7 or greater
-*  Virtual Environment (recommended) with pip intalled (``py -m venv env`` followed by ``./env/Scripts/activate.ps1``)
-*  Continue at [PyPi]()
+*  Virtual Environment (recommended) with pip installed (``py -m venv env`` followed by ``./env/Scripts/activate.ps1``)
+* Continue at [PyPi](#pypi)
 
 ## Linux (and MacOS)
 If you are not using Windows, you probably have a working python installation. Sometimes the different versions have aliases such as ``python3``, so make sure
@@ -31,10 +31,11 @@ to create the virtual environment with the appropriate python executable (or spe
 
 * Python version 3.7 of greater
 * Virtual Environment (recommended) with pip installed (e.g. ``python3 -m venv env`` followed by ``source ./env/bin/activate``)
-
+* Continue at [PyPi](#pypi)
+* 
 ## PyPi
 After activating the environment you can install the package from pypi. 
-The package supplies different [extras](https://www.python.org/dev/peps/pep-0508/#id12) see [Extras](documentation), to install additional dependencies
+The package supplies different [extras](https://www.python.org/dev/peps/pep-0508/#id12) see [Extras](#extras), to install additional dependencies
 for optional features. 
 
 Test if everything is working correctly by calling the ``ubii-client`` script which get's installed as part of the package.
