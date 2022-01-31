@@ -3,9 +3,9 @@ import logging
 import pytest
 
 import ubii.proto as ub
-from ubii.interact import processing
-from ubii.interact import util
-from ubii.interact.client import RunProcessingModules, InitProcessingModules, Subscriptions, Publish
+from ubii.framework import processing
+from ubii.framework import util
+from ubii.framework.client import RunProcessingModules, InitProcessingModules, Subscriptions, Publish
 
 pytestmark = pytest.mark.asyncio
 

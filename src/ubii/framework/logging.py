@@ -95,8 +95,13 @@ def parse_args(parser=None):
     parser.add_argument('--log-config', action='store', default=__config__)
     args = parser.parse_args()
 
-    logging_setup.change(config=args.log_config, verbosity=logging.INFO - 10 * args.verbose)
+    verbosity = logging.INFO - 10 * args.verbose
     debug(args.debug)
+
+    if debug():
+        verbosity = min(logging.DEBUG, verbosity)
+
+    logging_setup.change(config=args.log_config, verbosity=verbosity)
 
     return args
 

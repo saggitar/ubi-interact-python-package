@@ -5,7 +5,7 @@ import dataclasses
 import enum
 import logging
 import typing as t
-from contextlib import asynccontextmanager
+from contextlib import nullcontext, asynccontextmanager, suppress
 from functools import partial
 
 from .connections import aiohttp_session
@@ -18,7 +18,6 @@ except ImportError:
 from warnings import warn
 
 import aiohttp
-import sys
 
 import ubii.proto as ub
 from . import (
@@ -31,8 +30,6 @@ from . import (
     constants as constants_,
 )
 from . import util
-from .errors import RestartError
-from .logging import debug
 
 log = logging.getLogger(__name__)
 
@@ -93,6 +90,12 @@ class DefaultProtocol(protocol_.AbstractClientProtocol[States]):
         Returning actual object for better typing
         """
         return self.Context()
+
+    @protocol_.AbstractClientProtocol.state.setter
+    def state(self, new_state: States):
+        maybe_suppress = suppress(ValueError) if self.state.value == self.end_state else nullcontext()
+        with maybe_suppress:
+            protocol_.AbstractClientProtocol.state.fset(self, new_state)
 
     async def _set_exc_info(self, *exc_info):
         received_exc = exc_info[0] is not None
@@ -216,7 +219,14 @@ class DefaultProtocol(protocol_.AbstractClientProtocol[States]):
         topic_connection.session = self.aiohttp_session
 
         context.topic_connection = topic_connection
-        await self.task_nursery.enter_async_context(topic_connection.connect(client_id=context.client.id))
+        connection_manager = topic_connection.connect(client_id=context.client.id)
+        await self.task_nursery.enter_async_context(connection_manager)
+
+        async def set_state_on_disconnect():
+            await topic_connection.events.disconnected.wait()
+            await self.state.set(States.HALTED)
+
+        self.task_nursery.create_task(set_state_on_disconnect())
 
     async def implement_client(self, context: Context):
         assert context.client is not None
@@ -513,27 +523,22 @@ class DefaultProtocol(protocol_.AbstractClientProtocol[States]):
         assert context.service_map is not None
 
         missing_attrs = [field.name for field in dataclasses.fields(context)]
-        log.info(f"Halted {self}, attribute[s] {', '.join(missing_attrs)} not set in context")
+        log.info(f"Halted {self}")
+        log.debug(f"attribute[s] {', '.join(missing_attrs)} not set in context when {self} halted")
 
         connection_problems = (lambda: not context.server or len(context.service_map.elements) == 1)
 
         if connection_problems():
-            exc_info = sys.exc_info()
-            if debug() and exc_info[0] is not None:
-                raise RestartError(
-                    f"Waiting for master node connection is not allowed in debug mode."
-                ) from exc_info[1]
-
             while connection_problems():
                 try:
                     await self.update_config(context)
                     await self.update_services(context)
-                except aiohttp.client.ClientOSError:
-                    warn(f"Master node not available, waiting for server...")
-                    await asyncio.sleep(5)
+                except aiohttp.client.ClientConnectorError:
+                    log.warning(f"Master node not available, waiting for server...")
+                    await asyncio.sleep(2)
 
-            await self.state.set(States.STARTING)
-            return True
+        await self.state.set(self.starting_state)
+        return not connection_problems()
 
     async def on_stop(self, context: Context):
         assert context.topic_store is not None
@@ -553,7 +558,7 @@ class DefaultProtocol(protocol_.AbstractClientProtocol[States]):
         (States.CREATED, States.REGISTERED): on_registration,
         (States.REGISTERED, States.CONNECTED): protocol_.AbstractClientProtocol.on_connect,
         (States.ANY, States.HALTED): on_halted,
-        (States.HALTED, States.ANY): protocol_.AbstractClientProtocol.on_start,
+        (States.HALTED, starting_state): protocol_.AbstractClientProtocol.on_start,
         (States.ANY, end_state): protocol_.AbstractClientProtocol.on_stop,
     }
 
@@ -566,8 +571,11 @@ class LatePMInitProtocol(DefaultProtocol):
         assert context.client.implements(client_.InitProcessingModules)
         initialized = [
             pm(context) for pm in context.client[client_.InitProcessingModules].late_init_processing_modules
+            if isinstance(pm, type) and issubclass(pm, processing_.ProcessingRoutine)
         ]
-        context.client[client_.InitProcessingModules].late_init_processing_modules = initialized
+        if initialized:
+            context.client[client_.InitProcessingModules].late_init_processing_modules = initialized
+
         context.client.processing_modules += initialized
 
     def __setattr__(self, key, value):

@@ -7,9 +7,9 @@ import typing as t
 import yaml
 
 import ubii.proto as ub
-from ubii.interact.client import Devices, UbiiClient, Services
-from ubii.interact.default_protocol import DefaultProtocol
-from ubii.interact.logging import logging_setup
+from ubii.framework.client import Devices, UbiiClient, Services
+from ubii.framework.default_protocol import DefaultProtocol
+from ubii.framework.logging import logging_setup
 
 __verbosity__: int | None = None
 ALWAYS_VERBOSE = True
@@ -55,7 +55,7 @@ def configure_logging(request):
 @pytest.fixture(scope='session', autouse=True)
 def service_url_env():
     import os
-    from ubii.interact.constants import UBII_URL_ENV
+    from ubii.framework.constants import UBII_URL_ENV
     old = os.environ.get(UBII_URL_ENV)
     os.environ[UBII_URL_ENV] = 'http://localhost:8102/services'
     yield
@@ -65,7 +65,7 @@ def service_url_env():
 
 @pytest.fixture(autouse=True, scope='session')
 def enable_debug():
-    from ubii.interact.logging import debug
+    from ubii.framework.logging import debug
     previous = debug()
     debug(enabled=True)
     yield

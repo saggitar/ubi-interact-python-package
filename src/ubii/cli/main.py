@@ -1,9 +1,10 @@
 import argparse
-
+import asyncio
+import logging
+from pathlib import Path
 from warnings import warn
 
-import asyncio
-from pathlib import Path
+log = logging.getLogger(__name__)
 
 
 def import_pm(import_name: str):
@@ -31,9 +32,11 @@ def log_to_folder(log_config):
 
 
 def main():
-    from ubii.interact import connect_client
-    from ubii.interact.logging import parse_args, logging_setup
-    from ubii.interact.client import InitProcessingModules
+    from ubii.framework import connect_client
+    from ubii.framework.logging import parse_args, logging_setup
+    from ubii.framework.client import InitProcessingModules
+    from codestare.async_utils.nursery import TaskNursery
+    from ubii.cli import load_pm_entry_points
     parser = argparse.ArgumentParser()
     parser.add_argument('--processing-modules', action='append', default=[])
 
@@ -41,7 +44,10 @@ def main():
 
     log_config = logging_setup.change(config=log_to_folder(args.log_config))
 
-    pms = [import_pm(name) for name in args.processing_modules]
+    pms = set()
+    pms.update(load_pm_entry_points())
+    pms.update(import_pm(name) for name in args.processing_modules)
+
     if pms:
         print(f"Imported {', '.join(map(repr, pms))}")
     else:
@@ -54,16 +60,18 @@ def main():
             client[InitProcessingModules].late_init_processing_modules = pms
             await client
 
-            while True:
-                await asyncio.sleep(5)
-                print(".")
+            while client.state != client.State.UNAVAILABLE:
+                await asyncio.sleep(1)
+
+        loop.stop()
 
     loop = asyncio.get_event_loop_policy().get_event_loop()
+    nursery = TaskNursery(name="__main__", loop=loop)
+
     with log_config:
-        task = loop.create_task(run())
+        nursery.create_task(run())
         loop.run_forever()
 
-    assert task.done()
     assert not loop.is_running()
     loop.close()
 

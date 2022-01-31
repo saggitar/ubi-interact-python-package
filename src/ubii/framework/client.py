@@ -88,7 +88,6 @@ _T_Protocol = t.TypeVar('_T_Protocol', bound=protocol_.AbstractProtocol)
 
 class UbiiClient(ub.Client,
                  t.Awaitable['UbiiClient'],
-                 logging_.ProtoFormatMixin,
                  t.Generic[_T_Protocol],
                  metaclass=ProtoRegistry):
     """
@@ -227,3 +226,6 @@ class UbiiClient(ub.Client,
 
         self._behaviours[key] = value
         self.notify()
+
+    def __str__(self):
+        return self.name

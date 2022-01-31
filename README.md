@@ -14,7 +14,7 @@ use the de-facto standard ``setuptools`` backend. This allows for editable insta
 which are hard to spot, but easy to fix :)
 
 ### Windows:
-Python support for Windows has drastically improved, but some of the interesting computational packages are basically only usable on a Linux system. Nontheless the ``Ubi-Interact-Python-Node`` aims to be cross-platform. Installtion via ``pip`` is recommended, if you use something fancy (e.g. ``Anaconda``) refer to the documentation of your python distribution / package management tool how to install packages from pypi.
+The ``Ubi-Interact-Python-Node`` aims to be cross-platform, working with most interesting computational packages is easier under Linux nonetheless. Installation via ``pip`` is recommended, if you use something else (e.g. ``Anaconda``) refer to the documentation of your python distribution / package management tool how to install packages from pypi.
 
 You can use the Windows python wrapper ``py.exe`` (detailed instructions in the [Python Documentation](https://docs.python.org/3/using/windows.html)) to
 choose the python version of your environment.
@@ -34,11 +34,11 @@ to create the virtual environment with the appropriate python executable (or spe
 * Continue at [PyPi](#pypi)
 
 ### PyPi
-After activating the environment you can install the package from pypi. 
+After activating the environment, install the package from pypi. 
 The package supplies different [extras](#extras), to install additional dependencies
 for optional features. 
 
-Test if everything is working correctly by calling the ``ubii-client`` script which get's installed as part of the package.
+Test if everything is working correctly by calling the ``ubii-client`` script which gets installed as part of the package.
 
 
 ```
@@ -47,11 +47,11 @@ $ ubii-client --help
 ```
 
 ### Editable / Local Install
-Instead of installing from PyPi you can clone the repository and install the package this way. Editable installs are supported.
+Instead of installing from PyPi you can clone the repository and install the package "from source". Editable installs are supported.
 ```
 $ git clone git@github.com:SandroWeber/ubii-node-python.git
 $ cd ubii-node-python
-$ < create and acitvate virtual env>
+$ < create and activate virtual env >
 $ pip install -e .
 $ ubii-client --help
 ```
@@ -60,15 +60,14 @@ $ ubii-client --help
 ### Extras
 This packages uses [extras](https://www.python.org/dev/peps/pep-0508/#id12).
 
-* ``[test]``: Requirements to run ``pytest`` suite - mainly useful if you install the package from source, and not from PyPi
+* ``[test]``: Requirements to run ``pytest`` suite if you install the package from source, and not from PyPi
 
-   > :warning: might depend on some processing-module packages, make sure you have all requirements installed (especially on Windows some processing dependencies are not in pypi)
-
+   > :warning: Currently the ``[test]`` extra depends on some processing-module packages. Make sure you have all requirements installed (especially on Windows some processing dependencies are not in pypi)
 
 
 ## Usage
 To use the ``ubii-node-python`` package to implement your own python nodes refer to the [package documentation](#ubi-interact-python-node).
-To start a python client refer to (cli)[#CLI].
+To start a python client refer to [CLI](#CLI).
 
 ### CLI
 Basic functionality is provided through a command line interface which allows to run a python node which is able to import and load processing modules.
@@ -90,11 +89,11 @@ options:
 ```
 (non obvious) arguments:
 
-* ``--debug``: Debug mode changes the exception handling, and increases verbosity. In debug mode the Node does not try to handle exceptions, and fails loudly.
-* ``--log-config``: optional path to a __.yaml__ file containing a dictionary of logging options consistent with the [``logggin.config.dictConfig``](https://docs.python.org/3/library/logging.config.html#logging.config.dictConfig) format. ([example config](src/ubii/interact/util/logging_config.yaml))
-* ``--processing-modules``: specify a list of import paths for _Ubi Interact Procesing Modules_ implemented using the ``ubi-interact-python`` framework, see [processing-modules](#processing-modules) 
+* ``--debug`` Debug mode changes the exception handling, and increases verbosity. In debug mode the Node does not try to handle exceptions, and fails loudly
+* ``--log-config`` optional path to a __.yaml__ file containing a dictionary of logging options consistent with the [``logggin.config.dictConfig``](https://docs.python.org/3/library/logging.config.html#logging.config.dictConfig) format ([example config](src/ubii/framework/util/logging_config.yaml))
+* ``--processing-modules`` specify a list of import paths for _Ubi Interact Procesing Modules_ implemented using the ``ubi-interact-python`` framework, see [processing-modules](#processing-modules) 
 
-#### processing-modules
+#### Processing Modules
 Below is a list of processing modules that are compatible with the python node.
 To try them, install them inside the same virtual environment (refer to the documentation of the specific module), and run the client with the correct import path.
 _(Autodetection for installed modules will be implemented soon)_
@@ -104,8 +103,8 @@ _(Autodetection for installed modules will be implemented soon)_
 Example usage after install of module:
 ```
 $ ubii-client --processing-modules ubii.processing_modules.ocr.tesseract_ocr.TesseractOCR_EAST
-$ Imported <class 'ubii.processing_modules.ocr.tesseract_ocr.TesseractOCR_EAST'>
-$ ...
+> Imported <class 'ubii.processing_modules.ocr.tesseract_ocr.TesseractOCR_EAST'>
+> ...
 ```
 
 

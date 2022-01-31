@@ -278,6 +278,10 @@ class ProcessingRoutine(ub.ProcessingModule, metaclass=util.ProtoRegistry):
         await pm._protocol.state.set(PM_STAT.HALTED)
         return pm
 
+    def __str__(self):
+        info = f"name: {self.name!r}"
+        return f"{self.__class__.__name__}({info})"
+
     validation_rules: t.List[t.Callable[[ProcessingRoutine], None]] = [
         helpers.validate_language,
         helpers.validate_id,

@@ -1,5 +1,8 @@
 from __future__ import annotations
 
+import enum
+import typing
+
 import aiohttp
 import asyncio
 import logging
@@ -59,6 +62,10 @@ class AIOHttpConnection:
 
 
 class AIOHttpWebsocketConnection(AIOHttpConnection, DataConnection):
+    class Events(typing.NamedTuple):
+        connected: asyncio.Event() = asyncio.Event()
+        disconnected: asyncio.Event() = asyncio.Event()
+
     log_socket_in = logging.getLogger(f"{__name__}.in.socket")
     log_socket_out = logging.getLogger(f"{__name__}.out.socket")
 
@@ -67,28 +74,26 @@ class AIOHttpWebsocketConnection(AIOHttpConnection, DataConnection):
 
     def __init__(self, url, host_ip=local_ip):
         super().__init__(url, host_ip)
-        self._ws_connected = asyncio.Event()
         self._ws: aiohttp.ClientWebSocketResponse | None = None
         self._client_id: str | None = None
         self._stream = self._stream_coro()
+        self.events: AIOHttpWebsocketConnection.Events = self.Events()
 
     @asynccontextmanager
     async def connect(self, client_id: str):
-        if self._ws_connected.is_set():
+        if self.events.connected.is_set():
             warn(f"{self} is already connected.")
             yield self
 
         self.client_id = client_id
         async with self.session.ws_connect(f"{self.url}/?clientID={self.client_id}") as ws:
             self.ws = ws
-            log.info(f"Connected {self}")
             yield
 
         del self.ws
-        log.info(f"Disconnected {self}")
 
     async def _stream_coro(self) -> ub.TopicData:
-        await self._ws_connected.wait()
+        await self.events.connected.wait()
         assert self.ws is not None
         message: aiohttp.WSMessage
         async for message in self.ws:
@@ -108,6 +113,7 @@ class AIOHttpWebsocketConnection(AIOHttpConnection, DataConnection):
                 self.log_socket_in.warning(f"Unknown message Type for message: {message}")
 
         log.info(f"Closing Websocket connection")
+        del self.ws
 
     @property
     def ws(self) -> aiohttp.ClientWebSocketResponse | None:
@@ -118,17 +124,21 @@ class AIOHttpWebsocketConnection(AIOHttpConnection, DataConnection):
         if value is None:
             raise ValueError("Can't unset by setting to None. Delete the attribute instead.")
 
-        if self._ws_connected.is_set():
+        if self.events.connected.is_set():
             warn(f"ws is already set ({self._ws}). Delete the attribute first (see documentation)")
             return
 
         self._ws = value
-        self._ws_connected.set()
+        self.events.disconnected.clear()
+        self.events.connected.set()
+        log.info(f"Connected {self}")
 
     @ws.deleter
     def ws(self):
         self._ws = None
-        self._ws_connected.clear()
+        self.events.connected.clear()
+        self.events.disconnected.set()
+        log.info(f"Disconnected {self}")
 
     @property
     def client_id(self):
@@ -147,7 +157,7 @@ class AIOHttpWebsocketConnection(AIOHttpConnection, DataConnection):
         self._client_id = None
 
     async def send(self, data: ub.TopicData, timeout=None):
-        await asyncio.wait_for(self._ws_connected.wait(), timeout=timeout)
+        await asyncio.wait_for(self.events.connected.wait(), timeout=timeout)
         assert self.ws is not None
         self.log_socket_out.info(f"Sending {data}")
         await asyncio.wait_for(self.ws.send_bytes(ub.TopicData.serialize(data)), timeout=timeout)

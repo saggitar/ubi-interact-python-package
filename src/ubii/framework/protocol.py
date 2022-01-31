@@ -15,7 +15,7 @@ except ImportError:
 
 from itertools import product
 
-import ubii.interact.util.enum
+import ubii.framework.util.enum
 from . import topics, constants, client
 from . import util
 from .util.typing import T_EnumFlag, Descriptor, Decorator
@@ -42,7 +42,7 @@ class AbstractProtocol(t.Generic[T_EnumFlag], abc.ABC):
         self._state = None
         self._run = None
         self.task_nursery = util.TaskNursery(name=f"Task Nursery for {self}")
-        self.get_state_change_callback = partial(ubii.interact.util.enum.EnumMatcher.get_matching_value,
+        self.get_state_change_callback = partial(ubii.framework.util.enum.EnumMatcher.get_matching_value,
                                                  mapping=self.state_changes)
 
     def _get_state(self) -> T_EnumFlag:
@@ -111,13 +111,14 @@ class RunProtocol(util.CoroutineWrapper):
         self.__name__ = repr(self.protocol)
         super().__init__(coroutine=self._run())
 
-    async def _no_callback_found(self, protocol, context):
-        raise RuntimeError(f"No callback found for context {context} in {protocol}")
+    @staticmethod
+    async def _no_callback_found(protocol, context):
+        raise RuntimeError(f"No callback found for state_change {context.state_change} in {protocol}")
 
     async def _run_state_change_callback(self, prev, cur, ctx):
         cb = self.protocol.get_state_change_callback((prev, cur), self._no_callback_found)
         ctx.state_change = (prev, cur)
-        log.debug(f"Changed state {prev!r}->{cur!r} in {self.protocol}, got callback {cb!r}")
+        log.debug(f"Changed state {prev!r}->{cur!r} in {self.protocol}, got callback {getattr(cb, '__name__', cb)!r}")
 
         # all functions are also descriptors
         assert isinstance(cb, Descriptor), f"{cb} needs to be a descriptor, e.g. a function"
@@ -126,7 +127,7 @@ class RunProtocol(util.CoroutineWrapper):
         if not isinstance(coro, t.Awaitable):
             raise RuntimeError(f"{cb} is not awaitable (not using `async def`?)")
 
-        await coro
+        return await coro
 
     async def _run(self):
         await self.protocol.state.set(self.protocol.starting_state)
@@ -141,13 +142,15 @@ class RunProtocol(util.CoroutineWrapper):
                     await self._run_state_change_callback(previous, current, context)
                     self.protocol.change_context.notify_all()
                 except Exception as initial:
-                    state = self.protocol.state.value
-                    if state == current:
+                    if self.protocol.state.value == current:
                         raise
                     else:
+                        previous = current
+                        current = self.protocol.state.value
+
                         log.debug(f"Changed state during exception {initial}")
                         try:
-                            result = await self._run_state_change_callback(current, self.protocol.state.value, context)
+                            result = await self._run_state_change_callback(previous, current, context)
                         except Exception as nested:
                             raise nested from initial
                         else:
@@ -161,6 +164,7 @@ class RunProtocol(util.CoroutineWrapper):
                     predicate=lambda value: value != previous
                 )
 
+        log.debug(f"{self} finished.")
 
 class AbstractClientProtocol(AbstractProtocol, t.Generic[T_EnumFlag], util.Registry, abc.ABC):
     hook_function: util.registry[str, util.hook] = util.registry(lambda h: h.__name__, util.hook)
@@ -180,10 +184,10 @@ class AbstractClientProtocol(AbstractProtocol, t.Generic[T_EnumFlag], util.Regis
         return self.client.id
 
     def __init__(self, config: constants.UbiiConfig = constants.GLOBAL_CONFIG, log: logging.Logger | None = None):
-        super().__init__()
         self.config = config
         self.log = log or logging.getLogger(__name__)
         self.client: client.UbiiClient | None = None
+        super().__init__()
 
     @abc.abstractmethod
     async def create_service_map(self, context):
@@ -267,6 +271,7 @@ class AbstractClientProtocol(AbstractProtocol, t.Generic[T_EnumFlag], util.Regis
     @hook_function
     async def on_stop(self, context):
         self.log.info(f"Stopped protocol {self}")
+        self.client.state = self.client.State.UNAVAILABLE
 
     def __init_subclass__(cls):
         """
@@ -278,3 +283,7 @@ class AbstractClientProtocol(AbstractProtocol, t.Generic[T_EnumFlag], util.Regis
                 hook_function.register_decorator(hk)
 
         super().__init_subclass__()
+
+    def __str__(self):
+        info = f" of {self.client}" if self.client else " !missing client!"
+        return f"{self.__class__.__name__}{info}"

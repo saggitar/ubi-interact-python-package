@@ -39,20 +39,20 @@ handlers:
     filename: services.log
     mode: w
 loggers:
-  ubii.interact:
+  ubii.framework:
     propagate: yes
-  ubii.interact.topics:
+  ubii.framework.topics:
     propagate: no
   aiohttp.client:
     propagate: no
     handlers: [services]
-  ubii.interact.services:
+  ubii.framework.services:
     propagate: no
     handlers: [services]
-  ubii.interact.connections.in.socket:
+  ubii.framework.connections.in.socket:
     propagate: no
     handlers: [websocket-in]
-  ubii.interact.connections.out.socket:
+  ubii.framework.connections.out.socket:
     propagate: no
     handlers: [websocket-out]
   codestare:

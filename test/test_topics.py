@@ -6,7 +6,7 @@ import typing as t
 import pytest
 import ubii.proto as ub
 
-from ubii.interact.topics import DataConnection, TopicStore, BasicTopic, StreamSplitRoutine
+from ubii.framework.topics import DataConnection, TopicStore, BasicTopic, StreamSplitRoutine
 
 pytestmark = pytest.mark.asyncio
 log = logging.getLogger(__name__)

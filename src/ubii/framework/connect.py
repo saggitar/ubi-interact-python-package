@@ -3,7 +3,7 @@ from __future__ import annotations
 import logging
 import typing as t
 
-from ubii.interact import (
+from ubii.framework import (
     client as client_,
     constants as constants_,
     protocol as protocol_,
