@@ -39,14 +39,17 @@ def main():
     from ubii.cli import load_pm_entry_points
     parser = argparse.ArgumentParser()
     parser.add_argument('--processing-modules', action='append', default=[])
+    parser.add_argument('--no-discover', action='store_true', default=False)
 
     args = parse_args(parser=parser)
 
     log_config = logging_setup.change(config=log_to_folder(args.log_config))
 
     pms = set()
-    pms.update(load_pm_entry_points())
-    pms.update(import_pm(name) for name in args.processing_modules)
+    if not args.no_discover:
+        pms.update(load_pm_entry_points())
+    if args.processing_modules:
+        pms.update(import_pm(name) for name in args.processing_modules)
 
     if pms:
         print(f"Imported {', '.join(map(repr, pms))}")

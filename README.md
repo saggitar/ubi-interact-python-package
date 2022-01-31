@@ -37,12 +37,12 @@ to create the virtual environment with the appropriate python executable (or spe
 After activating the environment, install the package from pypi. 
 The package supplies different [extras](#extras), to install additional dependencies
 for optional features. 
-
-Test if everything is working correctly by calling the ``ubii-client`` script which gets installed as part of the package.
+You can make sure everything is working correctly by calling the 
+``ubii-client`` script which gets installed as part of the ``cli`` extra.
 
 
 ```
-$ python -m pip install ubii-node-python
+$ python -m pip install ubii-node-python[cli]
 $ ubii-client --help 
 ```
 
@@ -52,7 +52,7 @@ Instead of installing from PyPi you can clone the repository and install the pac
 $ git clone git@github.com:SandroWeber/ubii-node-python.git
 $ cd ubii-node-python
 $ < create and activate virtual env >
-$ pip install -e .
+$ pip install -e .[cli]
 $ ubii-client --help
 ```
 
@@ -60,10 +60,11 @@ $ ubii-client --help
 ### Extras
 This packages uses [extras](https://www.python.org/dev/peps/pep-0508/#id12).
 
-* ``[test]``: Requirements to run ``pytest`` suite if you install the package from source, and not from PyPi
+* ``[test]`` Requirements to run ``pytest`` suite if you install the package from source, and not from PyPi
 
    > :warning: Currently the ``[test]`` extra depends on some processing-module packages. Make sure you have all requirements installed (especially on Windows some processing dependencies are not in pypi)
-
+* ``[cli]`` Installs a [CLI](#CLI) script which runs the node and auto-discovers installed Processing Modules (see [below](#processing-modules))
+* ``[docs]`` Install requirements to build documentation
 
 ## Usage
 To use the ``ubii-node-python`` package to implement your own python nodes refer to the [package documentation](#ubi-interact-python-node).
@@ -82,6 +83,7 @@ usage: ubii-client [-h]
 options:
   -h, --help            show this help message and exit
   --processing-modules PROCESSING_MODULES
+  --no-discover 
   --verbose, -v
   --debug
   --log-config LOG_CONFIG
@@ -91,21 +93,34 @@ options:
 
 * ``--debug`` Debug mode changes the exception handling, and increases verbosity. In debug mode the Node does not try to handle exceptions, and fails loudly
 * ``--log-config`` optional path to a __.yaml__ file containing a dictionary of logging options consistent with the [``logggin.config.dictConfig``](https://docs.python.org/3/library/logging.config.html#logging.config.dictConfig) format ([example config](src/ubii/framework/util/logging_config.yaml))
-* ``--processing-modules`` specify a list of import paths for _Ubi Interact Procesing Modules_ implemented using the ``ubi-interact-python`` framework, see [processing-modules](#processing-modules) 
+* ``--no-discover`` flag to turn of auto discovery of processing modules via entry points
+* ``--processing-modules`` specify a list of import paths for _Ubi Interact Procesing Modules_ implemented using the ``ubi-interact-python`` framework, see [processing-modules](#processing-modules). Use it together with [auto discovery](#processing-modules) during development or as a fallback
 
 #### Processing Modules
 Below is a list of processing modules that are compatible with the python node.
-To try them, install them inside the same virtual environment (refer to the documentation of the specific module), and run the client with the correct import path.
-_(Autodetection for installed modules will be implemented soon)_
+To try them, install them inside the same virtual environment (refer to the documentation of the specific module).
+If you develop new Processing Modules, use the entry point group _ubii.processing_modules_ to advertise them in
+your package, so that the ``ubii-client`` script (or your own implementation) can discover them. Read the ``setup.cfg``
+configs of the example modules below and the [setuptools documentation](https://setuptools.pypa.io/en/latest/userguide/entry_point.html) for more details.
+
 
 * [ubii-ocr-module](https://github.com/saggitar/ubii-processing-module-ocr)
 
 Example usage after install of module:
 ```
-$ ubii-client --processing-modules ubii.processing_modules.ocr.tesseract_ocr.TesseractOCR_EAST
+$ pip install ubii-processing-module-ocr
+$ ubii-client
+> Imported [<class 'ubii.processing_modules.ocr.tesseract_ocr.TesseractOCR_EAST'>, ... ]
+> ...
+```
+or with cli argument to only load specific processing modules (also turning off auto discovery in this example)
+```
+$ pip install ubii-processing-module-ocr
+$ ubii-client --no-discover --processing-modules ubii.processing_modules.ocr.tesseract_ocr.TesseractOCR_EAST
 > Imported <class 'ubii.processing_modules.ocr.tesseract_ocr.TesseractOCR_EAST'>
 > ...
 ```
+
 
 
 ## Known bugs
