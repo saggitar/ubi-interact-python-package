@@ -1,12 +1,11 @@
 from __future__ import annotations
 
-from fnmatch import fnmatch
-
 import abc
 import asyncio
 import logging
 import typing as t
 from contextlib import asynccontextmanager
+from fnmatch import fnmatch
 
 try:
     from functools import cached_property
@@ -20,6 +19,8 @@ from .util.typing import T_co as _T_co, T_contra as _T_contra, Protocol
 
 _Buffer = t.TypeVar('_Buffer')
 _Token = t.TypeVar('_Token')
+
+log = logging.getLogger(__name__)
 
 
 class Consumer(Protocol[_T_contra]):
@@ -55,27 +56,29 @@ class TopicCoroutine(util.CoroutineWrapper[t.Any, t.Any, None], t.Generic[_Buffe
             await self.callback(value)
 
 
-class Topic(t.AsyncIterator[_Buffer], t.Generic[_Buffer, _Token], abc.ABC):
+class TopicDataBufferManager(t.Generic[_Buffer], abc.ABC):
+    @property
+    @abc.abstractmethod
+    def buffer(self: Topic[_Buffer, _Token]) -> util.accessor[_Buffer]:
+        ...
+
+
+class Topic(t.AsyncIterator[_Buffer], TopicDataBufferManager[_Buffer], t.Generic[_Buffer, _Token], abc.ABC):
     """
     A Topic can be used to asynchronously iterate over TopicDataRecords that are published to the topic.
     It can also register (and unregister) callbacks to handle the published values in a background task.
 
-    To "publish" a value to the topic locally use ``await topic.buffer.set(...)``. The used Protocol makes sure that
+    To "publish" a value to the topic locally use ``await topic.buffer.set(...)``. The Client Protocol makes sure that
     all TopicDataRecords received via the ``DataConnection`` get forwarded to matching topics in this way.
     One doesn't need to manually "publish" data (except for e.g. mocking a connection)
 
     Publishing TopicData to the master node has nothing to do with our local topic representation,
-    instead use
+    instead use the
     :TODO:
     """
     __unique_key_attr__ = 'pattern'
 
     on_subscribers_change: OnSubscribersChange | None
-
-    @property
-    @abc.abstractmethod
-    def buffer(self: Topic[_Buffer, _Token]) -> util.accessor[_Buffer]:
-        ...
 
     async def __anext__(self) -> _Buffer:
         return await self.buffer.get()
@@ -84,8 +87,9 @@ class Topic(t.AsyncIterator[_Buffer], t.Generic[_Buffer, _Token], abc.ABC):
                  pattern,
                  *,
                  token_factory: t.Callable[[], _Token],
-                 task_nursery: util.TaskNursery | None = None) -> None:
-        super().__init__()
+                 task_nursery: util.TaskNursery | None = None,
+                 **kwargs) -> None:
+        super().__init__(**kwargs)
         self.on_subscribers_change = None
         self.pattern = pattern
         self.task_nursery = task_nursery or util.TaskNursery(name=f"Task Nursery for {self}")
@@ -170,16 +174,16 @@ class Topic(t.AsyncIterator[_Buffer], t.Generic[_Buffer, _Token], abc.ABC):
 
 
 class BasicTopic(Topic[ub.TopicDataRecord, int]):
-    class default_token_factory:
-        """ creates increasing integers. wow."""
+    class integer_token_factory:
+        """ creates increasing integers"""
         __last_token__ = -1
 
         def __call__(self):
             self.__last_token__ += 1
             return self.__last_token__
 
-    def __init__(self, pattern, *, task_nursery: util.TaskNursery) -> None:
-        super().__init__(pattern, token_factory=self.default_token_factory(), task_nursery=task_nursery)
+    def __init__(self, pattern, *, task_nursery: util.TaskNursery, **kwargs) -> None:
+        super().__init__(pattern, token_factory=self.integer_token_factory(), task_nursery=task_nursery, **kwargs)
         self._buffer: ub.TopicDataRecord | None = None
 
     @util.hook
@@ -300,7 +304,7 @@ class StreamSplitRoutine(util.CoroutineWrapper[t.Any, t.Any, None]):
             self._logger.debug(f"Record Topic: {record.topic} -> matching: {','.join(map(str, topics))}")
             if not topics:
                 topics = (self._container[record.topic],)
-                warn(f"No topics found for record with topic {record.topic}")
+                log.warning(f"No topics found for record with topic {record.topic}")
 
             await asyncio.gather(*[topic.buffer.set(record) for topic in topics or ()])
 
@@ -333,3 +337,23 @@ class OnSubscribersChange:
             )
 
         self.event.set()
+
+
+class TopicMuxer(TopicDataBufferManager, ub.TopicMux, metaclass=ub.ProtoMeta):
+    def _set_buffer(self, value):
+        pass
+
+    def _get_buffer(self):
+        pass
+
+    @cached_property
+    def buffer(self: Topic[_Buffer, _Token]) -> util.accessor[_Buffer]:
+        pass
+
+    def __init__(self, mapping, **kwargs) -> None:
+        super().__init__(mapping=mapping, **kwargs)
+
+
+class TopicDemuxer(TopicDataBufferManager, ub.TopicDemux, metaclass=ub.ProtoMeta):
+    def __init__(self, mapping, **kwargs) -> None:
+        super().__init__(mapping=mapping, **kwargs)

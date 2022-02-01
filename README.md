@@ -125,6 +125,5 @@ $ ubii-client --no-discover --processing-modules ubii.processing_modules.ocr.tes
 
 ## Known bugs
 * Exception handling on windows is not as refined as on Linux. Please report bugs!
-* If the master node is closed during the lifetime of the python node, don't expect it to reconnect cleanly
 * Starting and stopping sessions is working, but restarting a session (i.e. Start Session -> Stop Session -> Start Session) is still buggy
 * Default logging behaviour is ... hard to explain :D

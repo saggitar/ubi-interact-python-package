@@ -213,6 +213,7 @@ class ProcessingRoutine(ub.ProcessingModule, metaclass=util.ProtoRegistry):
         get_output_mapping = {mapping.output_name: mapping for mapping in io_mapping.output_mappings}.get
 
         def get_topic(topic_mapping: t.Mapping[str, topics.Topic]):
+            # TODO: Make Topic Muxer if necessary
             return lambda mapping: topic_mapping.get(mapping.topic or mapping.topic_mux.topic_selector)
 
         _input_decorators = self.get_input_topic.decorators
