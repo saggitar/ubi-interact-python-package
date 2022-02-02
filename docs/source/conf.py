@@ -10,6 +10,7 @@
 # add these directories to sys.path here. If the directory is relative to the
 # documentation root, use os.path.abspath to make it absolute, like shown here.
 #
+import datetime
 import os
 import sys
 
@@ -23,11 +24,10 @@ except ImportError:
 
 metadata = importlib_metadata.metadata('ubii-node-python')
 
-
 # -- Project information -----------------------------------------------------
 
 project = metadata['Name']
-copyright = f'2022, {metadata["Author"]}'
+copyright = f'{datetime.datetime.now().year}, {metadata["Author"]}'
 author = 'Maximilian Schmidt'
 url = metadata['Home-Page']
 # The full version, including alpha/beta/rc tags
@@ -41,11 +41,7 @@ release = metadata['version']
 extensions = [
     'sphinx.ext.autodoc',
     'sphinxcontrib.napoleon',
-    'releases',
 ]
-
-releases_github_path = url
-releases_document_name = "CHANGELOG"
 
 # Add any paths that contain templates here, relative to this directory.
 templates_path = ['_templates']
