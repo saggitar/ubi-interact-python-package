@@ -19,7 +19,7 @@ The ``Ubi-Interact-Python-Node`` aims to be cross-platform, working with most in
 You can use the Windows python wrapper ``py.exe`` (detailed instructions in the [Python Documentation](https://docs.python.org/3/using/windows.html)) to
 choose the python version of your environment.
  
-   > :warning: If you plan to use a virtual environment - which is recommended - typically an _Unrestricted_ execution policy is needed to run the activation script for the python environment. The following instructions assume you are using _Powershell_, and have the right [_ExecutionPolicy_](https://docs.microsoft.com/en-us/powershell/module/microsoft.powershell.core/about/about_execution_policies) set.
+> If you plan to use a virtual environment - which is recommended - typically an _Unrestricted_ execution policy is needed to run the activation script for the python environment. The following instructions assume you are using _Powershell_, and have the right [_ExecutionPolicy_](https://docs.microsoft.com/en-us/powershell/module/microsoft.powershell.core/about/about_execution_policies) set.
 
 *  Python version 3.7 or greater
 *  Virtual Environment (recommended) with pip installed (``py -m venv env`` followed by ``./env/Scripts/activate.ps1``)
@@ -61,10 +61,12 @@ $ ubii-client --help
 This packages uses [extras](https://www.python.org/dev/peps/pep-0508/#id12).
 
 * ``[test]`` Requirements to run ``pytest`` suite if you install the package from source, and not from PyPi
-
-   > :warning: Currently the ``[test]`` extra depends on some processing-module packages. Make sure you have all requirements installed (especially on Windows some processing dependencies are not in pypi)
+    
+    > Currently the ``[test]`` extra depends on some processing-module packages. Make sure you have all requirements installed (especially on Windows some processing dependencies are not in pypi)
+  
 * ``[cli]`` Installs a [CLI](#CLI) script which runs the node and auto-discovers installed Processing Modules (see [below](#processing-modules))
 * ``[docs]`` Install requirements to build documentation
+
 
 ## Usage
 To use the ``ubii-node-python`` package to implement your own python nodes refer to the [package documentation](#ubi-interact-python-node).

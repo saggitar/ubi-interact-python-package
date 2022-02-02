@@ -21,15 +21,15 @@ try:
 except ImportError:
     import importlib_metadata
 
-metadata = importlib_metadata.metadata('ubii-python-node')
+metadata = importlib_metadata.metadata('ubii-node-python')
 
 
 # -- Project information -----------------------------------------------------
 
-project = 'Ubi Interact Python Node'
+project = metadata['Name']
 copyright = f'2022, {metadata["Author"]}'
 author = 'Maximilian Schmidt'
-
+url = metadata['Home-Page']
 # The full version, including alpha/beta/rc tags
 release = metadata['version']
 
@@ -41,8 +41,11 @@ release = metadata['version']
 extensions = [
     'sphinx.ext.autodoc',
     'sphinxcontrib.napoleon',
-
+    'releases',
 ]
+
+releases_github_path = url
+releases_document_name = "CHANGELOG"
 
 # Add any paths that contain templates here, relative to this directory.
 templates_path = ['_templates']
@@ -74,15 +77,15 @@ html_sidebars = {
         'navigation.html',
         'relations.html',
         'searchbox.html',
-        'donate.html',
     ]
 }
 
 html_theme_options = {
-    'description': "",
+    'description': metadata['Summary'],
     'logo': 'logo.png',
     'github_user': 'saggitar',
     'github_repo': 'ubii-node-python',
+    'page_width': '80%'
 }
 
 # autodoc_preserve_defaults = True
