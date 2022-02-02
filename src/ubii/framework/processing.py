@@ -1,11 +1,10 @@
 from __future__ import annotations
 
-import dataclasses
-import enum
-
 import asyncio
 import collections
 import concurrent.futures
+import dataclasses
+import enum
 import logging
 import types
 import typing as t
@@ -14,9 +13,11 @@ from functools import wraps, partial
 
 import ubii.proto as ub
 from ubii.util import get_import_name
-from . import protocol, topics
+
 from . import util
 from .logging import debug
+from .protocol import AbstractProtocol
+from .topics import BasicTopic, TopicStore, Topic
 from .util.typing import Protocol
 
 __protobuf__ = ub.__protobuf__
@@ -164,8 +165,8 @@ class ProcessingRoutine(ub.ProcessingModule, metaclass=util.ProtoRegistry):
 
         self.validate()
 
-        self._local_output_topics = topics.TopicStore(
-            default_factory=partial(topics.BasicTopic, task_nursery=self._protocol.task_nursery)
+        self._local_output_topics = TopicStore(
+            default_factory=partial(BasicTopic, task_nursery=self._protocol.task_nursery)
         )
 
         self._input_topic_getter = util.hook(lambda _: None)
@@ -197,22 +198,22 @@ class ProcessingRoutine(ub.ProcessingModule, metaclass=util.ProtoRegistry):
         return self._change_specs
 
     @property
-    def get_input_topic(self) -> util.hook[t.Callable[[ub.ModuleIO], topics.Topic | None]]:
+    def get_input_topic(self) -> util.hook[t.Callable[[ub.ModuleIO], Topic | None]]:
         return self._input_topic_getter
 
     @property
-    def get_output_topic(self) -> util.hook[t.Callable[[ub.ModuleIO], topics.Topic | None]]:
+    def get_output_topic(self) -> util.hook[t.Callable[[ub.ModuleIO], Topic | None]]:
         return self._output_topic_getter
 
     async def apply_io_mapping(self,
                                io_mapping: ub.IOMapping,
-                               remote_topic_map: t.Mapping[str, topics.Topic]):
+                               remote_topic_map: t.Mapping[str, Topic]):
 
         get_name = (lambda io: io.internal_name)
         get_input_mapping = {mapping.input_name: mapping for mapping in io_mapping.input_mappings}.get
         get_output_mapping = {mapping.output_name: mapping for mapping in io_mapping.output_mappings}.get
 
-        def get_topic(topic_mapping: t.Mapping[str, topics.Topic]):
+        def get_topic(topic_mapping: t.Mapping[str, Topic]):
             # TODO: Make Topic Muxer if necessary
             return lambda mapping: topic_mapping.get(mapping.topic or mapping.topic_mux.topic_selector)
 
@@ -297,7 +298,7 @@ class PM_STAT(enum.IntFlag):
     DESTROYED = enum.auto()
 
 
-class ProcessingProtocol(protocol.AbstractProtocol[ub.ProcessingModule.Status]):
+class ProcessingProtocol(AbstractProtocol[ub.ProcessingModule.Status]):
     starting_state = PM_STAT.INITIALIZED
     end_state = PM_STAT.DESTROYED
     AnyState = PM_STAT.INITIALIZED | PM_STAT.CREATED | PM_STAT.PROCESSING | PM_STAT.HALTED | PM_STAT.DESTROYED
@@ -451,7 +452,7 @@ class ProcessingProtocol(protocol.AbstractProtocol[ub.ProcessingModule.Status]):
         context.nursery = self.task_nursery or context.loop
 
         # callable to create input_mapping dict from module io iterable
-        make_input_dict: util.make_dict[t.Tuple[str, str], topics.Topic] = util.make_dict(
+        make_input_dict: util.make_dict[t.Tuple[str, str], Topic] = util.make_dict(
             key=lambda io: (io.internal_name, io.message_format),
             value=self.pm.get_input_topic,
             filter_none=True

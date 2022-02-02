@@ -8,8 +8,7 @@ import typing as t
 from contextlib import nullcontext, asynccontextmanager, suppress
 from functools import partial
 
-from .connections import aiohttp_session
-from .topics import Topic
+import ubii.framework.client
 
 try:
     from functools import cached_property
@@ -20,16 +19,16 @@ from warnings import warn
 import aiohttp
 
 import ubii.proto as ub
-from . import (
-    processing as processing_,
+from ubii.framework import (
     topics as topics_,
     services as services_,
     connections as connections_,
     protocol as protocol_,
     client as client_,
     constants as constants_,
+    util as util_,
+    processing as processing_,
 )
-from . import util
 
 log = logging.getLogger(__name__)
 
@@ -48,7 +47,7 @@ class States(enum.IntFlag):
     ANY = STARTING | REGISTERED | CONNECTED | STOPPED | HALTED | CREATED
 
 
-class DefaultProtocol(protocol_.AbstractClientProtocol[States]):
+class DefaultProtocol(ubii.framework.client.AbstractClientProtocol[States]):
     """
     The standard protocol creates one UbiiClient, registers it, implements all required behaviours and
     device registration as well as handling of processing modules.
@@ -59,7 +58,7 @@ class DefaultProtocol(protocol_.AbstractClientProtocol[States]):
     end_state = States.STOPPED
 
     # decorators applied to DefaultProtocol hooks
-    __hook_decorators__ = protocol_.AbstractClientProtocol.__hook_decorators__.union([util.log_call(log)])
+    __hook_decorators__ = ubii.framework.client.AbstractClientProtocol.__hook_decorators__.union([util_.log_call(log)])
 
     @dataclasses.dataclass
     class Context:
@@ -81,7 +80,7 @@ class DefaultProtocol(protocol_.AbstractClientProtocol[States]):
                  log: logging.Logger | None = None):
 
         super().__init__(config, log)
-        self.aiohttp_session = aiohttp_session()
+        self.aiohttp_session = connections_.aiohttp_session()
         self.task_nursery.push_async_exit(self.aiohttp_session)
 
     @cached_property
@@ -91,11 +90,11 @@ class DefaultProtocol(protocol_.AbstractClientProtocol[States]):
         """
         return self.Context()
 
-    @protocol_.AbstractClientProtocol.state.setter
+    @ubii.framework.client.AbstractClientProtocol.state.setter
     def state(self, new_state: States):
         maybe_suppress = suppress(ValueError) if self.state.value == self.end_state else nullcontext()
         with maybe_suppress:
-            protocol_.AbstractClientProtocol.state.fset(self, new_state)
+            ubii.framework.client.AbstractClientProtocol.state.fset(self, new_state)
 
     async def _set_exc_info(self, *exc_info):
         received_exc = exc_info[0] is not None
@@ -119,7 +118,7 @@ class DefaultProtocol(protocol_.AbstractClientProtocol[States]):
             # add exception handling
             class _(type(service_call)): pass  # noqa
 
-            _.register_decorator(util.exc_handler_decorator(self._set_exc_info))
+            _.register_decorator(util_.exc_handler_decorator(self._set_exc_info))
             service_call.__class__ = _
 
             return service_call
@@ -262,7 +261,7 @@ class DefaultProtocol(protocol_.AbstractClientProtocol[States]):
                 super().__init__(client_id, as_regex, callback)
                 self.topic_store = context.topic_store
 
-            def __call__(self, topic: Topic, change: t.Tuple[int, int]):
+            def __call__(self, topic: topics_.Topic, change: t.Tuple[int, int]):
                 super().__call__(topic, change)
                 old, new = change
                 if new == 0 and old > 0:
@@ -553,13 +552,13 @@ class DefaultProtocol(protocol_.AbstractClientProtocol[States]):
 
     # changed callbacks means state changes have to be adjusted
     state_changes = {
-        (None, starting_state): protocol_.AbstractClientProtocol.on_start,
-        (starting_state, States.CREATED): protocol_.AbstractClientProtocol.on_create,
+        (None, starting_state): ubii.framework.client.AbstractClientProtocol.on_start,
+        (starting_state, States.CREATED): ubii.framework.client.AbstractClientProtocol.on_create,
         (States.CREATED, States.REGISTERED): on_registration,
-        (States.REGISTERED, States.CONNECTED): protocol_.AbstractClientProtocol.on_connect,
+        (States.REGISTERED, States.CONNECTED): ubii.framework.client.AbstractClientProtocol.on_connect,
         (States.ANY, States.HALTED): on_halted,
-        (States.HALTED, starting_state): protocol_.AbstractClientProtocol.on_start,
-        (States.ANY, end_state): protocol_.AbstractClientProtocol.on_stop,
+        (States.HALTED, starting_state): ubii.framework.client.AbstractClientProtocol.on_start,
+        (States.ANY, end_state): ubii.framework.client.AbstractClientProtocol.on_stop,
     }
 
 

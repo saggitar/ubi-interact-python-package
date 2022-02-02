@@ -6,16 +6,18 @@ import logging
 import typing as t
 from contextlib import asynccontextmanager
 from fnmatch import fnmatch
+from warnings import warn
 
 try:
     from functools import cached_property
 except ImportError:
     from backports.cached_property import cached_property
-from warnings import warn
 
 import ubii.proto as ub
 from . import util
 from .util.typing import T_co as _T_co, T_contra as _T_contra, Protocol
+
+__protobuf__ = ub.__protobuf__
 
 _Buffer = t.TypeVar('_Buffer')
 _Token = t.TypeVar('_Token')

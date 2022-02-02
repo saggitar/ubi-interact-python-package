@@ -13,12 +13,10 @@ try:
 except ImportError:
     from backports.cached_property import cached_property
 
-from itertools import product
-
-import ubii.framework.util.enum
-from . import topics, constants, client
-from . import util
-from .util.typing import T_EnumFlag, Descriptor, Decorator
+from . import (
+    util as util_,
+)
+from .util.typing import T_EnumFlag, Descriptor
 
 Callback = t.Callable[..., t.Coroutine[t.Any, t.Any, None]]
 _StateChange = t.Tuple[T_EnumFlag, T_EnumFlag]
@@ -41,8 +39,8 @@ class AbstractProtocol(t.Generic[T_EnumFlag], abc.ABC):
         self.change_context = asyncio.Condition()
         self._state = None
         self._run = None
-        self.task_nursery = util.TaskNursery(name=f"Task Nursery for {self}")
-        self.get_state_change_callback = partial(ubii.framework.util.enum.EnumMatcher.get_matching_value,
+        self.task_nursery = util_.TaskNursery(name=f"Task Nursery for {self}")
+        self.get_state_change_callback = partial(util_.enum.EnumMatcher.get_matching_value,
                                                  mapping=self.state_changes)
 
     def _get_state(self) -> T_EnumFlag:
@@ -61,7 +59,7 @@ class AbstractProtocol(t.Generic[T_EnumFlag], abc.ABC):
 
     # declaring the property this way helps pycharm to infer types correctly see
     # https://youtrack.jetbrains.com/issue/PY-15176 and related issues.
-    state = util.condition_property(fget=_get_state, fset=_set_state)
+    state = util_.condition_property(fget=_get_state, fset=_set_state)
 
     def start(self):
         """
@@ -104,7 +102,7 @@ class AbstractProtocol(t.Generic[T_EnumFlag], abc.ABC):
         return self.task_nursery.__aexit__(*exc_info)
 
 
-class RunProtocol(util.CoroutineWrapper):
+class RunProtocol(util_.CoroutineWrapper):
 
     def __init__(self, protocol: AbstractProtocol):
         self.protocol = protocol
@@ -166,124 +164,4 @@ class RunProtocol(util.CoroutineWrapper):
 
         log.debug(f"{self} finished.")
 
-class AbstractClientProtocol(AbstractProtocol, t.Generic[T_EnumFlag], util.Registry, abc.ABC):
-    hook_function: util.registry[str, util.hook] = util.registry(lambda h: h.__name__, util.hook)
-    __hook_decorators__: t.Set[Decorator] = set()
 
-    @property
-    def __registry_key__(self):
-        """
-        A Standard Protocol can ba associated with _one_ client, so if we have a registered client with
-        unique id, we use this id as the key for the registry view.
-        During initialisation of the client the key is the default value (~ __module__.__qualname__.#id)
-        """
-        default = type(self).__default_key_value__
-        if not hasattr(self, 'client') or not self.client or not self.client.id:
-            return default
-
-        return self.client.id
-
-    def __init__(self, config: constants.UbiiConfig = constants.GLOBAL_CONFIG, log: logging.Logger | None = None):
-        self.config = config
-        self.log = log or logging.getLogger(__name__)
-        self.client: client.UbiiClient | None = None
-        super().__init__()
-
-    @abc.abstractmethod
-    async def create_service_map(self, context):
-        """
-        Create a ServiceMap in the context as ``context.service_map`` which has to be able to make a single
-        service call: ``server_config`` (see documentation).
-        """
-
-    @abc.abstractmethod
-    async def update_config(self, context):
-        """
-        Update the server configuration in the context.
-            *   ``context.server`` is a ``ub.Server`` message with the configuration of the master node,
-            *   ``context.constants``  is a ``ub.Constants`` message of the default constants of the server
-        """
-
-    @abc.abstractmethod
-    async def update_services(self, context):
-        """
-        Update the service map in the context. Make sure ``context.service_map`` is able to perform all
-        service calls advertised by the master node after this coroutine completes.
-        """
-
-    @abc.abstractmethod
-    async def create_client(self, context):
-        """
-        Create a client in the context. ``context.client`` typically is a ``ub.Client`` wrapper, e.g. a UbiiClient
-        which at this moment is not expected to be fully functional.
-        """
-
-    @abc.abstractmethod
-    def register_client(self, context) -> t.AsyncContextManager[None]:
-        """
-        Create a context manager to register the ``context.client`` client, and unregister it when the protocol stops.
-        After successful registration the context manager needs to set the protocol state to ``UbiiStates.REGISTERED``.
-        The ``context.client`` is expected to be up-to-date after registration.
-        """
-
-    @abc.abstractmethod
-    async def create_topic_connection(self, context):
-        """
-        It's expected that ``context.topic_connection`` is a fully functional topic connection after this coroutine
-        is completed.
-        """
-
-    @abc.abstractmethod
-    async def implement_client(self, context):
-        """
-        Make sure the ``context.client`` has fully implemented behaviour. The context at this point should contain
-        a service_map and a topic_connection. It's expected that ``context.client`` can be awaited after this
-        coroutine is finished, which returns a fully functional client.
-        """
-
-    @hook_function
-    async def on_start(self, context):
-        await self.create_service_map(context)
-        await self.update_config(context)
-        await self.update_services(context)
-        await self.create_client(context)
-
-    @hook_function
-    async def on_create(self, context):
-        await self.task_nursery.enter_async_context(self.register_client(context))
-
-    @hook_function
-    async def on_registration(self, context):
-        await self.create_topic_connection(context)
-        await self.implement_client(context)
-        try:
-            # make sure client is implemented
-            context.client = await asyncio.wait_for(context.client, timeout=5)
-        except asyncio.TimeoutError:
-            raise RuntimeError(f"Client is not implemented")
-
-    @hook_function
-    async def on_connect(self, context):
-        self.task_nursery.create_task(
-            topics.StreamSplitRoutine(container=context.topic_store, stream=context.topic_connection)
-        )
-
-    @hook_function
-    async def on_stop(self, context):
-        self.log.info(f"Stopped protocol {self}")
-        self.client.state = self.client.State.UNAVAILABLE
-
-    def __init_subclass__(cls):
-        """
-        Register decorators for hook functions
-        """
-        hook_function: util.hook
-        for hook_function, hk in product(cls.hook_function.registry.values(), cls.__hook_decorators__):
-            if hk not in hook_function.decorators:
-                hook_function.register_decorator(hk)
-
-        super().__init_subclass__()
-
-    def __str__(self):
-        info = f" of {self.client}" if self.client else " !missing client!"
-        return f"{self.__class__.__name__}{info}"

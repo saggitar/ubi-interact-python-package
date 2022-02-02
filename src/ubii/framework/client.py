@@ -1,28 +1,30 @@
 from __future__ import annotations
 
-import dataclasses
-
+import abc
 import asyncio
+import dataclasses
+import logging
 import typing as t
 from contextlib import asynccontextmanager
-from itertools import chain
+from itertools import chain, product
 
 import ubii.proto as ub
+
 from . import (
     services as _services,
-    topics as topics_,
-    logging as logging_,
-    protocol as protocol_,
+    topics as topics_, util as util_, constants as constants_,
 )
+from .protocol import AbstractProtocol
 from .util import ProtoRegistry, awaitable_predicate
 from .util.typing import (
     SimpleCoroutine as _SimpleCoro,
     T as _T,
-    Protocol as _Protocol
+    Protocol as _Protocol, T_EnumFlag, Decorator,
 )
 
 __protobuf__ = ub.__protobuf__
 
+_T_Protocol = t.TypeVar('_T_Protocol', bound='AbstractClientProtocol')
 
 @dataclasses.dataclass
 class Services:
@@ -81,9 +83,6 @@ class InitProcessingModules:
     Behavior to initialize ProcessingModules after registration
     """
     late_init_processing_modules: t.List[ub.ProcessingModule] | t.List[t.Type[ub.ProcessingModule]] | None = None
-
-
-_T_Protocol = t.TypeVar('_T_Protocol', bound=protocol_.AbstractProtocol)
 
 
 class UbiiClient(ub.Client,
@@ -229,3 +228,126 @@ class UbiiClient(ub.Client,
 
     def __str__(self):
         return self.name
+
+
+class AbstractClientProtocol(AbstractProtocol, t.Generic[T_EnumFlag], util_.Registry, abc.ABC):
+    hook_function: util_.registry[str, util_.hook] = util_.registry(lambda h: h.__name__, util_.hook)
+    __hook_decorators__: t.Set[Decorator] = set()
+
+    @property
+    def __registry_key__(self):
+        """
+        A Standard Protocol can ba associated with _one_ client, so if we have a registered client with
+        unique id, we use this id as the key for the registry view.
+        During initialisation of the client the key is the default value (~ __module__.__qualname__.#id)
+        """
+        default = type(self).__default_key_value__
+        if not hasattr(self, 'client') or not self.client or not self.client.id:
+            return default
+
+        return self.client.id
+
+    def __init__(self, config: constants_.UbiiConfig = constants_.GLOBAL_CONFIG, log: logging.Logger | None = None):
+        self.config = config
+        self.log = log or logging.getLogger(__name__)
+        self.client: UbiiClient | None = None
+        super().__init__()
+
+    @abc.abstractmethod
+    async def create_service_map(self, context):
+        """
+        Create a ServiceMap in the context as ``context.service_map`` which has to be able to make a single
+        service call: ``server_config`` (see documentation).
+        """
+
+    @abc.abstractmethod
+    async def update_config(self, context):
+        """
+        Update the server configuration in the context.
+            *   ``context.server`` is a ``ub.Server`` message with the configuration of the master node,
+            *   ``context.constants``  is a ``ub.Constants`` message of the default constants of the server
+        """
+
+    @abc.abstractmethod
+    async def update_services(self, context):
+        """
+        Update the service map in the context. Make sure ``context.service_map`` is able to perform all
+        service calls advertised by the master node after this coroutine completes.
+        """
+
+    @abc.abstractmethod
+    async def create_client(self, context):
+        """
+        Create a client in the context. ``context.client`` typically is a ``ub.Client`` wrapper, e.g. a UbiiClient
+        which at this moment is not expected to be fully functional.
+        """
+
+    @abc.abstractmethod
+    def register_client(self, context) -> t.AsyncContextManager[None]:
+        """
+        Create a context manager to register the ``context.client`` client, and unregister it when the protocol stops.
+        After successful registration the context manager needs to set the protocol state to ``UbiiStates.REGISTERED``.
+        The ``context.client`` is expected to be up-to-date after registration.
+        """
+
+    @abc.abstractmethod
+    async def create_topic_connection(self, context):
+        """
+        It's expected that ``context.topic_connection`` is a fully functional topic connection after this coroutine
+        is completed.
+        """
+
+    @abc.abstractmethod
+    async def implement_client(self, context):
+        """
+        Make sure the ``context.client`` has fully implemented behaviour. The context at this point should contain
+        a service_map and a topic_connection. It's expected that ``context.client`` can be awaited after this
+        coroutine is finished, which returns a fully functional client.
+        """
+
+    @hook_function
+    async def on_start(self, context):
+        await self.create_service_map(context)
+        await self.update_config(context)
+        await self.update_services(context)
+        await self.create_client(context)
+
+    @hook_function
+    async def on_create(self, context):
+        await self.task_nursery.enter_async_context(self.register_client(context))
+
+    @hook_function
+    async def on_registration(self, context):
+        await self.create_topic_connection(context)
+        await self.implement_client(context)
+        try:
+            # make sure client is implemented
+            context.client = await asyncio.wait_for(context.client, timeout=5)
+        except asyncio.TimeoutError:
+            raise RuntimeError(f"Client is not implemented")
+
+    @hook_function
+    async def on_connect(self, context):
+        self.task_nursery.create_task(
+            topics_.StreamSplitRoutine(container=context.topic_store, stream=context.topic_connection)
+        )
+
+    @hook_function
+    async def on_stop(self, context):
+        self.log.info(f"Stopped protocol {self}")
+        self.client.state = self.client.State.UNAVAILABLE
+
+    def __init_subclass__(cls):
+        """
+        Register decorators for hook functions
+        """
+        hook_function: util_.hook
+        for hook_function, hk in product(cls.hook_function.registry.values(), cls.__hook_decorators__):
+            if hk not in hook_function.decorators:
+                hook_function.register_decorator(hk)
+
+        super().__init_subclass__()
+
+    def __str__(self):
+        info = f" of {self.client}" if self.client else " !missing client!"
+        return f"{self.__class__.__name__}{info}"

@@ -32,11 +32,11 @@ def log_to_folder(log_config):
 
 
 def main():
-    from ubii.framework import connect_client
+    from ubii.node import connect_client
     from ubii.framework.logging import parse_args, logging_setup
     from ubii.framework.client import InitProcessingModules
     from codestare.async_utils.nursery import TaskNursery
-    from ubii.cli import load_pm_entry_points
+    from . import load_pm_entry_points
     parser = argparse.ArgumentParser()
     parser.add_argument('--processing-modules', action='append', default=[])
     parser.add_argument('--no-discover', action='store_true', default=False)

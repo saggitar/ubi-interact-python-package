@@ -3,25 +3,27 @@ from __future__ import annotations
 import logging
 import typing as t
 
+import ubii.framework.client
+from . import node_protocol as default_protocol_
 from ubii.framework import (
     client as client_,
     constants as constants_,
     protocol as protocol_,
-    default_protocol as default_protocol_
 )
-from .util.typing import Protocol
+from ubii.framework.util.typing import Protocol
 
 log = logging.getLogger(__name__)
 
 
-class connect(t.Awaitable[client_.UbiiClient[protocol_.AbstractClientProtocol]],
-              t.AsyncContextManager[client_.UbiiClient[protocol_.AbstractClientProtocol]]):
+class connect(t.Awaitable[client_.UbiiClient[ubii.framework.client.AbstractClientProtocol]],
+              t.AsyncContextManager[client_.UbiiClient[ubii.framework.client.AbstractClientProtocol]]):
     class ClientFactory(Protocol):
         def __call__(self,
                      instance: connect,
                      *,
                      client_type: t.Type[client_.UbiiClient],
-                     protocol_type: t.Type[protocol_.AbstractProtocol]) -> client_.UbiiClient[protocol_.AbstractProtocol]: ...
+                     protocol_type: t.Type[protocol_.AbstractProtocol]) -> client_.UbiiClient[
+            protocol_.AbstractProtocol]: ...
 
     def __init__(self,
                  url=None,
