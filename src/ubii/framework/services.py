@@ -14,7 +14,7 @@ from functools import lru_cache, partial
 
 import ubii.proto as ub
 from . import util
-from .logging import ProtoFormatMixin, debug
+from .logging import debug
 
 __protobuf__ = ub.__protobuf__
 log = logging.getLogger(__name__)
@@ -98,7 +98,7 @@ class ServiceCallFactory(Protocol[T_Service_Cov]):
     def __call__(self, mapping: ub.Service) -> T_Service_Cov: ...
 
 
-class ServiceMap(ub.ServiceList, Mapping[str, T_Service], Generic[T_Service], ProtoFormatMixin,
+class ServiceMap(ub.ServiceList, Mapping[str, T_Service], Generic[T_Service],
                  metaclass=ub.ProtoMeta):
     """
     A ServiceMap is a wrapper around a ServiceList proto message which provides a Mapping for ServiceCalls by topic.

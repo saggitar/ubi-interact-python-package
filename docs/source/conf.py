@@ -41,6 +41,7 @@ release = metadata['version']
 extensions = [
     'sphinx.ext.autodoc',
     'sphinxcontrib.napoleon',
+    'sphinx.ext.intersphinx',
 ]
 
 # Add any paths that contain templates here, relative to this directory.
@@ -81,12 +82,18 @@ html_theme_options = {
     'logo': 'logo.png',
     'github_user': 'saggitar',
     'github_repo': 'ubii-node-python',
-    'page_width': '80%'
+    'page_width': '75%'
 }
 
 # autodoc_preserve_defaults = True
+# autodoc_typehints = 'description'
+# autodoc_typehints_description_target = 'documented'
+# autodoc_class_signature = 'separated'
+# autodoc_class_signature = 'mixed'
 
-#  --- mock some defaults ---
-from ubii.framework.constants import _default_server
+intersphinx_mapping = {'python': ('https://docs.python.org/3', None)}
 
-_default_server.constants_json = "..."
+#  --- patch __repr__ of wrapper classes
+from ubii.proto.util import patch_wrapper_class_repr
+
+patch_wrapper_class_repr()

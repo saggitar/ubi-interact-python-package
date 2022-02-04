@@ -9,11 +9,11 @@ __protobuf__ = ub.__protobuf__
 
 UBII_URL_ENV = 'UBII_SERVICE_URL'
 
-_default_constants = ub.Constants()
-_default_constants.DEFAULT_TOPICS.SERVICES.SERVER_CONFIG = '/services/server_configuration'
-_default_server = ub.Server()
-_default_server.constants_json = ub.Constants.to_json(_default_constants)
-
+default_constants = ub.Constants()
+default_constants.DEFAULT_TOPICS.SERVICES.SERVER_CONFIG = '/services/server_configuration'
+default_server = ub.Server()
+default_server.constants_json = ub.Constants.to_json(default_constants)
+default_service_url = os.getenv(UBII_URL_ENV, 'http://localhost:8102/services')
 
 @dataclasses.dataclass(init=True)
 class UbiiConfig:
@@ -32,9 +32,9 @@ class UbiiConfig:
         before anything else is known. By default it's provided by a environment variable (see documentation of
         UBII_URL_ENV in this module)
     """
-    SERVER: ub.Server = _default_server
-    CONSTANTS: ub.Constants = _default_constants
-    DEFAULT_SERVICE_URL: str = os.getenv(UBII_URL_ENV, 'http://localhost:8102/services')
+    SERVER: ub.Server = default_server
+    CONSTANTS: ub.Constants = default_constants
+    DEFAULT_SERVICE_URL: str = default_service_url
 
 
 # shared config
@@ -43,4 +43,7 @@ GLOBAL_CONFIG = UbiiConfig()
 __all__ = [
     "GLOBAL_CONFIG",
     "UbiiConfig",
+    "default_service_url",
+    "default_server",
+    "default_constants"
 ]

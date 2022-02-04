@@ -1,17 +1,15 @@
 from __future__ import annotations
 
-import enum
-import typing
-
-import aiohttp
 import asyncio
 import logging
 import socket
+import typing
 import typing as t
 from contextlib import asynccontextmanager
 from urllib.parse import urlparse
 from warnings import warn
 
+import aiohttp
 import ubii.proto as ub
 
 from .logging import debug

@@ -24,7 +24,7 @@ from .util.typing import (
 
 __protobuf__ = ub.__protobuf__
 
-_T_Protocol = t.TypeVar('_T_Protocol', bound='AbstractClientProtocol')
+T_Protocol = t.TypeVar('T_Protocol', bound='AbstractClientProtocol')
 
 @dataclasses.dataclass
 class Services:
@@ -87,7 +87,7 @@ class InitProcessingModules:
 
 class UbiiClient(ub.Client,
                  t.Awaitable['UbiiClient'],
-                 t.Generic[_T_Protocol],
+                 t.Generic[T_Protocol],
                  metaclass=ProtoRegistry):
     """
     A Client is a wrapper around a ``Client`` proto message.
@@ -122,8 +122,8 @@ class UbiiClient(ub.Client,
     # key for registry
     __unique_key_attr__ = 'id'
 
-    def __init__(self: UbiiClient[_T_Protocol], mapping=None, *,
-                 protocol: _T_Protocol,
+    def __init__(self: UbiiClient[T_Protocol], mapping=None, *,
+                 protocol: T_Protocol,
                  required_behaviours: t.Tuple[t.Type, ...] = (Services, Subscriptions, Publish),
                  optional_behaviours: t.Tuple[t.Type, ...] = (
                          Register, Devices, RunProcessingModules, InitProcessingModules
@@ -213,7 +213,7 @@ class UbiiClient(ub.Client,
         return self._ctx.__aexit__(*exc_info)
 
     @property
-    def protocol(self) -> _T_Protocol:
+    def protocol(self) -> T_Protocol:
         return self._protocol
 
     def __getitem__(self, behaviour: t.Type[_T]) -> _T:
