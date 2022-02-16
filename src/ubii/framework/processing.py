@@ -160,7 +160,7 @@ class ProcessingRoutine(ub.ProcessingModule, metaclass=util.ProtoRegistry):
         super().__init__(mapping=mapping, **kwargs)
 
         # eval stringified
-        if eval_strings or debug():
+        if eval_strings or debug() and self.language == self.Language.PY:
             self._eval_string_funcs()
 
         self.validate()
