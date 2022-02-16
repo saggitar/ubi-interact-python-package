@@ -18,7 +18,7 @@ class TestBasic:
         inherited = Empty()
         basic = ub.Session()
 
-        assert type(inherited).serialize(inherited) == type(basic).serialize(basic)
+        assert type(inherited).serialize(inherited) == type(basic).json_serialize(basic)
 
         class WithAttributes(ub.Session, metaclass=ub.ProtoMeta):
             def foo(self):
@@ -26,7 +26,7 @@ class TestBasic:
 
         fancy = WithAttributes()
 
-        assert type(fancy).serialize(fancy) == type(basic).serialize(basic)
+        assert type(fancy).serialize(fancy) == type(basic).json_serialize(basic)
         assert fancy.foo() == "Foo"
 
         class WeirdProcessing(ProcessingModule, metaclass=ub.ProtoMeta):
@@ -37,5 +37,5 @@ class TestBasic:
         inherited.processing_modules = [processing]
         basic.processing_modules = [ProcessingModule()]
 
-        assert type(inherited).serialize(inherited) == type(basic).serialize(basic)
+        assert type(inherited).serialize(inherited) == type(basic).json_serialize(basic)
         assert processing.process() == "Bar"

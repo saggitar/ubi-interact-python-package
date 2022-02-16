@@ -1,20 +1,22 @@
 from __future__ import annotations
 
 import asyncio
+import functools
+import json
 import logging
 import socket
 import typing
 import typing as t
+import urllib.parse
+import warnings
 from contextlib import asynccontextmanager
-from urllib.parse import urlparse
-from warnings import warn
 
 import aiohttp
-import ubii.proto as ub
 
-from .logging import debug
-from .services import ServiceConnection
-from .topics import DataConnection
+import ubii.proto as ub
+from ubii.framework.logging import debug
+from ubii.framework.services import ServiceConnection
+from ubii.framework.topics import DataConnection
 
 local_ip = socket.gethostbyname(socket.gethostname())
 log = logging.getLogger(__name__)
@@ -25,7 +27,7 @@ class AIOHttpConnection:
         self._session_is_set = asyncio.Event()
         self._session = None
         self.url = url
-        self.https = urlparse(url).scheme == 'https'
+        self.https = urllib.parse.urlparse(url).scheme == 'https'
         self.host_ip = host_ip
 
     @property
@@ -47,7 +49,7 @@ class AIOHttpConnection:
                 return
 
         if self._session_is_set.is_set():
-            warn(f"session is already set (see documentation for more info).")
+            warnings.warn(f"session is already set (see documentation for more info).")
             return
 
         self._session = value
@@ -80,7 +82,7 @@ class AIOHttpWebsocketConnection(AIOHttpConnection, DataConnection):
     @asynccontextmanager
     async def connect(self, client_id: str):
         if self.events.connected.is_set():
-            warn(f"{self} is already connected.")
+            warnings.warn(f"{self} is already connected.")
             yield self
 
         self.client_id = client_id
@@ -123,7 +125,7 @@ class AIOHttpWebsocketConnection(AIOHttpConnection, DataConnection):
             raise ValueError("Can't unset by setting to None. Delete the attribute instead.")
 
         if self.events.connected.is_set():
-            warn(f"ws is already set ({self._ws}). Delete the attribute first (see documentation)")
+            warnings.warn(f"ws is already set ({self._ws}). Delete the attribute first (see documentation)")
             return
 
         self._ws = value
@@ -145,7 +147,7 @@ class AIOHttpWebsocketConnection(AIOHttpConnection, DataConnection):
     @client_id.setter
     def client_id(self, value):
         if self._client_id:
-            warn(f"client_id is already set ({self._client_id}). Unset first (see documentation)")
+            warnings.warn(f"client_id is already set ({self._client_id}). Unset first (see documentation)")
             return
 
         self._client_id = value
@@ -158,7 +160,7 @@ class AIOHttpWebsocketConnection(AIOHttpConnection, DataConnection):
         await asyncio.wait_for(self.events.connected.wait(), timeout=timeout)
         assert self.ws is not None
         self.log_socket_out.info(f"Sending {data}")
-        await asyncio.wait_for(self.ws.send_bytes(ub.TopicData.serialize(data)), timeout=timeout)
+        await asyncio.wait_for(self.ws.send_bytes(ub.TopicData.json_serialize(data)), timeout=timeout)
 
 
 class AIOHttpRestConnection(AIOHttpConnection, ServiceConnection):
@@ -191,8 +193,8 @@ def aiohttp_session():
         timeout = aiohttp.ClientTimeout(total=300)
         trace_configs = []
 
-    from ubii.proto import serialize as proto_serialize
+    from ubii.proto import ProtoEncoder
     return aiohttp.ClientSession(raise_for_status=True,
-                                 json_serialize=proto_serialize,
+                                 json_serialize=functools.partial(json.dump, ProtoEncoder),
                                  trace_configs=trace_configs,
                                  timeout=timeout)
