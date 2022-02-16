@@ -160,7 +160,7 @@ class AIOHttpWebsocketConnection(AIOHttpConnection, DataConnection):
         await asyncio.wait_for(self.events.connected.wait(), timeout=timeout)
         assert self.ws is not None
         self.log_socket_out.info(f"Sending {data}")
-        await asyncio.wait_for(self.ws.send_bytes(ub.TopicData.json_serialize(data)), timeout=timeout)
+        await asyncio.wait_for(self.ws.send_bytes(ub.TopicData.serialize(data)), timeout=timeout)
 
 
 class AIOHttpRestConnection(AIOHttpConnection, ServiceConnection):
@@ -195,6 +195,6 @@ def aiohttp_session():
 
     from ubii.proto import ProtoEncoder
     return aiohttp.ClientSession(raise_for_status=True,
-                                 json_serialize=functools.partial(json.dump, ProtoEncoder),
+                                 json_serialize=functools.partial(json.dumps, cls=ProtoEncoder),
                                  trace_configs=trace_configs,
                                  timeout=timeout)
