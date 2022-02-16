@@ -2,13 +2,15 @@ from __future__ import annotations
 
 import asyncio
 import logging
+
+import proto.message
 import pytest
 import typing as t
 import yaml
 
 import ubii.proto as ub
 from ubii.framework.client import Devices, UbiiClient, Services
-from ubii.framework.default_protocol import DefaultProtocol
+from ubii.node.node_protocol import DefaultProtocol
 from ubii.framework.logging import logging_setup
 
 __verbosity__: int | None = None
@@ -138,7 +140,7 @@ async def start_session(client_spec):
         # await client_spec.services.session_runtime_stop(session=session)
 
 
-P = t.TypeVar('P', bound=ub.ProtoMessage)
+P = t.TypeVar('P', bound=proto.message.Message)
 
 
 def _change_specs(proto: P, *specs: P):
@@ -161,8 +163,12 @@ def module_spec(base_module, request):
 @pytest.fixture(scope='class')
 def client_spec(base_client, module_spec, request):
     _change_specs(base_client, *get_param(request))
-    if module_spec not in base_client.processing_modules:
-        base_client.processing_modules += [module_spec]
+
+    by_name = {pm.name: pm for pm in base_client.processing_modules}
+    if module_spec.name in by_name:
+        by_name[module_spec.name] = module_spec
+
+    base_client.processing_modules = list(by_name.values())
 
     yield base_client
 

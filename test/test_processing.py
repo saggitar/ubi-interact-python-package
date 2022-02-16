@@ -132,7 +132,10 @@ class TestPy(Processing):
     ]
 
     client_spec = [
-        pytest.param((ub.Client(is_dedicated_processing_node=True),), id='processing_node')
+        pytest.param((ub.Client(
+            is_dedicated_processing_node=True,
+            processing_modules=[ub.ProcessingModule(name='example-processing-module')]
+        ),), id='processing_node')
     ]
 
     @pytest.fixture(scope='class', autouse=True)
@@ -151,13 +154,14 @@ class TestJS(Processing):
     ]
 
     client_spec = [
-        pytest.param((ub.Client(is_dedicated_processing_node=False),), id='server_processing')
+        pytest.param((ub.Client(is_dedicated_processing_node=False, processing_modules=None),), id='server_processing')
     ]
 
     @pytest.fixture(scope='class', autouse=True)
     async def startup(self, client, session_spec, module_spec, start_session):
-        client.processing_modules = []
+        assert not client.processing_modules
         await client
+        await start_session(session_spec)
         yield True
 
 
