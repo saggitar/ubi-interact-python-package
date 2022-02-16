@@ -4,6 +4,11 @@ import logging
 from pathlib import Path
 from warnings import warn
 
+try:
+    from importlib import metadata
+except ImportError:  # for Python<3.8
+    import importlib_metadata as metadata
+
 log = logging.getLogger(__name__)
 
 
@@ -31,12 +36,15 @@ def log_to_folder(log_config):
     return log_config
 
 
+def load_pm_entry_points():
+    return [entry.load() for entry in metadata.entry_points().get('ubii.processing_modules', ())]
+
+
 def main():
     from ubii.node import connect_client
     from ubii.framework.logging import parse_args, logging_setup
     from ubii.framework.client import InitProcessingModules
     from codestare.async_utils.nursery import TaskNursery
-    from . import load_pm_entry_points
     parser = argparse.ArgumentParser()
     parser.add_argument('--processing-modules', action='append', default=[])
     parser.add_argument('--no-discover', action='store_true', default=False)
