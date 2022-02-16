@@ -2,7 +2,7 @@ import argparse
 import asyncio
 import logging
 from pathlib import Path
-from warnings import warn
+import warnings
 
 try:
     from importlib import metadata
@@ -37,7 +37,10 @@ def log_to_folder(log_config):
 
 
 def load_pm_entry_points():
-    return [entry.load() for entry in metadata.entry_points().get('ubii.processing_modules', ())]
+    with warnings.catch_warnings():
+        # this deprecation is discussed a lot
+        warnings.simplefilter("ignore") 
+        return [entry.load() for entry in metadata.entry_points().get('ubii.processing_modules', ())]
 
 
 def main():
@@ -62,7 +65,7 @@ def main():
     if pms:
         print(f"Imported {', '.join(map(repr, pms))}")
     else:
-        warn(f"No processing modules imported")
+        warnings.warn(f"No processing modules imported")
 
     async def run():
         with connect_client() as client:
