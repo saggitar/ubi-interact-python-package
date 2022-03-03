@@ -48,6 +48,7 @@ def main():
     from ubii.framework.logging import parse_args, logging_setup
     from ubii.framework.client import InitProcessingModules
     from codestare.async_utils.nursery import TaskNursery
+
     parser = argparse.ArgumentParser()
     parser.add_argument('--processing-modules', action='append', default=[])
     parser.add_argument('--no-discover', action='store_true', default=False)

@@ -23,7 +23,6 @@ from ubii.framework import (
     topics as topics_,
     services as services_,
     connections as connections_,
-    protocol as protocol_,
     client as client_,
     constants as constants_,
     util as util_,
@@ -47,7 +46,7 @@ class States(enum.IntFlag):
     ANY = STARTING | REGISTERED | CONNECTED | STOPPED | HALTED | CREATED
 
 
-class DefaultProtocol(ubii.framework.client.AbstractClientProtocol[States]):
+class LegacyProtocol(ubii.framework.client.AbstractClientProtocol[States]):
     """
     The standard protocol creates one UbiiClient, registers it, implements all required behaviours and
     device registration as well as handling of processing modules.
@@ -390,6 +389,15 @@ class DefaultProtocol(ubii.framework.client.AbstractClientProtocol[States]):
         await self.state.set(States.CONNECTED)
 
     async def implement_processing(self, context: Context):
+        """
+        Blah
+
+        Args:
+            context ():
+
+        Returns:
+
+        """
 
         async def on_start_session(record):
             session: ub.Session = record.session
@@ -562,9 +570,13 @@ class DefaultProtocol(ubii.framework.client.AbstractClientProtocol[States]):
     }
 
 
-class LatePMInitProtocol(DefaultProtocol):
+class LatePMInitProtocol(LegacyProtocol):
+    """
+    This is the updated version of the :class:`ubii.node.protocol.LegacyProtocol` able to
+    load installed processing modules that require a partly initialized client node.
+    """
 
-    async def create_client(self, context: DefaultProtocol.Context):
+    async def create_client(self, context: LegacyProtocol.Context):
         await super().create_client(context)
 
         assert context.client.implements(client_.InitProcessingModules)
@@ -586,18 +598,35 @@ class LatePMInitProtocol(DefaultProtocol):
         super(LatePMInitProtocol, self).__setattr__(key, value)
 
 
-LegacyProtocol = DefaultProtocol
-del DefaultProtocol
-
-
 def __getattr__(name):
-    github_url = "TODO"
+    try:
+        import importlib.metadata as importlib_metadata
+    except ImportError:
+        import importlib_metadata
+
+    metadata = importlib_metadata.metadata('ubii-node-python')
+    url = metadata['Home-Page']
 
     if name == 'DefaultProtocol':
         warn(f"The default Protocol was updated, if you experience bugs with the new DefaultProtocol"
-             f" please use the ``LegacyProtocol`` instead and report the bug at {github_url}.", ImportWarning)
+             f" please use the ``LegacyProtocol`` instead and report the bug at {url}.", ImportWarning)
 
         return LatePMInitProtocol
 
     else:
         raise AttributeError(f"{__name__} has no attribute {name}")
+
+
+__all__ = (
+    'States',
+    'LatePMInitProtocol',
+    'LegacyProtocol',
+)
+
+deprecated_names = (
+    'DefaultProtocol',
+)
+
+
+def __dir__():
+    return __all__ + deprecated_names

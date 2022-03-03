@@ -10,7 +10,7 @@ import yaml
 
 import ubii.proto as ub
 from ubii.framework.client import Devices, UbiiClient, Services
-from ubii.node.node_protocol import DefaultProtocol
+from ubii.node.protocol import DefaultProtocol
 from ubii.framework.logging import logging_setup
 
 __verbosity__: int | None = None

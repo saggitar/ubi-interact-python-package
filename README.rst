@@ -8,20 +8,14 @@ University of Munich) for developing distributed and reactive
 applications, the main focus of the Python node is to allow the
 implementation of ``processing-modules`` in Python.
 
-Install requirements
---------------------
+Installation
+------------
 
 Python Version
 ~~~~~~~~~~~~~~
 
 The ``Ubi-Interact-Python-Node`` should be compatible with all python
-versions **>= 3.7**. If you experience bugs feel free to report them, so
-I can get them fixed as soon as possible. (To keep things simple all
-Python packages developed as part of the ``ubii`` namespace don’t rely
-on any third party build tools such as ``poetry``, but instead use the
-de-facto standard ``setuptools`` backend. This allows for editable
-installs, but makes it harder to correctly track all dependencies,
-leading to erorrs which are hard to spot, but easy to fix :)
+versions **>= 3.7**. If you experience bugs feel free to report them.
 
 Windows:
 ~~~~~~~~
@@ -29,7 +23,7 @@ Windows:
 The ``Ubi-Interact-Python-Node`` aims to be cross-platform, working with
 most interesting computational packages is easier under Linux
 nonetheless. Installation via ``pip`` is recommended, if you use
-something else (e.g. ``Anaconda``) refer to the documentation of your
+something else (e.g.``Anaconda``) refer to the documentation of your
 python distribution / package management tool how to install packages
 from pypi.
 
@@ -61,7 +55,7 @@ environment during creation).
 
 -  Python version 3.7 of greater
 -  Virtual Environment (recommended) with pip installed
-   (e.g. ``python3 -m venv env`` followed by
+   (e.g.``python3 -m venv env`` followed by
    ``source ./env/bin/activate``)
 -  Continue at `PyPi <#pypi>`__
 
@@ -77,7 +71,7 @@ installed as part of the ``cli`` extra.
 ::
 
    $ python -m pip install ubii-node-python[cli]
-   $ ubii-client --help 
+   $ ubii-client --help
 
 Editable / Local Install
 ~~~~~~~~~~~~~~~~~~~~~~~~
@@ -140,7 +134,7 @@ modules.
    options:
      -h, --help            show this help message and exit
      --processing-modules PROCESSING_MODULES
-     --no-discover 
+     --no-discover
      --verbose, -v
      --debug
      --log-config LOG_CONFIG
@@ -152,10 +146,10 @@ modules.
    and fails loudly
 -  ``--log-config`` optional path to a **.yaml** file containing a
    dictionary of logging options consistent with the
-   ```logggin.config.dictConfig`` <https://docs.python.org/3/library/logging.config.html#logging.config.dictConfig>`__
+   ```logging.config.dictConfig`` <https://docs.python.org/3/library/logging.config.html#logging.config.dictConfig>`__
    format (`example
    config <src/ubii/framework/util/logging_config.yaml>`__)
--  ``--no-discover`` flag to turn of auto discovery of processing
+-  ``--no-discover`` flag to turn off auto discovery of processing
    modules via entry points
 -  ``--processing-modules`` specify a list of import paths for *Ubi
    Interact Procesing Modules* implemented using the
@@ -198,12 +192,3 @@ turning off auto discovery in this example)
    $ ubii-client --no-discover --processing-modules ubii.processing_modules.ocr.tesseract_ocr.TesseractOCR_EAST
    > Imported <class 'ubii.processing_modules.ocr.tesseract_ocr.TesseractOCR_EAST'>
    > ...
-
-Known bugs
-----------
-
--  Exception handling on windows is not as refined as on Linux. Please
-   report bugs!
--  Starting and stopping sessions is working, but restarting a session
-   (i.e. Start Session -> Stop Session -> Start Session) is still buggy
--  Default logging behaviour is … hard to explain :D

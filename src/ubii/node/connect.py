@@ -4,7 +4,7 @@ import logging
 import typing as t
 
 import ubii.framework.client
-from . import node_protocol as default_protocol_
+from . import protocol as default_protocol_
 from ubii.framework import (
     client as client_,
     constants as constants_,

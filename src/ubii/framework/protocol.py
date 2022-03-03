@@ -61,10 +61,9 @@ class AbstractProtocol(t.Generic[T_EnumFlag], abc.ABC):
     # https://youtrack.jetbrains.com/issue/PY-15176 and related issues.
     state = util_.condition_property(fget=_get_state, fset=_set_state)
 
-    def start(self):
+    def start(self: AbstractProtocol[T_EnumFlag]) -> AbstractProtocol[T_EnumFlag]:
         """
         Start the protocol
-        :return: Task running the protocol.
 
         It is encouraged to wait for the protocol if the task is cancelled instead of waiting for the task.
         In either case, canceling the task will trigger the sentinel task to handle the
@@ -72,6 +71,9 @@ class AbstractProtocol(t.Generic[T_EnumFlag], abc.ABC):
         shortly after the cancellation might raise exceptions from the scheduled cleanup operations, so it's
         mandatory to sleep for a short time (e.g. asyncio.sleep(0)) before closing the loop if your protocol
         schedules async tasks during its teardown.
+
+        Returns:
+            the started protocol
         """
         if not self._run:
             self._run = self.task_nursery.create_task(RunProtocol(self))
