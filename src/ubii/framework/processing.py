@@ -3,37 +3,50 @@ from __future__ import annotations
 import asyncio
 import collections
 import concurrent.futures
+import contextlib
 import dataclasses
 import enum
+import functools
 import logging
 import types
-import typing as t
-from contextlib import suppress
-from functools import wraps, partial
+import typing
 
-import ubii.proto as ub
-from ubii.proto.util import get_import_name
-from . import util
-from .logging import debug
-from .protocol import AbstractProtocol
-from .topics import BasicTopic, TopicStore, Topic
+import ubii.proto
+from . import (
+    protocol,
+    util,
+    topics
+)
 from .util.typing import Protocol
 
-__protobuf__ = ub.__protobuf__
+__protobuf__ = ubii.proto.__protobuf__
 log = logging.Logger(__name__)
 
-# this is not how it's supposed to be, but w/e
-__json_name_to_field_name__ = {field.json_name: field.name for field in ub.TopicDataRecord.pb().DESCRIPTOR.fields}
+__json_name_to_field_name__ = {field.json_name: field.name for field in
+                               ubii.proto.TopicDataRecord.pb().DESCRIPTOR.fields}
+"""
+Used in :meth:`.ProcessingProtocol.helpers.fix_io_fmt` to compute the field name of the 
+:attr:`ubii.proto.TopicDataRecord.type` one-of group from the message type given by a 
+:attr:`ubii.proto.ModuleIO.message_format` field. 
+"""
 
 MAX_WORKERS = 8
 
 
-def _default_perf_calc(scheduler: 'Scheduler'):
+def default_perf_calc(scheduler: 'Scheduler') -> float:
+    """
+    calculate performace of scheduler by computing relative error of past execution times
+    to target :attr:`.Scheduler.delay`
+
+    Returns:
+        (1 - relative error) -- negative values allowed
+
+    """
     avg_delta = sum(scheduler._delta_times) / (1 if not scheduler._delta_times else len(scheduler._delta_times))  # noqa
     if avg_delta < scheduler.delay:
-        return 1  # 100 % performance
+        return 1.  # 100 % performance
     else:
-        return 1 - (avg_delta - scheduler.delay) / scheduler.delay  # 1 - rel error
+        return 1. - (avg_delta - scheduler.delay) / scheduler.delay  # 1 - rel error
 
 
 class Scheduler(util.CoroutineWrapper):
@@ -41,26 +54,37 @@ class Scheduler(util.CoroutineWrapper):
     A Scheduler is a wrapper around the coroutine created by its ``get_trigger_loop`` method.
     A scheduler - depending on the used ProcessingMode ``mode`` - waits for a certain delay and / or until
     any or all of its inputs are finished and then schedules its callback.
-
     """
 
     class Executor(Protocol):
         def __call__(self, max_workers: int) -> concurrent.futures.Executor: ...
 
     def __init__(self,
-                 callback: t.Callable[..., t.Any],
-                 inputs: t.Iterable[t.Callable[[], t.Awaitable]],
-                 mode: ub.ProcessingMode,
-                 __perf_metric=_default_perf_calc):
+                 callback: typing.Callable[..., typing.Any],
+                 inputs: typing.Iterable[typing.Callable[[], typing.Awaitable]],
+                 mode: ubii.proto.ProcessingMode,
+                 *,
+                 perf_metric=default_perf_calc):
+        """
+        The mode and inputs determine when the callback is executed. Read :attr:`ubii.proto.ProcessingMode.mode`
+        for an overview of processing modes.
+
+        Args:
+            callback: Schedule execution of this callable when conditions are right
+            inputs: depending on the :class:`ubii.proto.ProcessingMode` inputs are part of the condition --
+                or simply retrieved -- for execution of the callback
+            mode: See documentation of the message type for information about execution conditions
+            perf_metric: callable to evaluate scheduler overhead / performance
+        """
         self._loop = asyncio.get_running_loop()
         self._callback = None
         self._inputs = inputs
 
-        self._perf_metric = __perf_metric.__get__(self, type(self))
-        self._delta_times: t.Deque = collections.deque(maxlen=30)  # keep track of last times for performance evaluation
+        self._perf_metric = perf_metric.__get__(self, type(self))
+        self._delta_times: typing.Deque = collections.deque(maxlen=30)  # keep track of last times for performance evaluation
 
-        self.done: t.List[t.Awaitable] = []
-        self.pending: t.List[t.Awaitable] = []
+        self.done: typing.List[typing.Awaitable] = []
+        self.pending: typing.List[typing.Awaitable] = []
         self.mode = mode
         self.callback = callback
         self.executor = concurrent.futures.ThreadPoolExecutor(max_workers=MAX_WORKERS)
@@ -84,7 +108,7 @@ class Scheduler(util.CoroutineWrapper):
         return self._perf_metric()
 
     @property
-    def callback(self) -> t.Callable[..., t.Any] | None:
+    def callback(self) -> typing.Callable[..., typing.Any] | None:
         return self._callback
 
     @callback.setter
@@ -125,7 +149,7 @@ class Scheduler(util.CoroutineWrapper):
 
                     await self._loop.run_in_executor(pool, self._callback)
 
-                    with suppress(asyncio.CancelledError):
+                    with contextlib.suppress(asyncio.CancelledError):
                         for awaitable in self.pending:
                             awaitable.cancel()
                             await awaitable
@@ -133,7 +157,7 @@ class Scheduler(util.CoroutineWrapper):
         return _trigger_loop()
 
 
-class ProcessingRoutine(ub.ProcessingModule, metaclass=util.ProtoRegistry):
+class ProcessingRoutine(ubii.proto.ProcessingModule, metaclass=util.ProtoRegistry):
     """
     This adds a :class:`ubii.framework.processing.ProcessingProtocol` providing processing behaviour to a
     :class:`~ubii.proto.ProcessingModule` representation.
@@ -186,7 +210,7 @@ class ProcessingRoutine(ub.ProcessingModule, metaclass=util.ProtoRegistry):
     def __init__(self, mapping=None, eval_strings=False, **kwargs):
         """
         Args:
-            mapping (Union[dict, ~.Message]): A dictionary or message to be
+            mapping (Union[dict, Message]): A dictionary or message to be
                 used to determine the values for this message.
             eval_strings (bool): If this flag is set or the framework is used in :func:`~ubii.framework.logging.debug`
                 mode, fields of the protobuf message that have names ending with ``_stringified`` (e.g.
@@ -200,8 +224,8 @@ class ProcessingRoutine(ub.ProcessingModule, metaclass=util.ProtoRegistry):
         """
 
         # we allow initialisation from ub.ProcessingModule Wrappers
-        if isinstance(mapping, ub.ProcessingModule):
-            mapping = ub.ProcessingModule.pb(mapping)
+        if isinstance(mapping, ubii.proto.ProcessingModule):
+            mapping = ubii.proto.ProcessingModule.pb(mapping)
 
         self._protocol = ProcessingProtocol(pm=self)
         self._change_specs = asyncio.Condition()
@@ -209,13 +233,13 @@ class ProcessingRoutine(ub.ProcessingModule, metaclass=util.ProtoRegistry):
         super().__init__(mapping=mapping, **kwargs)
 
         # eval stringified
-        if eval_strings or debug() and self.language == self.Language.PY:
+        if eval_strings or util.debug() and self.language == self.Language.PY:
             self._eval_string_funcs()
 
         self.validate()
 
-        self._local_output_topics = TopicStore(
-            default_factory=partial(BasicTopic, task_nursery=self._protocol.task_nursery)
+        self._local_output_topics = topics.TopicStore(
+            default_factory=functools.partial(topics.BasicTopic, task_nursery=self._protocol.task_nursery)
         )
 
         self._input_topic_getter = util.hook(lambda _: None)
@@ -224,10 +248,10 @@ class ProcessingRoutine(ub.ProcessingModule, metaclass=util.ProtoRegistry):
     def _eval_string_funcs(self):
         suffix = '_stringified'
         string_fields = [
-            name for name in ub.ProcessingModule.pb(self).DESCRIPTOR.fields_by_name
+            name for name in ubii.proto.ProcessingModule.pb(self).DESCRIPTOR.fields_by_name
             if name.endswith(suffix) and getattr(self, name)
         ]
-        definitions = map(partial(getattr, self), string_fields)
+        definitions = map(functools.partial(getattr, self), string_fields)
         for name, source in zip(string_fields, definitions):
             created_name = name[:-len(suffix)]
             ns = {}
@@ -239,7 +263,7 @@ class ProcessingRoutine(ub.ProcessingModule, metaclass=util.ProtoRegistry):
             setattr(type(self), created_name, func)
 
     @property
-    def local_output_topics(self) -> TopicStore:
+    def local_output_topics(self) -> topics.TopicStore:
         """
         Container to interact with the output topics of the module (e.g. register callbacks on the topics).
         """
@@ -255,7 +279,7 @@ class ProcessingRoutine(ub.ProcessingModule, metaclass=util.ProtoRegistry):
         return self._change_specs
 
     @property
-    def get_input_topic(self) -> util.hook[t.Callable[[ub.ModuleIO], Topic | None]]:
+    def get_input_topic(self) -> util.hook[typing.Callable[[ubii.proto.ModuleIO], topics.Topic | None]]:
         """
         Use this callable to map :attr:`ubii.proto.ProcessingModule.inputs` to topics
 
@@ -264,7 +288,7 @@ class ProcessingRoutine(ub.ProcessingModule, metaclass=util.ProtoRegistry):
         return self._input_topic_getter
 
     @property
-    def get_output_topic(self) -> util.hook[t.Callable[[ub.ModuleIO], Topic | None]]:
+    def get_output_topic(self) -> util.hook[typing.Callable[[ubii.proto.ModuleIO], topics.Topic | None]]:
         """
         Use this callable to map :attr:`ubii.proto.ProcessingModule.outputs` to topics
 
@@ -273,8 +297,8 @@ class ProcessingRoutine(ub.ProcessingModule, metaclass=util.ProtoRegistry):
         return self._output_topic_getter
 
     async def apply_io_mapping(self,
-                               io_mapping: ub.IOMapping,
-                               remote_topic_map: t.Mapping[str, Topic]):
+                               io_mapping: ubii.proto.IOMapping,
+                               remote_topic_map: typing.Mapping[str, topics.Topic]):
         """
         Extract relevant information from a :class:`ubii.proto.IOMapping` message to initialize the
         :attr:`.get_output_topic` and :attr:`.get_input_topic` callables.
@@ -292,7 +316,7 @@ class ProcessingRoutine(ub.ProcessingModule, metaclass=util.ProtoRegistry):
         get_input_mapping = {mapping.input_name: mapping for mapping in io_mapping.input_mappings}.get
         get_output_mapping = {mapping.output_name: mapping for mapping in io_mapping.output_mappings}.get
 
-        def get_topic(topic_mapping: t.Mapping[str, Topic]):
+        def get_topic(topic_mapping: typing.Mapping[str, topics.Topic]):
             # TODO: Make Topic Muxer if necessary
             return lambda mapping: topic_mapping.get(mapping.topic or mapping.topic_mux.topic_selector)
 
@@ -315,6 +339,7 @@ class ProcessingRoutine(ub.ProcessingModule, metaclass=util.ProtoRegistry):
                 self.change_specs.notify_all()
 
     @util.hook
+    @util.document_decorator(util.hook)
     def on_created(self, context: types.SimpleNamespace) -> None:
         """
         Will be executed by the :class:`ubii.framework.processing.ProcessingProtocol` whenever
@@ -326,6 +351,7 @@ class ProcessingRoutine(ub.ProcessingModule, metaclass=util.ProtoRegistry):
         """
 
     @util.hook
+    @util.document_decorator(util.hook)
     def on_init(self, context: types.SimpleNamespace) -> None:
         """
         Will be executed by the :class:`ubii.framework.processing.ProcessingProtocol` whenever
@@ -337,6 +363,7 @@ class ProcessingRoutine(ub.ProcessingModule, metaclass=util.ProtoRegistry):
         """
 
     @util.hook
+    @util.document_decorator(util.hook)
     def on_processing(self, context: types.SimpleNamespace) -> None:
         """
         Will be executed by the :class:`ubii.framework.processing.ProcessingProtocol` whenever
@@ -348,6 +375,7 @@ class ProcessingRoutine(ub.ProcessingModule, metaclass=util.ProtoRegistry):
         """
 
     @util.hook
+    @util.document_decorator(util.hook)
     def on_halted(self, context: types.SimpleNamespace) -> None:
         """
         Will be executed by the :class:`ubii.framework.processing.ProcessingProtocol` whenever
@@ -359,6 +387,7 @@ class ProcessingRoutine(ub.ProcessingModule, metaclass=util.ProtoRegistry):
         """
 
     @util.hook
+    @util.document_decorator(util.hook)
     def on_destroyed(self, context: types.SimpleNamespace) -> None:
         """
         Will be executed by the :class:`ubii.framework.processing.ProcessingProtocol` whenever
@@ -379,6 +408,7 @@ class ProcessingRoutine(ub.ProcessingModule, metaclass=util.ProtoRegistry):
 
     @classmethod
     @util.hook
+    @util.document_decorator(util.hook)
     async def start(cls, pm: ProcessingRoutine) -> ProcessingRoutine:
         """
         Start the internal :class:`ubii.framework.processing.ProcessingProtocol` of the passed routine.
@@ -395,6 +425,7 @@ class ProcessingRoutine(ub.ProcessingModule, metaclass=util.ProtoRegistry):
 
     @classmethod
     @util.hook
+    @util.document_decorator(util.hook)
     async def stop(cls, pm: ProcessingRoutine):
         """
         Stop the internal :class:`ubii.framework.processing.ProcessingProtocol` of the passed routine and
@@ -412,6 +443,7 @@ class ProcessingRoutine(ub.ProcessingModule, metaclass=util.ProtoRegistry):
 
     @classmethod
     @util.hook
+    @util.document_decorator(util.hook)
     async def halt(cls, pm: ProcessingRoutine):
         """
         Halt the internal :class:`ubii.framework.processing.ProcessingProtocol` of the passed routine.
@@ -430,7 +462,7 @@ class ProcessingRoutine(ub.ProcessingModule, metaclass=util.ProtoRegistry):
         info = f"name: {self.name!r}"
         return f"{self.__class__.__name__}({info})"
 
-    validation_rules: t.List[t.Callable[[ProcessingRoutine], None]] = [
+    validation_rules: typing.List[typing.Callable[[ProcessingRoutine], None]] = [
         rules.validate_language,
         rules.validate_id,
     ]
@@ -451,7 +483,7 @@ class PM_STAT(enum.IntFlag):
     DESTROYED = enum.auto()
 
 
-class ProcessingProtocol(AbstractProtocol[ub.ProcessingModule.Status]):
+class ProcessingProtocol(protocol.AbstractProtocol[ubii.proto.ProcessingModule.Status]):
     """
     This :class:`~ubii.framework.protocol.AbstractProtocol` implementation defines the Protocol used to run
     :class:`ubii.framework.processing.ProcessingRoutines <ubii.framework.processing.ProcessingRoutine>`.
@@ -464,6 +496,9 @@ class ProcessingProtocol(AbstractProtocol[ub.ProcessingModule.Status]):
     to execute the proxied methods in the :class:`~ubii.framework.processing.ProcessingRoutine` which owns
     the :class:`ubii.framework.processing.ProcessingProtocol` and set the
     :class:`ubii.framework.processing.ProcessingRoutine.status`
+
+    Attributes:
+        task_nursery: inherited from :class:`ubii.framework.protocol.AbstractProtocol`
     """
 
     starting_state = PM_STAT.INITIALIZED
@@ -477,12 +512,12 @@ class ProcessingProtocol(AbstractProtocol[ub.ProcessingModule.Status]):
         :class:`typing.SimpleNamespace` object as arguments, maybe returning a ``asyncio`` coroutine
         (like :meth:`~ubii.framework.processing.ProcessingRoutine.on_processing` defined with ``async def``)
         """
-        _Status = t.Union[PM_STAT, ub.ProcessingModule.Status]
+        _Status = typing.Union[PM_STAT, ubii.proto.ProcessingModule.Status]
 
         @classmethod
-        def _get_decorator(cls, callable_: t.Callable) -> t.Callable:
+        def _get_decorator(cls, callable_: typing.Callable) -> typing.Callable:
             def decorator(func):
-                @wraps(func)
+                @functools.wraps(func)
                 async def _inner(instance: ProcessingProtocol, context):
                     result = callable_(instance.pm, context)
                     if asyncio.iscoroutine(result):
@@ -494,7 +529,7 @@ class ProcessingProtocol(AbstractProtocol[ub.ProcessingModule.Status]):
             return decorator
 
         @classmethod
-        def set_status_in_pm(cls, status: ub.ProcessingModule.Status) -> t.Callable:
+        def set_status_in_pm(cls, status: ubii.proto.ProcessingModule.Status) -> typing.Callable:
             """
             Callable decorated with returned decorator sets the status of the
             :class:`ubii.framework.processing.ProcessingRoutine` instance to the passed status when called,
@@ -515,7 +550,7 @@ class ProcessingProtocol(AbstractProtocol[ub.ProcessingModule.Status]):
             return cls._get_decorator(set_status)
 
         @classmethod
-        def callback_in_pm(cls, name: str) -> t.Callable:
+        def callback_in_pm(cls, name: str) -> typing.Callable:
             """
             Callable decorated with returned decorator calls the method with specified name of the
             :class:`ubii.framework.processing.ProcessingRoutine` instance.
@@ -556,7 +591,7 @@ class ProcessingProtocol(AbstractProtocol[ub.ProcessingModule.Status]):
             inputs = vars(ctx.inputs)
 
             # dirty fix to get right attribute depending on data_format string
-            def extract_value(result: ub.TopicDataRecord, data_format: str):
+            def extract_value(result: ubii.proto.TopicDataRecord, data_format: str):
                 attr_name = data_format.split('.')[-1]
                 return getattr(result, f"{attr_name[0].lower()}{attr_name[1:]}")
 
@@ -591,7 +626,7 @@ class ProcessingProtocol(AbstractProtocol[ub.ProcessingModule.Status]):
             if not message_format.startswith('ubii.'):
                 return message_format
 
-            ubii_name = get_import_name(message_format)
+            ubii_name = ubii.proto.util.get_import_name(message_format)
             field_name = __json_name_to_field_name__.get(
                 f'{ubii_name.type[0].lower() + ubii_name.type[1:]}'
             )
@@ -629,10 +664,10 @@ class ProcessingProtocol(AbstractProtocol[ub.ProcessingModule.Status]):
     def __init__(self, pm: ProcessingRoutine):
         super().__init__()
         self.pm: ProcessingRoutine = pm
-        self.created_tasks: t.List[asyncio.Task] = []
+        self.created_tasks: typing.List[asyncio.Task] = []
 
     @pm_proxy.callback_in_pm('on_init')
-    @pm_proxy.set_status_in_pm(ub.ProcessingModule.Status.INITIALIZED)
+    @pm_proxy.set_status_in_pm(ubii.proto.ProcessingModule.Status.INITIALIZED)
     async def on_init(self, context: types.SimpleNamespace):
         """
         First lifecycle method called after :class:`~ubii.framework.processing.ProcessingRoutine` owning
@@ -663,7 +698,7 @@ class ProcessingProtocol(AbstractProtocol[ub.ProcessingModule.Status]):
         context.nursery = self.task_nursery or context.loop
 
         # callable to create input_mapping dict from module io iterable
-        make_input_dict: util.make_dict[t.Tuple[str, str], Topic] = util.make_dict(
+        make_input_dict: util.make_dict[typing.Tuple[str, str], topics.Topic] = util.make_dict(
             key=lambda io: (io.internal_name, io.message_format),
             value=self.pm.get_input_topic,
             filter_none=True
@@ -671,7 +706,7 @@ class ProcessingProtocol(AbstractProtocol[ub.ProcessingModule.Status]):
 
         # wait for applied input mapping
         async with self.pm.change_specs:
-            inputs = await self.pm.change_specs.wait_for(partial(make_input_dict, self.pm.inputs))
+            inputs = await self.pm.change_specs.wait_for(functools.partial(make_input_dict, self.pm.inputs))
 
         invalid_inputs = [input_values for input_values in inputs if not all(input_values)]
         if invalid_inputs:
@@ -697,15 +732,15 @@ class ProcessingProtocol(AbstractProtocol[ub.ProcessingModule.Status]):
         await self.state.set(PM_STAT.CREATED)
 
     @pm_proxy.callback_in_pm('on_created')
-    @pm_proxy.set_status_in_pm(ub.ProcessingModule.Status.CREATED)
+    @pm_proxy.set_status_in_pm(ubii.proto.ProcessingModule.Status.CREATED)
     async def on_created(self, context):
         """
         Calls :meth:`~ubii.framework.processing.ProcessingRoutine.on_created` and sets the
         :attr:`~ubii.framework.processing.ProcessingRoutine.status` to :attr:`ub.ProcessingModule.Status.CREATED`.
 
         Prepares the context for further processing:
-        -   creates inputs (``context.inputs``)
-        -   Prepare output mapping (`context.outputs``)
+        -   creates inputs (`context.inputs`)
+        -   Prepare output mapping (`context.outputs`)
 
         Waits for ``context.processing_trigger`` then extracts inputs from ``context.scheduler`` (using
         :meth:`.helpers.write_scheduler_data_to_context`) and changes
@@ -718,7 +753,7 @@ class ProcessingProtocol(AbstractProtocol[ub.ProcessingModule.Status]):
 
         # create outputs (use dataclass to get better error reporting)
         fields = [
-            (out.internal_name, t.Any, dataclasses.field(default=self.helpers.__no_output__))
+            (out.internal_name, typing.Any, dataclasses.field(default=self.helpers.__no_output__))
             for out in self.pm.outputs
         ]
         outputs = dataclasses.make_dataclass('outputs', fields, init=True)  # noqa
@@ -734,11 +769,12 @@ class ProcessingProtocol(AbstractProtocol[ub.ProcessingModule.Status]):
         await self.state.set(PM_STAT.PROCESSING)
 
     @pm_proxy.callback_in_pm('on_processing')
-    @pm_proxy.set_status_in_pm(ub.ProcessingModule.Status.PROCESSING)
+    @pm_proxy.set_status_in_pm(ubii.proto.ProcessingModule.Status.PROCESSING)
     async def on_processing(self, context):
         """
         Calls :meth:`~ubii.framework.processing.ProcessingRoutine.on_processing` and sets the
-        :attr:`~ubii.framework.processing.ProcessingRoutine.status` to :attr:`ub.ProcessingModule.Status.PROCESSING`.
+        :attr:`~ubii.framework.processing.ProcessingRoutine.status` to
+        :attr:`ubii.proto.ProcessingModule.Status.PROCESSING`.
 
         -   publishes computed outputs (see :meth:`.helpers.publish_outputs_to_topics`)
         -   adjusts the ``context.scheduler`` callback (previously used to simply trigger processing) to
@@ -758,13 +794,13 @@ class ProcessingProtocol(AbstractProtocol[ub.ProcessingModule.Status]):
 
         # we just change the scheduler callback to get inputs and publish outputs.
         context.scheduler.callback = util.function_chain(
-            partial(self.helpers.write_scheduler_data_to_context, context.scheduler, context),
-            partial(self.pm.on_processing, context),
-            partial(self.helpers.publish_outputs_to_topics, self.pm, context),
+            functools.partial(self.helpers.write_scheduler_data_to_context, context.scheduler, context),
+            functools.partial(self.pm.on_processing, context),
+            functools.partial(self.helpers.publish_outputs_to_topics, self.pm, context),
         )
 
     @pm_proxy.callback_in_pm('on_halted')
-    @pm_proxy.set_status_in_pm(ub.ProcessingModule.Status.HALTED)
+    @pm_proxy.set_status_in_pm(ubii.proto.ProcessingModule.Status.HALTED)
     async def on_halted(self, context):
         """
         Calls :meth:`~ubii.framework.processing.ProcessingRoutine.on_halted` and sets the
@@ -778,17 +814,17 @@ class ProcessingProtocol(AbstractProtocol[ub.ProcessingModule.Status]):
         context.scheduler.halt()
 
     @pm_proxy.callback_in_pm('on_destroyed')
-    @pm_proxy.set_status_in_pm(ub.ProcessingModule.Status.DESTROYED)
+    @pm_proxy.set_status_in_pm(ubii.proto.ProcessingModule.Status.DESTROYED)
     async def on_destroyed(self, context):
         """
         Calls :meth:`~ubii.framework.processing.ProcessingRoutine.on_destroyed` and sets the
         :attr:`~ubii.framework.processing.ProcessingRoutine.status` to :attr:`ub.ProcessingModule.Status.DESTROYED`.
 
-        Awaits cancelation of  all tasks that have been started by this protocol.
+        Awaits cancellation of  all tasks that have been started by this protocol.
         """
         for task in self.created_tasks:
             task.cancel()
-            with suppress(asyncio.CancelledError):
+            with contextlib.suppress(asyncio.CancelledError):
                 await task
 
     state_changes = {

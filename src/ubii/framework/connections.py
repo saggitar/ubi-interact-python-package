@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import functools
 import json
 import logging
@@ -9,14 +10,15 @@ import typing
 import typing as t
 import urllib.parse
 import warnings
-from contextlib import asynccontextmanager
 
 import aiohttp
 
 import ubii.proto as ub
-from ubii.framework.logging import debug
-from ubii.framework.services import ServiceConnection
-from ubii.framework.topics import DataConnection
+from . import (
+    services,
+    topics,
+    util
+)
 
 local_ip = socket.gethostbyname(socket.gethostname())
 log = logging.getLogger(__name__)
@@ -61,10 +63,10 @@ class AIOHttpConnection:
         self._session_is_set.clear()
 
 
-class AIOHttpWebsocketConnection(AIOHttpConnection, DataConnection):
+class AIOHttpWebsocketConnection(AIOHttpConnection, topics.DataConnection):
     class Events(typing.NamedTuple):
-        connected: asyncio.Event() = asyncio.Event()
-        disconnected: asyncio.Event() = asyncio.Event()
+        connected: asyncio.Event = asyncio.Event()
+        disconnected: asyncio.Event = asyncio.Event()
 
     log_socket_in = logging.getLogger(f"{__name__}.in.socket")
     log_socket_out = logging.getLogger(f"{__name__}.out.socket")
@@ -79,7 +81,7 @@ class AIOHttpWebsocketConnection(AIOHttpConnection, DataConnection):
         self._stream = self._stream_coro()
         self.events: AIOHttpWebsocketConnection.Events = self.Events()
 
-    @asynccontextmanager
+    @contextlib.asynccontextmanager
     async def connect(self, client_id: str):
         if self.events.connected.is_set():
             warnings.warn(f"{self} is already connected.")
@@ -163,7 +165,7 @@ class AIOHttpWebsocketConnection(AIOHttpConnection, DataConnection):
         await asyncio.wait_for(self.ws.send_bytes(ub.TopicData.serialize(data)), timeout=timeout)
 
 
-class AIOHttpRestConnection(AIOHttpConnection, ServiceConnection):
+class AIOHttpRestConnection(AIOHttpConnection, services.ServiceConnection):
     """
     Send Service Request Messages
     """
@@ -180,7 +182,7 @@ def aiohttp_session():
     We create a aiohttp session with our custom json encoder and some logging handlings
     in debug mode
     """
-    if debug():
+    if util.debug():
         trace_config = aiohttp.TraceConfig()
 
         async def on_request_start(session, context, params):

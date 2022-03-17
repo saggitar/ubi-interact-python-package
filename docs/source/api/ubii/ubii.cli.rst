@@ -8,8 +8,7 @@ ubii.cli package
 Submodules
 ----------
 
-ubii.cli.main module
---------------------
+.. toctree::
+   :maxdepth: 4
 
-.. automodule:: ubii.cli.main
-   :members:
+   ubii.cli.main

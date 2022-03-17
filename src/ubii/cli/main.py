@@ -1,8 +1,12 @@
 import argparse
 import asyncio
 import logging
-from pathlib import Path
 import warnings
+from pathlib import Path
+from typing import (
+    List,
+    Any
+)
 
 try:
     from importlib import metadata
@@ -10,6 +14,8 @@ except ImportError:  # for Python<3.8
     import importlib_metadata as metadata
 
 log = logging.getLogger(__name__)
+
+SETUPTOOLS_PM_ENTRYPOINT_KEY = 'ubii.processing_modules'
 
 
 def import_pm(import_name: str):
@@ -36,11 +42,17 @@ def log_to_folder(log_config):
     return log_config
 
 
-def load_pm_entry_points():
+def load_pm_entry_points() -> List[Any]:
+    """
+    Loads setuptools entrypoints for key :attr:`.SETUPTOOLS_PM_ENTRYPOINT_KEY`
+
+    Returns:
+        list of :class:`~ubii.framework.processing.ProcessingRoutine` types
+    """
     with warnings.catch_warnings():
         # this deprecation is discussed a lot
-        warnings.simplefilter("ignore") 
-        return [entry.load() for entry in metadata.entry_points().get('ubii.processing_modules', ())]
+        warnings.simplefilter("ignore")
+        return [entry.load() for entry in metadata.entry_points().get(SETUPTOOLS_PM_ENTRYPOINT_KEY, ())]
 
 
 def main():

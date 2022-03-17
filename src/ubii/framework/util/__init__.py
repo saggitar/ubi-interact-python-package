@@ -1,12 +1,14 @@
+from __future__ import annotations
+
 from codestare.async_utils import (
     accessor,
     condition_property,
     make_async,
     CoroutineWrapper,
     TaskNursery,
+    async_exit_on_exc,
     RegistryMeta,
     Registry,
-    async_exit_on_exc,
 )
 from .collections import merge_dicts
 from .enum import EnumMatcher
@@ -25,7 +27,25 @@ from .functools import (
     async_compose,
     attach_info,
     AbstractAnnotations,
+    document_decorator,
 )
+
+__DEBUG__ = False
+
+
+def debug(enabled: bool | None = None):
+    """
+    Call without arguments to get current debug state, pass truthy value to set debug mode.
+
+    :param enabled: If passed, turns debug mode on or off
+    :return:
+    """
+    global __DEBUG__
+    if enabled is not None:
+        __DEBUG__ = bool(enabled)
+
+    return __DEBUG__
+
 
 __all__ = (
     "accessor",
@@ -51,4 +71,6 @@ __all__ = (
     "attach_info",
     "calc_delta",
     "AbstractAnnotations",
+    "debug",
+    "document_decorator"
 )

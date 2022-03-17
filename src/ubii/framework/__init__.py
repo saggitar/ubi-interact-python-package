@@ -11,5 +11,5 @@ from .errors import (
 from .logging import (
     logging_setup,
     parse_args,
-    debug,
 )
+from .util import debug

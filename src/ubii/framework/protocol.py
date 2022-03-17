@@ -2,11 +2,19 @@ from __future__ import annotations
 
 import abc
 import asyncio
+import functools
 import logging
 import types
-import typing as t
 import warnings
-from functools import partial
+from typing import (
+    Awaitable,
+    Generic,
+    Coroutine,
+    Mapping,
+    Any,
+    Callable,
+    Tuple,
+)
 
 try:
     from functools import cached_property
@@ -16,16 +24,26 @@ except ImportError:
 from . import (
     util as util_,
 )
-from .util.typing import T_EnumFlag, Descriptor
+from .util.typing import (
+    T_EnumFlag,
+    Descriptor,
+)
 
-Callback = t.Callable[..., t.Coroutine[t.Any, t.Any, None]]
-_StateChange = t.Tuple[T_EnumFlag, T_EnumFlag]
+Callback = Callable[..., Coroutine[Any, Any, None]]
+_StateChange = Tuple[T_EnumFlag, T_EnumFlag]
 
 log = logging.getLogger(__name__)
 
 
-class AbstractProtocol(t.Generic[T_EnumFlag], abc.ABC):
-    state_changes: t.Mapping[t.Tuple[T_EnumFlag | None, ...], Callback]
+class AbstractProtocol(Generic[T_EnumFlag], abc.ABC):
+    """
+    ABC to implement a state machine with async callbacks
+    """
+
+    state_changes: Mapping[Tuple[T_EnumFlag | None, ...], Callback]
+    """
+    Assign to this mapping in your concrete implementation to define callbacks for state changes.
+    """
     starting_state: T_EnumFlag
     end_state: T_EnumFlag
 
@@ -40,8 +58,11 @@ class AbstractProtocol(t.Generic[T_EnumFlag], abc.ABC):
         self._state = None
         self._run = None
         self.task_nursery = util_.TaskNursery(name=f"Task Nursery for {self}")
-        self.get_state_change_callback = partial(util_.enum.EnumMatcher.get_matching_value,
-                                                 mapping=self.state_changes)
+        """
+        Blub
+        """
+        self.get_state_change_callback = functools.partial(util_.enum.EnumMatcher.get_matching_value,
+                                                           mapping=self.state_changes)
 
     def _get_state(self) -> T_EnumFlag:
         return self._state
@@ -73,7 +94,7 @@ class AbstractProtocol(t.Generic[T_EnumFlag], abc.ABC):
         schedules async tasks during its teardown.
 
         Returns:
-            the started protocol
+            reference to `self` -- the started protocol
         """
         if not self._run:
             self._run = self.task_nursery.create_task(RunProtocol(self))
@@ -124,7 +145,7 @@ class RunProtocol(util_.CoroutineWrapper):
         assert isinstance(cb, Descriptor), f"{cb} needs to be a descriptor, e.g. a function"
         coro = cb.__get__(self.protocol, type(self.protocol))(ctx)
 
-        if not isinstance(coro, t.Awaitable):
+        if not isinstance(coro, Awaitable):
             raise RuntimeError(f"{cb} is not awaitable (not using `async def`?)")
 
         return await coro

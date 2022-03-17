@@ -1,35 +1,42 @@
 from __future__ import annotations
 
 import logging
-import typing as t
+from typing import (
+    Type,
+    Awaitable,
+    Dict,
+    AsyncContextManager,
+    Any,
+    Tuple,
+    Generator,
+)
 
-import ubii.framework.client
-from . import protocol as default_protocol_
 from ubii.framework import (
     client as client_,
     constants as constants_,
     protocol as protocol_,
 )
 from ubii.framework.util.typing import Protocol
+from . import protocol as default_protocol_
 
 log = logging.getLogger(__name__)
 
 
-class connect(t.Awaitable[client_.UbiiClient[ubii.framework.client.AbstractClientProtocol]],
-              t.AsyncContextManager[client_.UbiiClient[ubii.framework.client.AbstractClientProtocol]]):
+class connect(Awaitable[client_.UbiiClient[client_.AbstractClientProtocol]],
+              AsyncContextManager[client_.UbiiClient[client_.AbstractClientProtocol]]):
     class ClientFactory(Protocol):
         def __call__(self,
                      instance: connect,
                      *,
-                     client_type: t.Type[client_.UbiiClient],
-                     protocol_type: t.Type[protocol_.AbstractProtocol]) -> client_.UbiiClient[
+                     client_type: Type[client_.UbiiClient],
+                     protocol_type: Type[protocol_.AbstractProtocol]) -> client_.UbiiClient[
             protocol_.AbstractProtocol]: ...
 
     def __init__(self,
                  url=None,
                  config: constants_.UbiiConfig = constants_.GLOBAL_CONFIG,
-                 client_type: t.Type[client_.UbiiClient] = client_.UbiiClient,
-                 protocol_type: t.Type[protocol_.AbstractProtocol] = default_protocol_.DefaultProtocol):
+                 client_type: Type[client_.UbiiClient] = client_.UbiiClient,
+                 protocol_type: Type[protocol_.AbstractProtocol] = default_protocol_.DefaultProtocol):
         if url is not None:
             config.DEFAULT_SERVICE_URL = url
         self.config = config
@@ -51,7 +58,7 @@ class connect(t.Awaitable[client_.UbiiClient[ubii.framework.client.AbstractClien
         protocol.client = client
         return client
 
-    def __await__(self) -> t.Generator[t.Any, None, client_.UbiiClient]:
+    def __await__(self) -> Generator[Any, None, client_.UbiiClient]:
         return self.client.__await__()
 
     def __aenter__(self):
@@ -66,6 +73,6 @@ class connect(t.Awaitable[client_.UbiiClient[ubii.framework.client.AbstractClien
     def __exit__(self, *exc_info):
         self.client.protocol.task_nursery.create_task(self.client.protocol.stop())
 
-    client_factories: t.Dict[t.Tuple[t.Type[client_.UbiiClient], t.Type[protocol_.AbstractProtocol]], ClientFactory] = {
+    client_factories: Dict[Tuple[Type[client_.UbiiClient], Type[protocol_.AbstractProtocol]], ClientFactory] = {
         (client_.UbiiClient, default_protocol_.DefaultProtocol): default_create
     }

@@ -14,6 +14,9 @@ __protobuf__ = ub.__protobuf__
 
 
 class UbiiError(ub.Error, Exception, metaclass=ub.ProtoMeta):
+    """
+    Blub
+    """
     @classmethod
     @lru_cache
     def rule(cls):
@@ -35,7 +38,9 @@ class UbiiError(ub.Error, Exception, metaclass=ub.ProtoMeta):
 
 
 class SessionRuntimeStopServiceError(UbiiError):
-    pass
+    """
+    Blub
+    """
 
 
 class ErrorRule(MessageRule):

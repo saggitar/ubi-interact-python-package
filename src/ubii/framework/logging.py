@@ -1,32 +1,35 @@
 from __future__ import annotations
 
 import argparse
+import collections
+import importlib.resources
 import logging.config
-import sys
-import typing as t
-from collections import namedtuple
-from importlib.resources import read_text
+from typing import (
+    Dict,
+    List,
+)
 
+import sys
 import yaml
 
 from . import util
 
-__config__ = yaml.safe_load(read_text(util, 'logging_config.yaml'))
+__config__ = yaml.safe_load(importlib.resources.read_text(util, 'logging_config.yaml'))
 
 
 class _logging_setup:
-    log_config = namedtuple('log_config', ['config', 'level', 'warning_filter'])
+    log_config = collections.namedtuple('log_config', ['config', 'level', 'warning_filter'])
 
     def __init__(self, base_config=__config__, log_level=logging.INFO, warning_filter: str = 'always'):
         self.base_config = self.log_config(config=base_config, warning_filter=warning_filter, level=log_level)
-        self._configs: t.List[_logging_setup.log_config] = [self.base_config]
+        self._configs: List[_logging_setup.log_config] = [self.base_config]
         self._applied = False
 
     @property
     def effective_config(self):
         return self.log_config(**self._configs[-1]._asdict())
 
-    def change(self, config: t.Dict | None = None, verbosity: int | None = None):
+    def change(self, config: Dict | None = None, verbosity: int | None = None):
         if config is None and verbosity is None:
             raise ValueError(f"All arguments are None, can' apply change to logging.")
 
@@ -94,28 +97,11 @@ def parse_args(parser=None):
     args = parser.parse_args()
 
     verbosity = logging.INFO - 10 * args.verbose
-    debug(args.debug)
+    util.debug(args.debug)
 
-    if debug():
+    if util.debug():
         verbosity = min(logging.DEBUG, verbosity)
 
     logging_setup.change(config=args.log_config, verbosity=verbosity)
 
     return args
-
-
-__DEBUG__ = False
-
-
-def debug(enabled: bool | None = None):
-    """
-    Call without arguments to get current debug state, pass truthy value to set debug mode.
-
-    :param enabled: If passed, turns debug mode on or off
-    :return:
-    """
-    global __DEBUG__
-    if enabled is not None:
-        __DEBUG__ = bool(enabled)
-
-    return __DEBUG__

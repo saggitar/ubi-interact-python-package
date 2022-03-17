@@ -67,7 +67,7 @@ def service_url_env():
 
 @pytest.fixture(autouse=True, scope='session')
 def enable_debug():
-    from ubii.framework.logging import debug
+    from ubii.framework import debug
     previous = debug()
     debug(enabled=True)
     yield
@@ -128,7 +128,7 @@ async def start_session(client_spec):
 
         nonlocal _started
         assert client.implements(Services)
-        response = await client[Services].services.session_runtime_start(session=session)
+        response = await client[Services].service_map.session_runtime_start(session=session)
         await asyncio.sleep(3)  # session needs to start up
         _started.append(response.session)
 

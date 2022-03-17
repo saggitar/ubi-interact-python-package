@@ -1,17 +1,17 @@
 from __future__ import annotations
 
 import typing as t
+
 from itertools import chain
 
 from .typing import T_EnumFlag, T
 
 
 class EnumMatcher:
-    _enum_tuple = t.Tuple[T_EnumFlag, ...]
     _no_default = object()
 
     @classmethod
-    def matches(cls, base: _enum_tuple, query: _enum_tuple) -> bool:
+    def matches(cls, base: t.Tuple[T_EnumFlag, ...], query: t.Tuple[T_EnumFlag, ...]) -> bool:
         if not len(base) == len(query):
             return False
 
@@ -24,8 +24,8 @@ class EnumMatcher:
         return all(b & q == q for b, q in zip(base, query))
 
     @classmethod
-    def get_matching_value(cls, key: _enum_tuple, default: t.Any = _no_default, *,
-                           mapping: t.Mapping[_enum_tuple, T],
+    def get_matching_value(cls, key: t.Tuple[T_EnumFlag, ...], default: t.Any = _no_default, *,
+                           mapping: t.Mapping[t.Tuple[T_EnumFlag, ...], T],
                            ) -> T:
         matching = [value for enums, value in mapping.items() if cls.matches(enums, key)]
         if len(matching) != 1 and default is EnumMatcher._no_default:

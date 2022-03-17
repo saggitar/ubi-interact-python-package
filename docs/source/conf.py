@@ -36,15 +36,18 @@ url = metadata['Home-Page']
 # The full version, including alpha/beta/rc tags
 release = metadata['version']
 
+github_username = 'saggitar'
+github_repository = project
+
 # -- General configuration ---------------------------------------------------
 
 # Add any Sphinx extension module names here, as strings. They can be
 # extensions coming with Sphinx (named 'sphinx.ext.*') or your custom
 # ones.
 extensions = [
+    'sphinx.ext.intersphinx',
     'sphinx.ext.autodoc',
     'sphinxcontrib.napoleon',
-    'sphinx.ext.intersphinx',
 ]
 
 # Add any paths that contain templates here, relative to this directory.
@@ -90,18 +93,23 @@ html_theme_options = {
 
 autodoc_default_options = {
     'member-order': 'bysource',
-    'members': True,
-    'undoc-members': True,
-    'show-inheritance': True,
-    'inherited-members': False,
+    'show-inheritance': None,
+    'undoc-members': None,
 }
+modindex_common_prefix = ['ubii.']
 
 # autodoc_class_signature = 'separated'
 autodoc_inherit_docstrings = False
-napoleon_include_special_with_doc = False
+autodoc_typehints = 'signature'
+autodoc_typehints_format = 'short'
+autodoc_preserve_defaults = True  # sadly still buggy when defaults are tuples of dataclass types
+
+napoleon_include_special_with_doc = True
 napoleon_include_init_with_doc = True
 napoleon_include_private_with_doc = False
 napoleon_use_rtype = False
+napoleon_use_ivar = False
+napoleon_use_param = False
 
 intersphinx_mapping = {
     'python': ('https://docs.python.org/3', None),
@@ -110,10 +118,12 @@ intersphinx_mapping = {
     'msgs': ('https://ubii-msg-formats.readthedocs.io/en/feature-python/', None)
 }
 
+# default_role = 'any'
+
 #  --- patch __repr__ of wrapper classes
 from ubii.proto.util import patch_wrapper_class_repr
 
-patch_wrapper_class_repr()
+patch_wrapper_class_repr(max_len=120)
 
 # patch some errors in proto plus package
 from pkg_resources import parse_version
@@ -136,6 +146,5 @@ if parse_version('1.19.9') < proto_plus_version < parse_version('1.20.2'):
 
 
     proto.message.MessageMeta.__dir__ = patched_dir
-
 
 os.environ['SPHINX_DOC_BUILDING'] = 'True'

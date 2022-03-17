@@ -1,14 +1,16 @@
 from __future__ import annotations
 
+import asyncio
+import difflib
+import functools
+import inspect
+import pickle
+import re
+import typing as t
+import warnings
 from collections import namedtuple
 
-import asyncio
-import pickle
 import sys
-import typing as t
-from difflib import SequenceMatcher
-from functools import partial, wraps, reduce
-from warnings import warn
 
 import ubii.proto as ub
 from . import RegistryMeta
@@ -16,11 +18,66 @@ from .typing import S, T, ExcInfo
 
 
 def similar(choices, item, cutoff=0.70):
-    _similarity = lambda k: SequenceMatcher(None, k, item).ratio()  # noqa
+    _similarity = lambda k: difflib.SequenceMatcher(None, k, item).ratio()  # noqa
     return list(sorted(filter(lambda item: _similarity(item) > cutoff, choices), key=_similarity, reverse=True))
 
 
 T_Callable = t.TypeVar('T_Callable', bound=t.Callable[..., t.Any])
+
+
+class _append_doc:
+    """
+    Helper to append information to docstrings of callables
+    """
+    _whitespace = re.compile(r'^( +)[^\s]+', re.MULTILINE)
+
+    def __init__(self, cb):
+        self.cb = cb
+
+    def __call__(self, info: str):
+        doc = self.cb.__doc__ or ''
+        orig_indents = self._whitespace.findall(doc) or ['']
+        info_indents = self._whitespace.findall(info) or ['']
+
+        # check if indents are consistent:
+        assert all(
+            indent.startswith(orig_indents[0]) for indent in orig_indents
+        ), f"Inconsistent indents for {self.cb}.__doc__"
+        assert all(
+            indent.startswith(info_indents[0]) for indent in info_indents
+        ), f"Inconsistent indents for {info}"
+
+        replace = functools.partial(re.compile(f"^{info_indents[0]}", re.MULTILINE).sub, orig_indents[0])
+        self.cb.__doc__ = doc + '\n'.join(map(replace, info.split('\n')))
+
+
+def document_decorator(decorator):
+    def inner(decorated):
+        # if not os.environ.get('SPHINX_DOC_BUILDING'):
+        #     return decorated
+        is_async = asyncio.iscoroutinefunction(decorated)
+        sig = inspect.signature(decorated)
+
+        if is_async:
+            ret_type = '[' + sig.return_annotation.strip("'") + ']' if sig.return_annotation != sig.empty else ''
+            decorated.__annotations__['return'] = f"Awaitable[{ret_type}"
+
+        info = {
+            'decorator':
+                f"{decorator.__module__}.{decorator.__qualname__}" if not isinstance(decorator, str) else decorator,
+            'signature':
+                "{}def {}{}".format("async " if is_async else '', decorated.__name__, sig)
+        }
+
+        _append_doc(decorated)(
+            """
+            This callable had the :obj:`~{decorator}` decorator applied.
+            Original signature: ``{signature}``
+            """.format(**info)
+        )
+        return decorated
+
+    return inner
 
 
 class calc_delta:
@@ -35,13 +92,27 @@ class calc_delta:
 
 
 class hook(t.Generic[T_Callable]):
+    """
+    This decorator gives the decorated callable the ability to
+    :meth:`register decorators<ubii.framework.util.register_decorator>`, i.e. define a consistent ubii to apply
+    decorators to the decorated callable.
+
+    Example:
+
+        You have some callable which is predestined to be slightly altered later. Instead of monkey patching it later,
+        you can preemptively define that callable to be 'alterable' by converting it into a "hook". This is slightly
+        different compared to the way a "hook" normally works (usually with a set of callbacks that can change)
+        to give even more control about the hook behaviour.
+
+        >>>
+    """
     __name__: str
 
     def __init__(self: hook[T_Callable], func: T_Callable, decorators=None):
         self.func = func
         self._decorators = decorators or set()
         self._applied = None
-        wraps(func)(self)
+        functools.wraps(func)(self)
 
     @property
     def decorators(self):
@@ -67,22 +138,70 @@ class hook(t.Generic[T_Callable]):
         if instance is None:
             return self
 
-        return partial(self, instance)
+        return functools.partial(self, instance)
 
 
 class registry(t.Generic[S, T]):
-    def __init__(self: registry[S, T], instance_key: t.Callable[[T], S], fn: t.Callable[..., T]):
-        self.key = instance_key
-        self.func = fn
+    """
+    Decorator to register every call to another callable
+
+    Attributes:
+        fn (Callable[..., T]): wrapped callable
+        key (Callable[[T], S]): computes keys for results of :attr:`.fn` to cache them inside :attr:`.registry`
+
+    Example:
+
+        Let's say we have another decorator that does some simple task::
+
+            >>> import functools
+
+            >>> def my_decorator(func):
+            ...     @functools.wraps(func)
+            ...     def inner(*args, **kwargs):
+            ...         print("Foo")
+            ...         return func(*args, **kwargs)
+            ...     return inner
+            ...
+
+        We want to create a new decorator that does the same but keeps track of every
+        decorated function ::
+
+            >>> my_decorator_registry = registry(key=lambda func: func.__name__, fn=my_decorator)
+            >>> @my_decorator_registry
+            ... def test_function(foo: str):
+            ...     print(foo)
+            ...
+            >>> my_decorator_registry.registry
+            {'test_function': <function test_function at (...)>}
+            >>> test_function("Bar")
+            Foo
+            Bar
+
+    """
+
+    def __init__(self: registry[S, T], key: t.Callable[[T], S], fn: t.Callable[..., T]):
+        """
+        This callable wraps the callable passed as `fn`, but caches results in :attr:`.registry`
+        with `key(result)` as key.
+
+        Args:
+            key: compute some hashable unique value for possible results of wrapped callable
+            fn: should produce uniquely differentiable results, if results are equal old cached values are overwritten
+        """
+        self.key = key
+        self.fn = fn
         self._registry: t.Dict[S, T] = {}
-        wraps(fn)(self)
+        functools.wraps(fn)(self)
 
     @property
-    def registry(self):
+    def registry(self) -> t.Dict[S, T]:
+        """
+        Mapping from computed :attr:`keys <.key>` -> results of all calls
+        """
         return self._registry
 
     def __call__(self, *args, **kwargs):
-        instance = self.func(*args, **kwargs)
+        instance = self.fn(*args, **kwargs)
         self._registry[self.key(instance)] = instance
         return instance
 
@@ -90,12 +209,12 @@ class registry(t.Generic[S, T]):
         if instance is None:
             return self
 
-        return partial(self, instance)
+        return functools.partial(self, instance)
 
 
 def exc_handler_decorator(handler: t.Callable[[ExcInfo], t.Awaitable[None | bool] | None | bool]):
     def decorator(fun):
-        @wraps(fun)
+        @functools.wraps(fun)
         async def _inner(*args, **kwargs):
             try:
                 result = fun(*args, **kwargs)
@@ -115,7 +234,7 @@ def exc_handler_decorator(handler: t.Callable[[ExcInfo], t.Awaitable[None | bool
 
 def log_call(logger):
     def decorator(fun):
-        @wraps(fun)
+        @functools.wraps(fun)
         def __inner(*args):
             logger.debug(f"called {fun}")
             return fun(*args)
@@ -152,7 +271,7 @@ class AbstractAnnotations:
         if self.wrap_marker in wrap_markers:
             return original_new
 
-        @wraps(original_new)
+        @functools.wraps(original_new)
         def wrapped(cls, *args, **kwargs):
             instance = original_new(cls, *args, **kwargs)
 
@@ -160,7 +279,8 @@ class AbstractAnnotations:
             # instance also has to have all required attributes
             missing = [name for name in getattr(cls, self.attr_name, []) if not hasattr(cls, name)]
             if missing:
-                raise TypeError(f"Can't create {cls} instance with missing class attribute[s] {', '.join(map(repr, missing))}")
+                raise TypeError(
+                    f"Can't create {cls} instance with missing class attribute[s] {', '.join(map(repr, missing))}")
 
             return instance
 
@@ -170,6 +290,10 @@ class AbstractAnnotations:
 
 
 class ProtoRegistry(ub.ProtoMeta, RegistryMeta):
+    """
+    Blub
+    """
+
     def __new__(mcs, *args, **kwargs):
         kls = super().__new__(mcs, *args, **kwargs)
         return kls
@@ -199,7 +323,7 @@ class ProtoRegistry(ub.ProtoMeta, RegistryMeta):
         for key, item in cls.registry.items():
             spec = specs.get(key)
             if not spec:
-                warn(f"No {cls} instance for key {key} registered, can't update")
+                warnings.warn(f"No {cls} instance for key {key} registered, can't update")
                 continue
 
             cls.copy_from(item, spec)
@@ -217,7 +341,7 @@ class function_chain:
         if instance is None:
             return self
 
-        return partial(self, instance)
+        return functools.partial(self, instance)
 
     @classmethod
     def reverse(cls, *funcs):
@@ -227,7 +351,7 @@ class function_chain:
 class compose:
     def __init__(self, *fns):
         self._info = ', '.join(map(repr, fns))
-        self.reduced = reduce(lambda g, f: lambda *a: f(g(*a)), fns) if fns else (lambda x: x)
+        self.reduced = functools.reduce(lambda g, f: lambda *a: f(g(*a)), fns) if fns else (lambda x: x)
 
     def __call__(self, *args):
         return self.reduced(*args)
@@ -281,7 +405,7 @@ class async_compose:
 
             return composed
 
-        self._reduced = reduce(__compose, fns)
+        self._reduced = functools.reduce(__compose, fns)
 
     def __call__(self, *args):
         return self._reduced(*args)
@@ -321,4 +445,5 @@ __all__ = (
     'async_compose',
     'attach_info',
     'calc_delta',
+    'AbstractAnnotations'
 )

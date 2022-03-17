@@ -2,19 +2,23 @@ from __future__ import annotations
 
 import abc
 import copy
+import functools
 import logging
-from typing import TypeVar, Generic, Iterator, Mapping, MutableMapping, Union
-
-try:
-    from typing import Protocol
-except ImportError:
-    from typing_extensions import Protocol
-
-from functools import lru_cache, partial
+from typing import (
+    TypeVar,
+    Generic,
+    Iterator,
+    Mapping,
+    MutableMapping,
+    Union,
+)
 
 import ubii.proto as ub
-from . import util
-from .logging import debug
+from . import (
+    util,
+    debug,
+)
+from .util.typing import Protocol
 
 __protobuf__ = ub.__protobuf__
 log = logging.getLogger(__name__)
@@ -143,8 +147,8 @@ class ServiceMap(ub.ServiceList, Mapping[str, T_Service], Generic[T_Service],
         super().__init__(mapping=mapping, **kwargs)
 
         # apply the lru cache wrapper per instance since the ServiceMap itself is not hashable
-        self._make_service_call = lru_cache(maxsize=128, typed=False)(
-            partial(self._get_service_call, service_call_factory)
+        self._make_service_call = functools.lru_cache(maxsize=128, typed=False)(
+            functools.partial(self._get_service_call, service_call_factory)
         )
 
     def _get_service_call(self: 'ServiceMap[T_Service]', default_factory, topic) -> T_Service:

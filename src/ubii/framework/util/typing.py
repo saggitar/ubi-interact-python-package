@@ -1,9 +1,15 @@
 from __future__ import annotations
 
 import enum
-import typing as t
-from typing import TypeVar, Type, Optional, Coroutine, Any, Callable, Tuple
-
+from typing import (
+    TypeVar,
+    Coroutine,
+    Any,
+    Callable,
+    Tuple,
+    Optional,
+    Type
+)
 
 try:
     from typing import runtime_checkable, Protocol
@@ -30,3 +36,25 @@ ExcInfo = Tuple[Optional[Type[T_Exception]], Optional[T_Exception], Any]
 class Descriptor(Protocol[T_co]):
     def __get__(self, instance: Any | None = ..., owner: Type[Any] | None = ...) -> T_co: ...
 
+
+@runtime_checkable
+class Documented(Protocol):
+    __doc__: str
+
+
+__all__ = (
+    'SimpleCoroutine',
+    'Decorator',
+    'ExcInfo',
+    'Descriptor',
+    'Documented',
+    'Protocol',
+    'runtime_checkable',
+    'T',
+    'S',
+    'R',
+    'T_Exception',
+    'T_EnumFlag',
+    'T_co',
+    'T_contra',
+)

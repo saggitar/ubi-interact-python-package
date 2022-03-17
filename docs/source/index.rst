@@ -43,10 +43,11 @@ API
 Know what you're looking for & just need API details? auto-generated API documentation is here:
 
 .. toctree::
-    :maxdepth: 1
-    :glob:
+   :maxdepth: 1
+   :glob:
 
-    api/*
+   api/ubii/ubii
+   api/codestare/codestare
 
 Indices and tables
 ==================
