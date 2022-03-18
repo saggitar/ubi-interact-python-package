@@ -577,7 +577,7 @@ class OnSubscribersChange:
             *   unsubscribe = True if subscriber count decreased to 0, False if it was increased to 1
 
         Args:
-            topic: The topic which owns this callable
+            topic: typically the topic which owns this callable
             change: old and new subscriber count
 
         """

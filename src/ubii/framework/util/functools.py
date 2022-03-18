@@ -4,9 +4,10 @@ import asyncio
 import difflib
 import functools
 import inspect
+import logging
 import pickle
 import re
-import typing as t
+import typing
 import warnings
 from collections import namedtuple
 
@@ -17,12 +18,40 @@ from . import RegistryMeta
 from .typing import S, T, ExcInfo
 
 
-def similar(choices, item, cutoff=0.70):
+def similar(choices: typing.Sequence, item: typing.Any, cutoff=0.70):
+    """
+    Use this e.g. if you think your users can't type <:
+
+    Example:
+
+        >>> >>> from ubii.framework import util
+        >>> choices = ["Foo", "Bar", "Foobar", "Thing"]
+        >>> util.similar(choices, "Thong")
+        ['Thing']
+        >>> util.similar(choices, "foo")
+        []
+        >>> util.similar(choices, "foo", cutoff=0.5)
+        ['Foo']
+        >>> util.similar(choices, "foo", cutoff=0.4)
+        ['Foo', 'Foobar']
+
+
+    Args:
+        choices: sequence of items
+        item: something not in ``choices`` but possibly 'similar'
+        cutoff: threshold for similarity measure
+
+    Returns:
+        elements from ``choices`` with :math:`similarity(choice, item) > cutoff`
+
+    See Also:
+        :class:`difflib.SequenceMatcher` -- used internally to compute similarity score
+    """
     _similarity = lambda k: difflib.SequenceMatcher(None, k, item).ratio()  # noqa
     return list(sorted(filter(lambda item: _similarity(item) > cutoff, choices), key=_similarity, reverse=True))
 
 
-T_Callable = t.TypeVar('T_Callable', bound=t.Callable[..., t.Any])
+T_Callable = typing.TypeVar('T_Callable', bound=typing.Callable[..., typing.Any])
 
 
 class _append_doc:
@@ -81,6 +110,25 @@ def document_decorator(decorator):
 
 
 class calc_delta:
+    """
+    Calculate difference between values produced by a factory function
+
+    Example:
+
+        >>> from ubii.framework import util
+        >>> value_factory = iter([1, 2, 70, 3, 4, 5]).__next__
+        >>> delta = util.calc_delta(value_factory)
+        >>> delta()
+        1
+        >>> delta()
+        68
+        >>> delta()
+        -67
+        >>> delta.value
+        3
+
+    """
+
     def __init__(self, get_value):
         self.get_value = get_value
         self.value = get_value()
@@ -91,35 +139,84 @@ class calc_delta:
         return self.value - previous
 
 
-class hook(t.Generic[T_Callable]):
+class hook(typing.Generic[T_Callable]):
     """
     This decorator gives the decorated callable the ability to
-    :meth:`register decorators<ubii.framework.util.register_decorator>`, i.e. define a consistent ubii to apply
+    :meth:`register decorators <.register_decorator>`, i.e. define a consistent API to apply
     decorators to the decorated callable.
+
+    Notes:
+
+        *   Decorators need not to be unique, registering the same decorator multiple times will apply it multiple times.
+        *   Decorators are applied at the first call to the :class:`hook`, i.e. the first call could take longer.
+        *   :attr:`hook.func` is the unmodified callable passed during initialization. If necessary one can clear the
+            cached 'applied' version of the callable with :meth:`hook.cache_clear`
+
+    Warning:
+        Decorator order depends on order of registration. The last registered decorator is applied first.
+        We have :math:`hook = d_0 \\circ d_1 \\circ ... \\circ d_n \\circ f` where :math:`0` to :math:`n` are the
+        indices of the decorator in :attr:`hook.decorators`
+
 
     Example:
 
         You have some callable which is predestined to be slightly altered later. Instead of monkey patching it later,
-        you can preemptively define that callable to be 'alterable' by converting it into a "hook". This is slightly
-        different compared to the way a "hook" normally works (usually with a set of callbacks that can change)
-        to give even more control about the hook behaviour.
+        you can preemptively define that callable to be 'alterable' by converting it into a `hook`.
 
-        >>>
+        >>> from ubii.framework import util
+        >>> value_factory = iter([1, 2, 70, 3, 4, 5]).__next__
+        >>> hook = util.hook(value_factory)
+        >>> hook()
+        1
+        >>> hook()
+        2
+        >>> hook()
+        70
+        >>> def decorator(func):
+        ...     def inner():
+        ...             return -1 * func()
+        ...     return inner
+        ...
+        >>> hook.register_decorator(decorator)
+        >>> hook()
+        -3
+        >>> hook()
+        -4
+
     """
     __name__: str
 
     def __init__(self: hook[T_Callable], func: T_Callable, decorators=None):
+        """
+        Create a hook from ``func``
+
+        Args:
+            func: a callable which should be more easily decorate-able
+            decorators: initial decorators -- optional
+        """
         self.func = func
-        self._decorators = decorators or set()
+        """
+        Reference to unmodified callable
+        """
+        self._decorators = list(decorators or ())
         self._applied = None
         functools.wraps(func)(self)
 
     @property
     def decorators(self):
+        """
+        List of registered decorators
+        """
         return self._decorators
 
-    def register_decorator(self, decorator):
-        self._decorators.add(decorator)
+    def register_decorator(self, decorator) -> None:
+        """
+        Add decorator to internal list of decorators and re-apply all decorators at next call
+
+        Args:
+            decorator: some callable
+        """
+        self._decorators.append(decorator)
         self.cache_clear()
 
     def cache_clear(self):
@@ -141,32 +238,25 @@ class hook(t.Generic[T_Callable]):
         return functools.partial(self, instance)
 
 
-class registry(t.Generic[S, T]):
+class registry(typing.Generic[S, T]):
     """
     Decorator to register every call to another callable
 
-    Attributes:
-        fn (Callable[..., T]): wrapped callable
-        key (Callable[[T], S]): computes keys for results of :attr:`.fn` to cache them inside :attr:`.registry`
-
     Example:
 
-        Let's say we have another decorator that does some simple task::
-
-            >>> import functools
+        Let's say we have another decorator that does some simple task
 
             >>> def my_decorator(func):
-            ...     @functools.wraps(func)
-            ...     def inner(*args, **kwargs):
+            ...     def inner(*args):
             ...         print("Foo")
-            ...         return func(*args, **kwargs)
+            ...         return func(*args)
             ...     return inner
-            ...
 
         We want to create a new decorator that does the same but keeps track of every
-        decorated function ::
+        decorated function
 
-            >>> my_decorator_registry = registry(key=lambda func: func.__name__, fn=my_decorator)
+            >>> from ubii.framework import util
+            >>> my_decorator_registry = util.registry(key=lambda func: func.__name__, fn=my_decorator)
             >>> @my_decorator_registry
             ... def test_function(foo: str):
             ...     print(foo)
@@ -179,24 +269,31 @@ class registry(t.Generic[S, T]):
 
     """
 
-    def __init__(self: registry[S, T], key: t.Callable[[T], S], fn: t.Callable[..., T]):
+    def __init__(self: registry[S, T], key: typing.Callable[[T], S], fn: typing.Callable[..., T]):
         """
         This callable wraps the callable passed as `fn`, but caches results in :attr:`.registry`
         with `key(result)` as key.
 
         Args:
-            key: compute some hashable unique value for possible results of wrapped callable
-            fn: should produce uniquely differentiable results, if results are equal old cached values are overwritten
+            key: computes some hashable unique value for possible results of wrapped callable
+            fn: if this callable returns non-unique results, old cached values are technically overwritten since the
+                ``key`` returns the same value for the same input by definition
         """
         self.key = key
+        """
+        computes keys for results of :attr:`.fn` to cache them inside :attr:`.registry`
+        """
         self.fn = fn
-        self._registry: t.Dict[S, T] = {}
+        """
+        wrapped callable
+        """
+        self._registry: typing.Dict[S, T] = {}
         functools.wraps(fn)(self)
 
     @property
-    def registry(self) -> t.Dict[S, T]:
+    def registry(self) -> typing.Dict[S, T]:
         """
-        Mapping from computed :attr:`keys <.key>` -> results of all calls
+        Mapping :math:`key \\rightarrow result` from computed :attr:`key(result) <.key>` of all calls
         """
         return self._registry
 
@@ -212,7 +309,42 @@ class registry(t.Generic[S, T]):
         return functools.partial(self, instance)
 
 
-def exc_handler_decorator(handler: t.Callable[[ExcInfo], t.Awaitable[None | bool] | None | bool]):
+def exc_handler_decorator(handler: typing.Callable[[ExcInfo], typing.Awaitable[None | bool] | None | bool]):
+    """
+    This callable takes an 'exception handler' i.e. a callable that processes results of :func:`sys.exc_info`
+    and converts it to a decorator that can be itself applied to ``async` callables to handle their exceptions.
+
+    Example:
+
+        >>> def handler(*exc_info):
+        ...     if exc_info:
+        ...             print(f"Got exception {exc_info[1]}")
+
+        >>> from ubii.framework import util
+        >>> handler_deco = util.exc_handler_decorator(handler)
+        >>> @handler_deco
+        ... async def foo(value):
+        ...     print(5 // value)
+
+        >>> async def main():
+        ...     for value in [0,1,2,0,-2]:
+        ...             await foo(value)
+
+        >>> import asyncio
+        >>> asyncio.run(main())
+        Got exception integer division or modulo by zero
+        5
+        2
+        Got exception integer division or modulo by zero
+        -3
+
+    Args:
+        handler: an exception handler callable
+
+    Returns:
+        decorator to catch exceptions from ``async`` methods
+
+    """
     def decorator(fun):
         @functools.wraps(fun)
         async def _inner(*args, **kwargs):
@@ -232,7 +364,14 @@ def exc_handler_decorator(handler: t.Callable[[ExcInfo], t.Awaitable[None | bool
     return decorator
 
 
-def log_call(logger):
+def log_call(logger: logging.Logger):
+    """
+    Args:
+        logger: calls are logged as :meth:`logging.Logger.debug`
+
+    Returns:
+        A decorator to log calls to decorated callable to ``logger``
+    """
     def decorator(fun):
         @functools.wraps(fun)
         def __inner(*args):
@@ -291,7 +430,12 @@ class AbstractAnnotations:
 
 class ProtoRegistry(ub.ProtoMeta, RegistryMeta):
     """
-    Blub
+    Instances for types that have this metaclass are registered, and can be serialized / deserialized
+    according to their protobuf specifications.
+
+    See Also:
+        :class:`~codestare.async_utils.helpers.RegistryMeta` -- the :class:`ProtoRegistry` simply adds the serialization
+            to the mechanisms for registration of instances inherited from here
     """
 
     def __new__(mcs, *args, **kwargs):
@@ -301,21 +445,25 @@ class ProtoRegistry(ub.ProtoMeta, RegistryMeta):
     def _serialize_all(cls):
         return {key: cls.serialize(obj) for key, obj in cls.registry.items()}
 
-    def _deserialize_all(cls, mapping: t.Mapping):
+    def _deserialize_all(cls, mapping: typing.Mapping):
         return {key: cls.deserialize(obj) for key, obj in mapping.items()}
 
     def save_specs(cls, path):
         """
-        Serialize all registered Protocol Buffer Wrapper objects
-        :param path:
-        :type path:
-        :return:
-        :rtype:
+        Serialize all registered Protocol Buffer Wrapper objects and pickle the results to ``path``
         """
         with open(path, 'wb') as file:
             pickle.dump(cls._serialize_all(), file)
 
-    def update_specs(cls, path):
+    def update_specs(cls, path) -> None:
+        """
+        Loads specs from pickled file, updates all registered instances according to their specification
+        from the pickled messages.
+
+        Args:
+            path: load binary pickle file from here
+
+        """
         with open(path, 'rb') as file:
             loaded = pickle.load(file)
 
@@ -330,8 +478,21 @@ class ProtoRegistry(ub.ProtoMeta, RegistryMeta):
 
 
 class function_chain:
+    """
+    Generates a callable that calls multiple functions in a defined order with same arguments
+
+    Example:
+
+        >>>
+
+    See Also:
+        :class:`compose` -- if you want to compose functions instead of passing the same arguments to each
+    """
     def __init__(self, *funcs):
         self.funcs = funcs
+        """
+        Tuple of functions that need to be applied
+        """
 
     def __call__(self, *args):
         for f in self.funcs:
@@ -361,7 +522,7 @@ class compose:
 
 
 class awaitable_predicate:
-    def __init__(self, predicate: t.Callable[[], bool], condition: asyncio.Condition | None = None):
+    def __init__(self, predicate: typing.Callable[[], bool], condition: asyncio.Condition | None = None):
         self.condition = condition or asyncio.Condition()
         self.predicate = predicate
         self.waiting = None
@@ -380,16 +541,16 @@ class awaitable_predicate:
         return self.predicate()
 
 
-class make_dict(t.Generic[S, T]):
+class make_dict(typing.Generic[S, T]):
     def __init__(self: make_dict[S, T],
-                 key: t.Callable[[t.Any], S],
-                 value: t.Callable[[t.Any], T],
+                 key: typing.Callable[[typing.Any], S],
+                 value: typing.Callable[[typing.Any], T],
                  filter_none=False):
         self._key = key
         self._value = value
         self._filter = filter_none
 
-    def __call__(self, iterable: t.Iterable) -> t.Dict[S, T]:
+    def __call__(self, iterable: typing.Iterable) -> typing.Dict[S, T]:
         return {
             self._key(item): self._value(item)
             for item in iterable
@@ -399,7 +560,8 @@ class make_dict(t.Generic[S, T]):
 
 class async_compose:
     def __init__(self, *fns):
-        def __compose(g: t.Callable[[t.Any], t.Coroutine], f: t.Callable[[t.Any], t.Coroutine]):
+        def __compose(g: typing.Callable[[typing.Any], typing.Coroutine],
+                      f: typing.Callable[[typing.Any], typing.Coroutine]):
             async def composed(*args):
                 return await(f(await g(*args)))
 
@@ -414,8 +576,8 @@ class async_compose:
 class attach_info:
     result = namedtuple('result', ['value', 'info'])
 
-    def __init__(self, info, func: t.Callable):
-        self._reduced: t.Union[async_compose, compose]
+    def __init__(self, info, func: typing.Callable):
+        self._reduced: typing.Union[async_compose, compose]
         if asyncio.iscoroutinefunction(func):
             async def attach(result):
                 return self.result(value=result, info=info)
