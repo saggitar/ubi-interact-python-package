@@ -153,9 +153,9 @@ class hook(typing.Generic[T_Callable]):
             cached 'applied' version of the callable with :meth:`hook.cache_clear`
 
     Warning:
-        Decorator order depends on order of registration. The last registered decorator is applied first.
-        We have :math:`hook = d_0 \\circ d_1 \\circ ... \\circ d_n \\circ f` where :math:`0` to :math:`n` are the
-        indices of the decorator in :attr:`hook.decorators`
+        Decorator order depends on order of registration. The last registered decorator is applied last.
+        We have :math:`hook = d_n \\circ d_{n-1} \\circ ... \\circ d_1 \\circ d_0 \\circ f` where
+        :math:`0` to :math:`n` are the indices of the decorator in :attr:`hook.decorators`
 
 
     Example:
@@ -312,7 +312,7 @@ class registry(typing.Generic[S, T]):
 def exc_handler_decorator(handler: typing.Callable[[ExcInfo], typing.Awaitable[None | bool] | None | bool]):
     """
     This callable takes an 'exception handler' i.e. a callable that processes results of :func:`sys.exc_info`
-    and converts it to a decorator that can be itself applied to ``async` callables to handle their exceptions.
+    and converts it to a decorator that can be itself applied to ``async`` callables to handle their exceptions.
 
     Example:
 
@@ -483,7 +483,15 @@ class function_chain:
 
     Example:
 
-        >>>
+        >>> def foo(value):
+        ...     print(f"foo: {value}")
+        >>> def bar(value):
+        ...     print(f"bar: {value}")
+        >>> from ubii.framework import util
+        >>> chain = util.function_chain(foo, bar)
+        >>> chain(1)
+        foo: 1
+        bar: 1
 
     See Also:
         :class:`compose` -- if you want to compose functions instead of passing the same arguments to each
@@ -491,7 +499,7 @@ class function_chain:
     def __init__(self, *funcs):
         self.funcs = funcs
         """
-        Tuple of functions that need to be applied
+        Tuple of functions that need to be called
         """
 
     def __call__(self, *args):
@@ -510,18 +518,86 @@ class function_chain:
 
 
 class compose:
-    def __init__(self, *fns):
-        self._info = ', '.join(map(repr, fns))
-        self.reduced = functools.reduce(lambda g, f: lambda *a: f(g(*a)), fns) if fns else (lambda x: x)
+    """
+    Generates a callable that is the composition of other callables.
+    Callables are called in the order in which they are passed to :class:`compose` i.e.
+    :math:`compose(f, g) = g \\circ f`
+
+    Example:
+        >>> from ubii.framework import util
+        >>> def foo(value):
+        ...     return value + 1
+        ...
+        >>> def bar(value):
+        ...     print(value)
+        ...
+        >>> foobar = util.compose(foo, bar)  # foobar(value) = bar(foo(value))
+        >>> foobar(1)
+        2
+
+    See Also:
+        :class:`function_chain` -- if you want to pass the same argument to every function instead of composing
+
+    """
+    def __init__(self, *funcs):
+        self._info = ', '.join(map(repr, funcs))
+        self.funcs = funcs
+        """
+        Tuple of original callables
+        """
+        self._reduced = functools.reduce(lambda g, f: lambda *a: f(g(*a)), funcs) if funcs else (lambda x: x)
 
     def __call__(self, *args):
-        return self.reduced(*args)
+        return self._reduced(*args)
 
     def __repr__(self):
         return f"compose({self._info})"
 
 
 class awaitable_predicate:
+    """
+    Typically, to let an ``async`` coroutine wait until some predicate is `True`, one uses a :class:`asyncio.Condition`.
+    :meth:`Condition.wait_for(predicate) <asyncio.Condition.wait_for>` will block the coroutine until the ``predicate``
+    returns `True` -- ``predicate`` will be reevaluated every time the condition
+    :meth:`notifies <asyncio.Condition.notify>` waiting coroutines.
+
+    An :class:`awaitable_predicate` object does exactly that, but it can also be evaluated to a boolean to make
+    code more concise
+
+    Example:
+
+        >>> from ubii.framework import util
+        >>> value = 0
+        >>> is_zero = util.awaitable_predicate(lambda: value == 0)
+        >>> bool(is_zero)
+        True
+        >>> value = 1
+        >>> bool(is_zero)
+        False
+
+        Or we can `wait` until the predicate is actually `True`
+
+        >>> [...]  # continued from above
+        >>> async def set_value(number):
+        ...     global value
+        ...     async with is_zero.condition:
+        ...             value = number
+        ...             is_zero.condition.notify()
+        ...
+        >>> async def wait_for_zero():
+        ...     await is_zero
+        ...     print(f"Finally! value: {value}")
+        ...
+        >>> import asyncio
+        >>> async def main():
+        ...     asyncio.create_task(wait_for_zero())
+        ...     for n in reversed(range(10)):
+        ...             await set_value(n)
+        ...
+        >>> asyncio.run(main())
+        Finally! value: 0
+
+    """
     def __init__(self, predicate: typing.Callable[[], bool], condition: asyncio.Condition | None = None):
         self.condition = condition or asyncio.Condition()
         self.predicate = predicate
