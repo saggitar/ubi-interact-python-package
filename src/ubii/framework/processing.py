@@ -596,7 +596,7 @@ class ProcessingProtocol(protocol.AbstractProtocol[ubii.proto.ProcessingModule.S
                 return getattr(result, f"{attr_name[0].lower()}{attr_name[1:]}")
 
             inputs.update(**{
-                result.info[0]: extract_value(result.value, result.info[1])
+                result.meta[0]: extract_value(result.value, result.meta[1])
                 for result in map(lambda task: task.result(), ctx.scheduler.done)
             })
             ctx.inputs = types.SimpleNamespace(**inputs)
@@ -723,7 +723,7 @@ class ProcessingProtocol(protocol.AbstractProtocol[ubii.proto.ProcessingModule.S
         context.trigger_processing = asyncio.Event()
         context.scheduler = Scheduler(
             callback=context.trigger_processing.set,
-            inputs=[util.attach_info((name, msg_fmt), topic.buffer.get) for (name, msg_fmt), topic in inputs.items()],
+            inputs=[util.enrich((name, msg_fmt), topic.buffer.get) for (name, msg_fmt), topic in inputs.items()],
             mode=self.pm.processing_mode
         )
 

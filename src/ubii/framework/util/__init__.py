@@ -25,7 +25,7 @@ from .functools import (
     awaitable_predicate,
     make_dict,
     async_compose,
-    attach_info,
+    enrich,
     AbstractAnnotations,
     document_decorator,
 )
@@ -68,7 +68,7 @@ __all__ = (
     "make_dict",
     "merge_dicts",
     "async_compose",
-    "attach_info",
+    "enrich",
     "calc_delta",
     "AbstractAnnotations",
     "debug",

@@ -115,7 +115,8 @@ intersphinx_mapping = {
     'python': ('https://docs.python.org/3', None),
     'plus': ('https://proto-plus-python.readthedocs.io/en/latest', None),
     'proto': ('https://googleapis.dev/python/protobuf/latest/', None),
-    'msgs': ('https://ubii-msg-formats.readthedocs.io/en/feature-python/', None)
+    'msgs': ('https://ubii-msg-formats.readthedocs.io/en/feature-python/', None),
+    'aiohttp': ('https://docs.aiohttp.org/en/stable/', None)
 }
 
 # default_role = 'any'

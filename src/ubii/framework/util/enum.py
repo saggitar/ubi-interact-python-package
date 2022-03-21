@@ -79,7 +79,7 @@ class EnumMatcher:
         if any(x is None for x in chain(base, query)):
             return False
 
-        return all(map(cls.flags_match, zip(base, query)))
+        return all(cls.flags_match(base_val, query_val) for base_val, query_val in zip(base, query))
 
     @classmethod
     def get_matching_value(cls,

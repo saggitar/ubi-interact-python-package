@@ -1,3 +1,8 @@
+"""
+Concrete implementation of :class:`~ubii.framework.services.ServiceConnection` and
+:class:`~ubii.framework.topics.DataConnection` using :mod:`aiohttp`.
+"""
+
 from __future__ import annotations
 
 import asyncio
@@ -21,25 +26,62 @@ from . import (
 )
 
 local_ip = socket.gethostbyname(socket.gethostname())
+"""
+global attribute containing the local ip of the machine
+
+:meta: hide-value
+"""
 log = logging.getLogger(__name__)
 
 
 class AIOHttpConnection:
-    def __init__(self, url, host_ip=local_ip):
+    """
+    Base class for connections using :mod:`aiohttp`
+    """
+    def __init__(self, url: str, host_ip: str = local_ip):
+        """
+        Create connection to specific url
+
+        Args:
+            url: url that you want to connect to, make sure that it uses a valid url scheme
+            host_ip: your local ip, needed to create the right CORS headers
+        """
         self._session_is_set = asyncio.Event()
         self._session = None
         self.url = url
-        self.https = urllib.parse.urlparse(url).scheme == 'https'
+        """
+        field to access url
+        """
+        self.https: bool = urllib.parse.urlparse(url).scheme == 'https'
+        """
+        True if url scheme of :attr:`.url` is 'https' else False
+        """
         self.host_ip = host_ip
+        """
+        Used for :attr:`.headers`
+        """
 
     @property
-    def headers(self):
+    def headers(self) -> typing.Dict[str, str]:
+        """
+        dictionary containing key ``origin`` with value equal to the host's tcp port url, to be
+        included in the requests for CORS authentication with the `master node`
+        """
         localhost_prefix = '127.0.0.'  # actually check for 127.0.0/8 some time
         host = 'localhost' if self.host_ip.startswith(localhost_prefix) else self.host_ip
         return {'origin': f"http{'s' if self.https else ''}://{host}:8080"}
 
     @property
-    def session(self):
+    def session(self) -> aiohttp.ClientSession:
+        """
+        Session used for requests, can have special debug handling or JSON formatter
+
+        When setting this property a private event is set, that can be used to "queue" requests until
+        a session is defined.
+
+        When this property is deleted, the event is unset i.e. future requests can wait for a new session
+        to be set.
+        """
         return self._session
 
     @session.setter
@@ -64,12 +106,25 @@ class AIOHttpConnection:
 
 
 class AIOHttpWebsocketConnection(AIOHttpConnection, topics.DataConnection):
+    """
+    A simple WebSocket connection that implements the :class:`~ubii.framework.topics.DataConnection` abstract base class.
+    """
+
     class Events(typing.NamedTuple):
+        """
+        public events that are set and unset during the lifetime of the connection
+        """
         connected: asyncio.Event = asyncio.Event()
         disconnected: asyncio.Event = asyncio.Event()
 
     log_socket_in = logging.getLogger(f"{__name__}.in.socket")
+    """
+    Logger for incoming traffic
+    """
     log_socket_out = logging.getLogger(f"{__name__}.out.socket")
+    """
+    Logger for outgoing traffic
+    """
 
     def __anext__(self) -> t.Awaitable[ub.TopicData]:
         return self._stream.__anext__()  # type: ignore
@@ -80,19 +135,51 @@ class AIOHttpWebsocketConnection(AIOHttpConnection, topics.DataConnection):
         self._client_id: str | None = None
         self._stream = self._stream_coro()
         self.events: AIOHttpWebsocketConnection.Events = self.Events()
+        """
+        Public events to wait for connection / disconnection in client code
+        """
 
     @contextlib.asynccontextmanager
     async def connect(self, client_id: str):
+        """
+        Use this async conext manager to establish a connection for a specific client, and disconnect it
+        afterwards.
+
+        Warning:
+
+            A :class:`AIOHttpWebsocketConnection` can only be connected with one client id.
+            If you try to connect a connected connection, a warning will be raised.
+
+        Example:
+
+            ::
+
+            from ubii.node import connect_client
+
+
+            def main():
+                async with connect_client() as client:  # internally creates this exact context manager
+                    assert client.id
+
+
+
+
+        Args:
+            client_id: e.g. content of a :attr:`ubii.proto.Client.id` field.
+
+        Returns:
+            a context manager
+        """
         if self.events.connected.is_set():
             warnings.warn(f"{self} is already connected.")
             yield self
+        else:
+            self.client_id = client_id
+            async with self.session.ws_connect(f"{self.url}/?clientID={self.client_id}") as ws:
+                self.ws = ws
+                yield self
 
-        self.client_id = client_id
-        async with self.session.ws_connect(f"{self.url}/?clientID={self.client_id}") as ws:
-            self.ws = ws
-            yield
-
-        del self.ws
+            del self.ws
 
     async def _stream_coro(self) -> ub.TopicData:
         await self.events.connected.wait()

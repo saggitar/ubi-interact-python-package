@@ -495,6 +495,8 @@ class function_chain:
 
     See Also:
         :class:`compose` -- if you want to compose functions instead of passing the same arguments to each
+
+        :class:`async_compose` -- if you want to compose coroutines
     """
     def __init__(self, *funcs):
         self.funcs = funcs
@@ -537,6 +539,8 @@ class compose:
 
     See Also:
         :class:`function_chain` -- if you want to pass the same argument to every function instead of composing
+
+        :class:`async_compose` -- if you want to compose coroutines
 
     """
     def __init__(self, *funcs):
@@ -591,7 +595,7 @@ class awaitable_predicate:
         >>> import asyncio
         >>> async def main():
         ...     asyncio.create_task(wait_for_zero())
-        ...     for n in reversed(range(10)):
+        ...     for n in reversed(range(3)):
         ...             await set_value(n)
         ...
         >>> asyncio.run(main())
@@ -618,6 +622,33 @@ class awaitable_predicate:
 
 
 class make_dict(typing.Generic[S, T]):
+    """
+    This callable creates dictionaries using a key-function and a value-function
+    to extract information from the values produced by some iterable.
+
+    Example:
+
+        >>> from ubii.framework import util
+        >>> from collections import namedtuple
+        >>> from random import sample
+        >>> Foo = namedtuple('Foo', ['id', 'value'])
+        >>> def random_foo(k):
+        ...     return [Foo(*v) for v in zip(range(k), sample(range(k), k))]
+        ...
+        >>> id_to_value = util.make_dict(key=lambda f: f.id, value=lambda f: f.value)
+        >>> some_foos = random_foo(5)
+        >>> some_foos
+        [Foo(id=0, value=2), Foo(id=1, value=0), Foo(id=2, value=1), Foo(id=3, value=3), Foo(id=4, value=4)]
+        >>> id_to_value(some_foos)
+        {0: 2, 1: 0, 2: 1, 3: 3, 4: 4}
+        >>> more_foos = random_foo(3)
+        >>> more_foos
+        [Foo(id=0, value=0), Foo(id=1, value=2), Foo(id=2, value=1)]
+        >>> id_to_value(more_foos)
+        {0: 0, 1: 2, 2: 1}
+
+
+    """
     def __init__(self: make_dict[S, T],
                  key: typing.Callable[[typing.Any], S],
                  value: typing.Callable[[typing.Any], T],
@@ -635,11 +666,49 @@ class make_dict(typing.Generic[S, T]):
 
 
 class async_compose:
+    """
+    Like :class:`compose` for coroutines.
+    Coroutines are awaited in the order in which they are passed to :class:`async_compose` i.e.
+    ``composed = async_compose(f, g)`` is equivalent to ``async def composed(*args): return await g(await f(*args))``
+
+    Example:
+
+        >>> from ubii.framework import util
+        >>> import asyncio, random
+        >>> async def simulate_IO(value):
+        ...     await asyncio.sleep(random.random())
+        ...     return value
+        ...
+        >>> async def make_values(k):
+        ...     for n in range(k):
+        ...             yield await simulate_IO(n)
+        ...
+        >>> async def process(values):
+        ...     return [value async for value in values if value % 2 == 0]
+        ...
+        >>> async def result(values):
+        ...     for value in values:
+        ...             print(await simulate_IO(value))
+        ...
+        >>> processed = util.compose(make_values, process)  # make_values does not return a coroutine -> compose
+        >>> composed = util.async_compose(processed, result) # processed returns a coroutine -> async_compose
+        >>> asyncio.run(composed(5))
+        0
+        2
+        4
+
+
+    See Also:
+        :class:`function_chain` -- if you want to pass the same argument to every function instead of composing
+
+        :class:`compose` -- if you want to compose normal callables instead of coroutines
+
+    """
     def __init__(self, *fns):
-        def __compose(g: typing.Callable[[typing.Any], typing.Coroutine],
-                      f: typing.Callable[[typing.Any], typing.Coroutine]):
+        def __compose(f: typing.Callable[[typing.Any], typing.Coroutine],
+                      g: typing.Callable[[typing.Any], typing.Coroutine]):
             async def composed(*args):
-                return await(f(await g(*args)))
+                return await(g(await f(*args)))
 
             return composed
 
@@ -649,19 +718,70 @@ class async_compose:
         return self._reduced(*args)
 
 
-class attach_info:
-    result = namedtuple('result', ['value', 'info'])
+class enrich(typing.Callable[..., 'enrich.result']):
+    """
+    Enriches the results of a callable with some meta information.
 
-    def __init__(self, info, func: typing.Callable):
+    Useful if you deal with callables which you can't or don't want to change, to avoid
+    leaking dependencies -- e.g. the part of the codebase that "knows" the meta information is not
+    the same that defines the callables, and it's undesirable to change that.
+
+    Works with normal callables and also coroutine functions -- if ``async`` coroutine functions / methods
+    are used, the resulting callable will `await` the result first, before it adds the meta information and
+    returns it to the caller.
+
+    Example:
+
+        Consider a mapping of callables:
+
+        >>> import functools
+        >>> make_print = functools.partial(functools.partial, print)
+        >>> call_mapping = {value: make_print(value) for value in ['foo', 'bar', 'foobar']}
+        >>> call_mapping['foo']()
+        foo
+
+        Pretend that ``make_print`` is defined somewhere else in your code, maybe even in someone else's code.
+        You know that it's a factory for callables that print one value, and the code where you define the
+        call mapping also knows which value each callable in the mapping will print.
+
+        You don't want to pass this meta information around in your code (let's say as
+        additional arguments for your calls), just because the implementation of ``make_print`` does not behave
+        the way you want -- i.e. it does not also return the value that gets printed.
+
+        So instead, you could define your mapping like this:
+
+        >>> from ubii.framework import util
+        >>> call_mapping = {v: util.enrich(v, make_print(v)) for v in ['foo', 'bar', 'foobar']}
+        >>> result = call_mapping['foo']()
+        foo
+        >>> result
+        result(value=None, meta='foo')
+
+        Now your code can simply deal with the "fixed" callables.
+
+    """
+    result = namedtuple('result', ['value', 'meta'])
+    """
+    Named tuple for access of original return value and meta information
+    """
+
+    def __init__(self, meta, func: typing.Callable):
+        """
+        Add meta information to results of callable
+
+        Args:
+            meta: Something that each call to this callable should return in the :attr:`~.result.meta` field
+            func: Simple callable or coroutine function. Result will be available as :attr:`~.result.value` field
+        """
         self._reduced: typing.Union[async_compose, compose]
         if asyncio.iscoroutinefunction(func):
-            async def attach(result):
-                return self.result(value=result, info=info)
+            async def attach(value):
+                return self.result(value=value, meta=meta)
 
             self._reduced = async_compose(func, attach)
         else:
-            def attach(result):
-                return self.result(value=result, info=info)
+            def attach(value):
+                return self.result(value=value, meta=meta)
 
             self._reduced = compose(func, attach)
 
@@ -681,7 +801,7 @@ __all__ = (
     'awaitable_predicate',
     'make_dict',
     'async_compose',
-    'attach_info',
+    'enrich',
     'calc_delta',
     'AbstractAnnotations'
 )
