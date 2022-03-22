@@ -28,6 +28,7 @@ from .functools import (
     enrich,
     AbstractAnnotations,
     document_decorator,
+    dunder
 )
 
 __DEBUG__ = False
@@ -72,5 +73,6 @@ __all__ = (
     "calc_delta",
     "AbstractAnnotations",
     "debug",
-    "document_decorator"
+    "document_decorator",
+    "dunder"
 )

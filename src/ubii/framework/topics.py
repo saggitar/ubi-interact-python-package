@@ -121,7 +121,7 @@ class TopicDataBufferManager(typing.Generic[T_Buffer], abc.ABC):
         Use this attribute to synchronize access to the managed resource
         """
 
-
+@util.dunder.repr('pattern', 'token_factory', 'task_nursery')
 class Topic(typing.AsyncIterator[T_Buffer], TopicDataBufferManager[T_Buffer], typing.Generic[T_Buffer, T_Token],
             abc.ABC):
     """
@@ -188,7 +188,7 @@ class Topic(typing.AsyncIterator[T_Buffer], TopicDataBufferManager[T_Buffer], ty
         """
         Wildcard pattern or simple string defining the topic
         """
-        self.task_nursery: util.TaskNursery | None = task_nursery or util.TaskNursery(name=f"Task Nursery for {self}")
+        self.task_nursery: util.TaskNursery = task_nursery or util.TaskNursery(name=f"Task Nursery for {self}")
         """
         takes care of managing tasks for callbacks
         """
@@ -308,6 +308,7 @@ class BasicTopic(Topic[ubii.proto.TopicDataRecord, int]):
     A :class:`Topic` with a :attr:`~Topic.token_factory` simply producing ascending integers and
     a simple :attr:`.buffer` for :class:`~ubii.proto.TopicDataRecord` messages
     """
+
     class integer_token_factory:
         """
         creates increasing integers ::
@@ -329,8 +330,8 @@ class BasicTopic(Topic[ubii.proto.TopicDataRecord, int]):
             self.__last_token__ += 1
             return self.__last_token__
 
-    def __init__(self, pattern, *, task_nursery: util.TaskNursery | None, **kwargs) -> None:
-        super().__init__(pattern, token_factory=self.integer_token_factory(), task_nursery=task_nursery, **kwargs)
+    def __init__(self, pattern, **kwargs) -> None:
+        super().__init__(pattern, token_factory=self.integer_token_factory(), **kwargs)
         self._buffer: ubii.proto.TopicDataRecord | None = None
 
     @util.hook

@@ -75,10 +75,10 @@ import abc
 import asyncio
 import contextlib
 import dataclasses
+import itertools
 import logging
 import typing
-
-import itertools
+import warnings
 
 import ubii.proto
 from . import (
@@ -225,7 +225,7 @@ class InitProcessingModules:
     Will contain types initially, and instances after initialization of the modules.
     """
 
-
+@util.dunder.repr('id')
 class UbiiClient(ubii.proto.Client,
                  typing.Awaitable['UbiiClient'],
                  typing.Generic[T_Protocol],
@@ -495,7 +495,9 @@ class UbiiClient(ubii.proto.Client,
     @contextlib.asynccontextmanager
     async def _with_running_protocol(self):
         async with self.protocol:
-            client = await self
+            with warnings.catch_warnings():
+                warnings.simplefilter("ignore")
+                client = await self
             yield client
 
     def __await__(self):
@@ -527,10 +529,7 @@ class UbiiClient(ubii.proto.Client,
         self._behaviours[key] = value
         self.notify()
 
-    def __str__(self):
-        return self.name
-
-
+@util.dunder.all('client')
 class AbstractClientProtocol(protocol.AbstractProtocol[T_EnumFlag], util.Registry, abc.ABC):
     """
     :class:`~abc.ABC` to implement client protocols, i.e. define the communication between
@@ -749,7 +748,3 @@ class AbstractClientProtocol(protocol.AbstractProtocol[T_EnumFlag], util.Registr
                 hook_function.register_decorator(hk)
 
         super().__init_subclass__()
-
-    def __str__(self):
-        info = f" of {self.client}" if self.client else " !missing client!"
-        return f"{self.__class__.__name__}{info}"

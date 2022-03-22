@@ -21,9 +21,7 @@ try:
 except ImportError:
     from backports.cached_property import cached_property
 
-from . import (
-    util as util_,
-)
+from . import util
 from .util.typing import (
     T_EnumFlag,
     Descriptor,
@@ -57,12 +55,16 @@ class AbstractProtocol(Generic[T_EnumFlag], abc.ABC):
         self.change_context = asyncio.Condition()
         self._state = None
         self._run = None
-        self.task_nursery = util_.TaskNursery(name=f"Task Nursery for {self}")
+        self.task_nursery = util.TaskNursery(name=f"Task Nursery for {self}")
         """
-        Blub
+        This manages the tasks created by the protocol as well as teardown behaviour if the protocol is stopped
         """
-        self.get_state_change_callback = functools.partial(util_.enum.EnumMatcher.get_matching_value,
+        self.get_state_change_callback = functools.partial(util.enum.EnumMatcher.get_matching_value,
                                                            mapping=self.state_changes)
+        """
+        This callable uses :meth:`~ubii.framework.util.EnumMatcher.get_matching_value`
+        to return the appropriate state change from :attr:`.state_changes` for a tuple of states
+        """
 
     def _get_state(self) -> T_EnumFlag:
         return self._state
@@ -80,7 +82,7 @@ class AbstractProtocol(Generic[T_EnumFlag], abc.ABC):
 
     # declaring the property this way helps pycharm to infer types correctly see
     # https://youtrack.jetbrains.com/issue/PY-15176 and related issues.
-    state = util_.condition_property(fget=_get_state, fset=_set_state)
+    state = util.condition_property(fget=_get_state, fset=_set_state)
 
     def start(self: AbstractProtocol[T_EnumFlag]) -> AbstractProtocol[T_EnumFlag]:
         """
@@ -119,13 +121,15 @@ class AbstractProtocol(Generic[T_EnumFlag], abc.ABC):
 
     async def __aenter__(self):
         self.start()
+        await self.state.get(predicate=lambda value: value == self.starting_state)
         return self
 
     def __aexit__(self, *exc_info):
         return self.task_nursery.__aexit__(*exc_info)
 
 
-class RunProtocol(util_.CoroutineWrapper):
+@util.dunder.repr('protocol')
+class RunProtocol(util.CoroutineWrapper):
 
     def __init__(self, protocol: AbstractProtocol):
         self.protocol = protocol
@@ -186,5 +190,3 @@ class RunProtocol(util_.CoroutineWrapper):
                 )
 
         log.debug(f"{self} finished.")
-
-

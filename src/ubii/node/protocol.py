@@ -111,7 +111,8 @@ class LegacyProtocol(client_.AbstractClientProtocol[States]):
             service_call = services.ServiceCall(transport=context.service_connection, mapping=service)
 
             # add exception handling
-            class _(type(service_call)): pass  # noqa
+            class _(type(service_call)):
+                __doc__ = service_call.__doc__
 
             _.register_decorator(util.exc_handler_decorator(self._set_exc_info))
             service_call.__class__ = _
@@ -531,7 +532,7 @@ class LegacyProtocol(client_.AbstractClientProtocol[States]):
                     log.warning(f"Master node not available, waiting for server...")
                     await asyncio.sleep(2)
 
-        await self.state.set(self.starting_state)
+            await self.state.set(self.starting_state)
         return not connection_problems()
 
     async def on_stop(self, context: LegacyProtocol.Context):

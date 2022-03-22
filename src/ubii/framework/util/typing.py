@@ -35,33 +35,33 @@ try:
 except ImportError:
     from typing_extensions import runtime_checkable, Protocol
 
-T: TypeVar = TypeVar('T')
+T = TypeVar('T')
 """
 Simple TypeVar
 """
-S: TypeVar = TypeVar('S')
+S = TypeVar('S')
 """
 Simple TypeVar
 """
-R: TypeVar = TypeVar('R')
+R = TypeVar('R')
 """
 Simple TypeVar
 """
 
-T_Exception: TypeVar = TypeVar('T_Exception', bound=Exception)
+T_Exception = TypeVar('T_Exception', bound=Exception)
 """
 bound to :class:`Exception`
 """
-T_EnumFlag: TypeVar = TypeVar('T_EnumFlag', bound=enum.IntFlag)
+T_EnumFlag = TypeVar('T_EnumFlag', bound=enum.IntFlag)
 """
 bound to :class:`enum.IntFlag`
 """
 
-T_co: TypeVar = TypeVar('T_co', covariant=True)
+T_co = TypeVar('T_co', covariant=True)
 """
 covariant values
 """
-T_contra: TypeVar = TypeVar('T_contra', contravariant=True)
+T_contra = TypeVar('T_contra', contravariant=True)
 """
 contravariant values
 """

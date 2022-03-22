@@ -38,7 +38,7 @@ def pytest_configure(config):
 
 
 @pytest.fixture(autouse=True, scope='session')
-def configure_logging(request):
+async def configure_logging(request):
     log_config = logging_setup.change(verbosity=__verbosity__)
 
     from pathlib import Path
@@ -52,6 +52,9 @@ def configure_logging(request):
 
     with logging_setup.change(config=custom, verbosity=__verbosity__):
         yield
+        # closing the context manager closes the files, so wait a little bit for remaining messages to be written
+        await asyncio.sleep(1)
+
 
 
 @pytest.fixture(scope='session', autouse=True)

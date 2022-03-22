@@ -7,11 +7,10 @@ import inspect
 import logging
 import pickle
 import re
+import sys
 import typing
 import warnings
 from collections import namedtuple
-
-import sys
 
 import ubii.proto as ub
 from . import RegistryMeta
@@ -345,6 +344,7 @@ def exc_handler_decorator(handler: typing.Callable[[ExcInfo], typing.Awaitable[N
         decorator to catch exceptions from ``async`` methods
 
     """
+
     def decorator(fun):
         @functools.wraps(fun)
         async def _inner(*args, **kwargs):
@@ -372,6 +372,7 @@ def log_call(logger: logging.Logger):
     Returns:
         A decorator to log calls to decorated callable to ``logger``
     """
+
     def decorator(fun):
         @functools.wraps(fun)
         def __inner(*args):
@@ -498,6 +499,7 @@ class function_chain:
 
         :class:`async_compose` -- if you want to compose coroutines
     """
+
     def __init__(self, *funcs):
         self.funcs = funcs
         """
@@ -543,6 +545,7 @@ class compose:
         :class:`async_compose` -- if you want to compose coroutines
 
     """
+
     def __init__(self, *funcs):
         self._info = ', '.join(map(repr, funcs))
         self.funcs = funcs
@@ -602,6 +605,7 @@ class awaitable_predicate:
         Finally! value: 0
 
     """
+
     def __init__(self, predicate: typing.Callable[[], bool], condition: asyncio.Condition | None = None):
         self.condition = condition or asyncio.Condition()
         self.predicate = predicate
@@ -649,6 +653,7 @@ class make_dict(typing.Generic[S, T]):
 
 
     """
+
     def __init__(self: make_dict[S, T],
                  key: typing.Callable[[typing.Any], S],
                  value: typing.Callable[[typing.Any], T],
@@ -704,6 +709,7 @@ class async_compose:
         :class:`compose` -- if you want to compose normal callables instead of coroutines
 
     """
+
     def __init__(self, *fns):
         def __compose(f: typing.Callable[[typing.Any], typing.Coroutine],
                       g: typing.Callable[[typing.Any], typing.Coroutine]):
@@ -787,6 +793,84 @@ class enrich(typing.Callable[..., 'enrich.result']):
 
     def __call__(self, *args):
         return self._reduced(*args)
+
+
+class dunder:
+    """
+    the following decorators can be used to create dunder methods on classes.
+
+    Note:
+
+        Why not use `attrs <https://www.attrs.org/>`_?
+            *   because the ubii framework should be usable by people that don't have a lot of experience in python, so
+                it uses the standard library whenever possible -> dataclasses instead of `attrs`
+            *   dataclasses are not useful for complex classes, nonetheless even a very complex class might have
+                very easy `dunder` methods
+    """
+
+    @classmethod
+    def all(cls, *attrs):
+        """
+        A decorator that applies all decorators from :class:`dunder`
+
+        Args:
+            *attrs: the names of attributes that should be part of the dunder methods
+
+        Returns:
+            a class decorator
+        """
+        return compose(cls.repr(*attrs), cls.hash(*attrs))
+
+    @classmethod
+    def repr(cls, *attrs):
+        """
+        Creates a __repr__ method on the class, that is basically ::
+
+            def __repr__(self):
+                info = {attr: getattr(self, attr, None) for attr in attrs}
+                return f"{self.__class__.__name__}({', '.join('{}={}'.format(k, v) for k,v in info.items())})"
+
+        Args:
+            *attrs: the names of attributes that should be part of the __repr__
+
+        Returns:
+            a class decorator
+        """
+
+        def __repr__(instance):
+            info = {attr: getattr(instance, attr, None) for attr in attrs}
+            return (f"<{instance.__class__.__module__}.{instance.__class__.__name__} "
+                    f"with {', '.join('{}={!r}'.format(k, v) for k, v in info.items())}>")
+
+        def decorator(kls):
+            kls.__repr__ = functools.wraps(kls.__repr__)(__repr__)
+            return kls
+
+        return decorator
+
+    @classmethod
+    def hash(cls, *attrs):
+        """
+        Creates a __hash__ method on the class, that is basically ::
+
+            def __hash__(self):
+                return hash((self.__class__, ) + tuple(map(lambda attr: getattr(self, attr, None), sorted(attrs))))
+
+        Args:
+            *attrs: the names of attributes that should be part of the __hash__
+
+        Returns:
+            a class decorator
+        """
+
+        def __hash__(instance):
+            return hash((instance.__class__,) + tuple(map(lambda attr: getattr(instance, attr, None), sorted(attrs))))
+
+        def decorator(kls):
+            kls.__hash__ = functools.wraps(kls.__hash__)(__hash__)
+            return kls
+
+        return decorator
 
 
 __all__ = (

@@ -7,6 +7,7 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
+import dataclasses
 import functools
 import json
 import logging
@@ -38,6 +39,7 @@ class AIOHttpConnection:
     """
     Base class for connections using :mod:`aiohttp`
     """
+
     def __init__(self, url: str, host_ip: str = local_ip):
         """
         Create connection to specific url
@@ -104,18 +106,19 @@ class AIOHttpConnection:
         self._session = None
         self._session_is_set.clear()
 
-
+@util.dunder.repr('url')
 class AIOHttpWebsocketConnection(AIOHttpConnection, topics.DataConnection):
     """
     A simple WebSocket connection that implements the :class:`~ubii.framework.topics.DataConnection` abstract base class.
     """
 
-    class Events(typing.NamedTuple):
+    @dataclasses.dataclass
+    class Events:
         """
         public events that are set and unset during the lifetime of the connection
         """
-        connected: asyncio.Event = asyncio.Event()
-        disconnected: asyncio.Event = asyncio.Event()
+        connected: asyncio.Event = dataclasses.field(default_factory=asyncio.Event)
+        disconnected: asyncio.Event = dataclasses.field(default_factory=asyncio.Event)
 
     log_socket_in = logging.getLogger(f"{__name__}.in.socket")
     """
@@ -142,7 +145,7 @@ class AIOHttpWebsocketConnection(AIOHttpConnection, topics.DataConnection):
     @contextlib.asynccontextmanager
     async def connect(self, client_id: str):
         """
-        Use this async conext manager to establish a connection for a specific client, and disconnect it
+        Use this async context manager to establish a connection for a specific client, and disconnect it
         afterwards.
 
         Warning:
@@ -152,16 +155,18 @@ class AIOHttpWebsocketConnection(AIOHttpConnection, topics.DataConnection):
 
         Example:
 
-            ::
-
-            from ubii.node import connect_client
-
-
-            def main():
-                async with connect_client() as client:  # internally creates this exact context manager
-                    assert client.id
-
-
+            >>> from ubii.node import connect_client
+                    >>> import asyncio
+            >>> async def main():
+            ...     async with connect_client() as client:
+            ...             topic_connection = client.protocol.context.topic_connection
+            ...             assert topic_connection is not None
+            ...             async with topic_connection.connect(client.id) as connected:
+            ...                     print(connected.url)
+            ...
+            >>> asyncio.run(main())
+            [...] UserWarning: <ubii.framework.connections.AIOHttpWebsocketConnection object at 0x000001C145C7F340> is already connected.
+            ws://192.168.178.10:8104
 
 
         Args:
@@ -224,6 +229,9 @@ class AIOHttpWebsocketConnection(AIOHttpConnection, topics.DataConnection):
 
     @ws.deleter
     def ws(self):
+        if not self._ws:
+            return
+
         self._ws = None
         self.events.connected.clear()
         self.events.disconnected.set()

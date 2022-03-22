@@ -1,12 +1,11 @@
 import asyncio
-import random
 import logging
-from contextlib import suppress
+import random
 
 import pytest
 
 from ubii.framework.protocol import AbstractProtocol, RunProtocol
-from ubii.framework.default_protocol import DefaultProtocol, States as UbiiStates
+from ubii.node.protocol import DefaultProtocol, States as UbiiStates
 
 pytestmark = pytest.mark.asyncio
 log = logging.getLogger(__name__)
@@ -52,22 +51,9 @@ async def test_mock_protocol():
 @pytest.fixture
 async def protocol(request):
     protocol: AbstractProtocol = request.param()
-    run: asyncio.Task = protocol.start()
-    yield protocol
-
-    run.cancel()
-    with suppress(asyncio.CancelledError):
-        await protocol
-
-    assert run.done()
-    assert protocol.trigger_sentinel.is_set()
-
-    # if the sentinel callbacks schedule callbacks themselves (e.g. the aiohttp websocket connection is scheduled to
-    # close when the context is closed, which happens in the default protocol when the sentinel callbacks are run)
-    # these callbacks might not be run immediately. pytest-asyncio might close the event loop if we don't sleep here.
-    # there is nothing we can do about that, but it's in line with the aiohttp documentation telling you to sleep
-    # before closing the loop.
-    await asyncio.sleep(1)
+    running = protocol.start()
+    yield running
+    await running.stop()
 
 
 @pytest.mark.parametrize('protocol', [DefaultProtocol], indirect=True)
@@ -85,5 +71,4 @@ async def test_default_protocol_stop(protocol: DefaultProtocol):
     client = protocol.client
     assert client.id
     await protocol.stop()
-
     assert protocol.state.value == protocol.end_state
