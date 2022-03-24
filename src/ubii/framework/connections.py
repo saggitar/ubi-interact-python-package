@@ -30,11 +30,12 @@ local_ip = socket.gethostbyname(socket.gethostname())
 """
 global attribute containing the local ip of the machine
 
-:meta: hide-value
+:meta hide-value:
 """
 log = logging.getLogger(__name__)
 
 
+@util.dunder.repr('url')
 class AIOHttpConnection:
     """
     Base class for connections using :mod:`aiohttp`
@@ -50,7 +51,7 @@ class AIOHttpConnection:
         """
         self._session_is_set = asyncio.Event()
         self._session = None
-        self.url = url
+        self.url: str = url
         """
         field to access url
         """
@@ -58,7 +59,7 @@ class AIOHttpConnection:
         """
         True if url scheme of :attr:`.url` is 'https' else False
         """
-        self.host_ip = host_ip
+        self.host_ip: str = host_ip
         """
         Used for :attr:`.headers`
         """
@@ -68,6 +69,22 @@ class AIOHttpConnection:
         """
         dictionary containing key ``origin`` with value equal to the host's tcp port url, to be
         included in the requests for CORS authentication with the `master node`
+
+        Example:
+
+            >>> from ubii.node import connect_client
+            >>> import asyncio
+            >>> async def main():
+            ...     async with connect_client() as client:
+            ...             topic_connection = client.protocol.context.topic_connection
+            ...             assert topic_connection is not None
+            ...             print(topic_connection.host_ip)
+            ...             print(topic_connection.headers)
+            ...
+            >>> asyncio.run(main())
+            '10.0.0.1'
+            {'origin': 'http://10.0.0.1:8080'}
+
         """
         localhost_prefix = '127.0.0.'  # actually check for 127.0.0/8 some time
         host = 'localhost' if self.host_ip.startswith(localhost_prefix) else self.host_ip
@@ -106,7 +123,7 @@ class AIOHttpConnection:
         self._session = None
         self._session_is_set.clear()
 
-@util.dunder.repr('url')
+
 class AIOHttpWebsocketConnection(AIOHttpConnection, topics.DataConnection):
     """
     A simple WebSocket connection that implements the :class:`~ubii.framework.topics.DataConnection` abstract base class.
@@ -155,25 +172,50 @@ class AIOHttpWebsocketConnection(AIOHttpConnection, topics.DataConnection):
 
         Example:
 
+            Setup:
+                *   Master node running on localhost
+                *   local ip address ``10.0.0.1``
+
+            Note that the url of the connection that is created by default (with :class:`~ubii.node.connect_client`)
+            contains the local ip of the machine not ``localhost`` because the default protocol
+            adjusts the connections' url  -- once the `master node` communicates its ip address -- to match the ip
+            of the master node. On the one hand this makes sure that the `master node` sends a valid
+            :class:`~ubii.proto.Server` message, on the other hand this makes output / logs more readable because all
+            connections share the same ip in their url (the
+            :attr:`~ubii.node.protocol.LegacyProtocol.Context.service_connection` is also adjusted once the
+            `master node` sends the :class:`~ubii.proto.Server` message)
+
             >>> from ubii.node import connect_client
-                    >>> import asyncio
+            >>> import asyncio
             >>> async def main():
             ...     async with connect_client() as client:
-            ...             topic_connection = client.protocol.context.topic_connection
-            ...             assert topic_connection is not None
-            ...             async with topic_connection.connect(client.id) as connected:
-            ...                     print(connected.url)
+            ...         topic_connection = client.protocol.context.topic_connection
+            ...         assert topic_connection is not None
+            ...         async with topic_connection.connect(client.id) as connected:
+            ...             print(connected.url)
             ...
             >>> asyncio.run(main())
-            [...] UserWarning: <ubii.framework.connections.AIOHttpWebsocketConnection object at 0x000001C145C7F340> is already connected.
-            ws://192.168.178.10:8104
+            [...] UserWarning: <ubii.framework.connections.AIOHttpWebsocketConnection with url=ws://10.0.0.1:8104> is already connected.
+            ws://10.0.0.1:8104
 
+            It's also possible to handle messages from the topic connection manually (but not advisable) ::
+
+                from ubii.node import connect_client
+                import asyncio
+
+                async def foo():
+                    async with connect_client() as client:
+                        topic_connection = client.protocol.context.topic_connection
+                        assert topic_connection is not None
+                        async for topic_data in topic_connection:
+                            # do something
+                            ...
 
         Args:
             client_id: e.g. content of a :attr:`ubii.proto.Client.id` field.
 
         Returns:
-            a context manager
+            an async context manager
         """
         if self.events.connected.is_set():
             warnings.warn(f"{self} is already connected.")
@@ -211,6 +253,16 @@ class AIOHttpWebsocketConnection(AIOHttpConnection, topics.DataConnection):
 
     @property
     def ws(self) -> aiohttp.ClientWebSocketResponse | None:
+        """
+        If connection is open use this :class:`~aiohttp.ClientWebSocketResponse` object
+        to read and send messages
+
+        Setting this attribute clears the :attr:`~.Events.disconnected` event, and sets the
+        :attr:`~.Events.connected` event in :attr:`.events`
+
+        Deleting this attribute clears the :attr:`~.Events.connected` event, and sets the
+        :attr:`~.Events.disconnected` event in :attr:`.events` (unless already disconnected)
+        """
         return self._ws
 
     @ws.setter
@@ -239,6 +291,12 @@ class AIOHttpWebsocketConnection(AIOHttpConnection, topics.DataConnection):
 
     @property
     def client_id(self):
+        """
+        If set, the connection belongs to a specific client. If not set, the connection is not usable.
+
+        Setting this attribute is only allowed if it is not already set. Otherwise, a warning will be raised.
+        Delete the attribute to clear it and allow setting it to a different id.
+        """
         return self._client_id
 
     @client_id.setter
@@ -254,6 +312,21 @@ class AIOHttpWebsocketConnection(AIOHttpConnection, topics.DataConnection):
         self._client_id = None
 
     async def send(self, data: ub.TopicData, timeout=None):
+        """
+        Use this coroutine to send :class:`~ubii.proto.TopicData` messages to the `master node`.
+        Will wait until :attr:`.events.connected` is set i.e. until the connection has a
+        valid url with client id.
+
+        Args:
+            data: message to send
+            timeout: used for waiting for the :attr:`.events.connected` event, as well as for
+                actually sending of the message i.e. for the first message the actual time until an error is
+                raised can be at most double the timeout value (in seconds). If not set, coroutine waits
+                an unlimited time -- `optional`
+
+        Raises:
+            asyncio.TimeoutError: if ``timeout`` is set and connection or sending of message takes longer
+        """
         await asyncio.wait_for(self.events.connected.wait(), timeout=timeout)
         assert self.ws is not None
         self.log_socket_out.info(f"Sending {data}")
@@ -266,6 +339,27 @@ class AIOHttpRestConnection(AIOHttpConnection, services.ServiceConnection):
     """
 
     async def send(self, request: ub.ServiceRequest, timeout=None) -> ub.ServiceReply:
+        """
+        Send a :class:`~ubii.proto.ServiceRequest` and wait for :class:`~ubii.proto.ServiceReply` from `master node`.
+
+        Args:
+            request: as proto plus message wrapper object for a request
+            timeout: if not set, wait indefinitely. Else wait for ``timeout`` seconds for the connection to become
+                usable (needs a :attr:`.session`), then send the message and wait for ``timeout`` seconds for reply,
+                then raise error
+
+        Returns:
+            a wrapper object for the reply
+
+        Raises:
+            asyncio.TimeoutError: if ``timeout`` is set and connection is not usable in time or reply is not received in time
+
+        See Also:
+
+            :attr:`ubii.proto.ServiceRequest.type` -- the oneof group for possible request fields
+
+            :attr:`ubii.proto.ServiceReply.type` -- the oneof group for possible reply fields
+        """
         await asyncio.wait_for(self._session_is_set.wait(), timeout=timeout)
         async with self.session.post(self.url, headers=self.headers, json=request, timeout=timeout) as resp:
             json = await asyncio.wait_for(resp.text(), timeout=timeout)
@@ -275,7 +369,37 @@ class AIOHttpRestConnection(AIOHttpConnection, services.ServiceConnection):
 def aiohttp_session():
     """
     We create a aiohttp session with our custom json encoder and some logging handlings
-    in debug mode
+    in debug mode.
+
+    If :func:`ubii.framework.util.debug` is used to turn on debug mode of the framework,
+    this function will return a different session, with logging for requests (see :class:`aiohttp.TraceConfig`)
+    and a timeout of `1` second compared to `300` seconds for the normal session.
+
+    Both sessions use the :class:`ubii.proto.util.ProtoEncoder` to serialize json, and raise Exceptions when
+    requests fail (see :attr:`aiohttp.ClientSession.raise_for_status`)
+
+    >>> from ubii.framework import connections
+    >>> from ubii.framework import debug
+    >>> session = connections.aiohttp_session()
+    >>> debug(True)
+    True
+    >>> debug_session = connections.aiohttp_session()
+    >>> session.timeout
+    ClientTimeout(total=300, connect=None, sock_read=None, sock_connect=None)
+    >>> debug_session.timeout
+    ClientTimeout(total=1, connect=None, sock_read=None, sock_connect=None)
+    >>> session.trace_configs
+    []
+    >>> debug_session.trace_configs
+    [<aiohttp.tracing.TraceConfig object at 0x7f657a080c70>]
+    >>> session.raise_for_status
+    True
+    >>> debug_session.raise_for_status
+    True
+    >>> session.json_serialize
+    functools.partial(<function dumps at 0x7f657b3f4940>, cls=<class 'ubii.proto.util.ProtoEncoder'>)
+    >>> debug_session.json_serialize
+    functools.partial(<function dumps at 0x7f657b3f4940>, cls=<class 'ubii.proto.util.ProtoEncoder'>)
     """
     if util.debug():
         trace_config = aiohttp.TraceConfig()

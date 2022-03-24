@@ -12,10 +12,9 @@
 #
 import datetime
 import os
-import warnings
-
 import proto
 import sys
+import warnings
 
 sys.path.insert(0, os.path.abspath('.'))
 sys.path.insert(0, os.path.abspath('../../src'))
@@ -103,6 +102,7 @@ autodoc_inherit_docstrings = False
 autodoc_typehints = 'signature'
 autodoc_typehints_format = 'short'
 autodoc_preserve_defaults = True  # sadly still buggy when defaults are tuples of dataclass types
+# autodoc_type_aliases = {'topic_hook': 'ubii.framework.processing.topic_hook'}
 
 napoleon_include_special_with_doc = True
 napoleon_include_init_with_doc = True

@@ -88,7 +88,16 @@ class _logging_setup:
 logging_setup = _logging_setup(base_config=__config__, log_level=logging.INFO, warning_filter='default')
 
 
-def parse_args(parser=None):
+def parse_args(parser: argparse.ArgumentParser | None = None) -> argparse.Namespace:
+    """
+    Convenience function to parse command line arguments
+
+    Args:
+        parser: if no parser is passed, a new one is created  -- `optional`
+
+    Returns:
+        parsed arguments
+    """
     parser = parser or argparse.ArgumentParser()
 
     parser.add_argument('--verbose', '-v', action='count', default=0)

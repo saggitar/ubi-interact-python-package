@@ -88,7 +88,7 @@ def document_decorator(decorator):
 
         if is_async:
             ret_type = '[' + sig.return_annotation.strip("'") + ']' if sig.return_annotation != sig.empty else ''
-            decorated.__annotations__['return'] = f"Awaitable[{ret_type}"
+            decorated.__annotations__['return'] = f"Awaitable{ret_type}"
 
         info = {
             'decorator':
@@ -887,5 +887,6 @@ __all__ = (
     'async_compose',
     'enrich',
     'calc_delta',
-    'AbstractAnnotations'
+    'dunder',
+    'document_decorator'
 )

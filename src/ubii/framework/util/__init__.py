@@ -34,12 +34,15 @@ from .functools import (
 __DEBUG__ = False
 
 
-def debug(enabled: bool | None = None):
+def debug(enabled: bool | None = None) -> bool:
     """
     Call without arguments to get current debug state, pass truthy value to set debug mode.
 
-    :param enabled: If passed, turns debug mode on or off
-    :return:
+    Args:
+        enabled: If passed, turns debug mode on or off
+
+    Returns:
+        debug value
     """
     global __DEBUG__
     if enabled is not None:

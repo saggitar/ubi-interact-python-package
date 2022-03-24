@@ -35,7 +35,9 @@ log = logging.getLogger(__name__)
 
 class AbstractProtocol(Generic[T_EnumFlag], abc.ABC):
     """
-    ABC to implement a state machine with async callbacks
+    ABC to implement a state machine with async callbacks. A :class:`AbstractProtocol` can be used as an async context
+    manager, to `start` and `stop` the protocol automatically, or be "manually" started and stopped using the protocols
+    methods.
     """
 
     state_changes: Mapping[Tuple[T_EnumFlag | None, ...], Callback]
@@ -43,18 +45,31 @@ class AbstractProtocol(Generic[T_EnumFlag], abc.ABC):
     Assign to this mapping in your concrete implementation to define callbacks for state changes.
     """
     starting_state: T_EnumFlag
+    """
+    Assign a state to this attribute as the protocols starting state when implementing a concrete protocol
+    """
     end_state: T_EnumFlag
+    """
+    Assign a state to this attribute as the protocols end state when implementing a concrete protocol
+    """
 
     @cached_property
-    def context(self):
+    def context(self) -> types.SimpleNamespace:
+        """
+        It's encouraged to overwrite this and return a dataclass or something that is better type-able  in your
+        concrete implementation
+        """
         return types.SimpleNamespace()
 
     def __init__(self) -> None:
         super().__init__()
         self.__name__: str = self.__class__.__name__
-        self.change_context = asyncio.Condition()
         self._state = None
         self._run = None
+        self.change_context = asyncio.Condition()
+        """
+        Condition to notify / wait for changed :attr:`.context`
+        """
         self.task_nursery = util.TaskNursery(name=f"Task Nursery for {self}")
         """
         This manages the tasks created by the protocol as well as teardown behaviour if the protocol is stopped
@@ -82,11 +97,14 @@ class AbstractProtocol(Generic[T_EnumFlag], abc.ABC):
 
     # declaring the property this way helps pycharm to infer types correctly see
     # https://youtrack.jetbrains.com/issue/PY-15176 and related issues.
-    state = util.condition_property(fget=_get_state, fset=_set_state)
+    state: util.condition_property = util.condition_property(fget=_get_state, fset=_set_state)
+    """
+    Makes shared access to the protocol state easy
+    """
 
     def start(self: AbstractProtocol[T_EnumFlag]) -> AbstractProtocol[T_EnumFlag]:
         """
-        Start the protocol
+        Starts the protocol task.
 
         It is encouraged to wait for the protocol if the task is cancelled instead of waiting for the task.
         In either case, canceling the task will trigger the sentinel task to handle the
@@ -97,6 +115,12 @@ class AbstractProtocol(Generic[T_EnumFlag], abc.ABC):
 
         Returns:
             reference to `self` -- the started protocol
+
+        See Also:
+            :class:`RunProtocol` -- specialized coroutine that is used to create the task
+
+            :attr:`.task_nursery` -- the object that handles cancellation / stopping of the task when
+            necessary
         """
         if not self._run:
             self._run = self.task_nursery.create_task(RunProtocol(self))
@@ -109,11 +133,11 @@ class AbstractProtocol(Generic[T_EnumFlag], abc.ABC):
     async def stop(self) -> None:
         """
         Gracefully shut down the protocol by setting the protocol state to the end state.
-        This will call appropriate state change callbacks (make sure those are defined, else ``stop`` will raise an
-        exception) and finish the ``run()`` task.
+        This will call the appropriate state change callback (for the :math:`current \\rightarror end` state change)
+        and finish the task created by :meth:`.start`
 
-        Stop returns control back to the caller after the ``run()`` task stopped and all teardown callbacks
-        have been scheduled.
+        Returns control back to the caller after the task created by :meth:`.start` stopped and all teardown
+        callbacks have been scheduled
         """
         assert self._run, "Protocol not running, `start()` first"
         await self.state.set(self.end_state)
@@ -130,9 +154,23 @@ class AbstractProtocol(Generic[T_EnumFlag], abc.ABC):
 
 @util.dunder.repr('protocol')
 class RunProtocol(util.CoroutineWrapper):
+    """
+    A specialized coroutine to wait for changing protocol :attr:`~AbstractProtocol.state`, get the appropriate callbacks
+    from the protocols :attr:`~AbstractProtocol.state_changes` and execute them.
+
+    Starting a protocol using the :meth:`~AbstractProtocol.start` method, starts a :class:`RunProtocol` coroutine
+    as a task using the protocol's :attr:`AbstractProtocol.task_nursery`.
+    """
 
     def __init__(self, protocol: AbstractProtocol):
+        """
+        Args:
+            protocol: a protocol to run
+        """
         self.protocol = protocol
+        """
+        Reference to the protocol that is running in this coroutine
+        """
         self.__name__ = repr(self.protocol)
         super().__init__(coroutine=self._run())
 
