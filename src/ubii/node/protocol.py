@@ -135,8 +135,9 @@ class LegacyProtocol(client_.AbstractClientProtocol[States]):
         assert context.service_connection is not None
         # update service connection url for consistency with topic connection:
         ip = context.server.ip_wlan or context.server.ip_ethernet or 'localhost'
-        schema = f"http{'s' if context.service_connection.https else ''}"
-        context.service_connection.url = f"{schema}://{ip}:{context.server.port_service_rest}/services"
+        from urllib.parse import urlparse
+        parsed = urlparse(context.service_connection.url)
+        context.service_connection.url = f"{parsed.scheme}://{ip}:{context.server.port_service_rest}{parsed.path}"
 
     async def update_services(self, context: LegacyProtocol.Context):
         assert context.service_map is not None

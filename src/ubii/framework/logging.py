@@ -86,11 +86,33 @@ class _logging_setup:
 
 
 logging_setup = _logging_setup(base_config=__config__, log_level=logging.INFO, warning_filter='default')
+"""
+
+"""
 
 
 def parse_args(parser: argparse.ArgumentParser | None = None) -> argparse.Namespace:
     """
-    Convenience function to parse command line arguments
+    Convenience function to parse command line arguments.
+    Adds the following command line arguments to the parser:
+
+        *   ``--verbose``, ``-v`` -- can be specified multiple times, increases the verbosity of the framework logging
+        *   ``--debug`` -- sets the framework to :func:`~ubii.framework.debug` mode
+        *   ``--log-config`` -- takes a `yaml` file containing a dictionary for :func:`logging.config.dictConfig`
+            configuration, an example config is available at
+            https://github.com/saggitar/ubii-node-python/blob/develop/src/ubii/framework/util/logging_config.yaml
+
+    Example:
+
+        ::
+
+            from ubii.framework.logging import parse_args
+            import argparse
+
+            parser = argparse.ArgumentParser()
+            parser.add_argument('--processing-modules', action='append', default=[])
+            parser.add_argument('--no-discover', action='store_true', default=False)
+            args = parse_args(parser=parser)
 
     Args:
         parser: if no parser is passed, a new one is created  -- `optional`

@@ -42,10 +42,10 @@ default_server: ubii.proto.Server = ubii.proto.Server()
 Server with :attr:`~ubii.proto.Server.constants_json` set to :attr:`default_contants` (converted to JSON)
 """
 default_server.constants_json = ubii.proto.Constants.to_json(default_constants)
-default_service_url = os.getenv(UBII_URL_ENV, 'http://localhost:8102/services')
+default_service_url = os.getenv(UBII_URL_ENV, 'http://localhost:8102/services/json')
 """
 Global variable for url of `master node` service backend. Read from :attr:`UBII_URL_ENV` environment variable, 
-fallback ``http://localhost:8102/services``
+fallback ``http://localhost:8102/services/json``
 
 :meta hide-value:
 """
