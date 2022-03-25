@@ -225,6 +225,7 @@ class InitProcessingModules:
     Will contain types initially, and instances after initialization of the modules.
     """
 
+
 @util.dunder.repr('id')
 class UbiiClient(ubii.proto.Client,
                  typing.Awaitable['UbiiClient'],
@@ -529,6 +530,7 @@ class UbiiClient(ubii.proto.Client,
         self._behaviours[key] = value
         self.notify()
 
+
 @util.dunder.all('client')
 class AbstractClientProtocol(protocol.AbstractProtocol[T_EnumFlag], util.Registry, abc.ABC):
     """
@@ -560,9 +562,15 @@ class AbstractClientProtocol(protocol.AbstractProtocol[T_EnumFlag], util.Registr
         return self.client.id
 
     def __init__(self, config: constants.UbiiConfig = constants.GLOBAL_CONFIG, log: logging.Logger | None = None):
-        self.config = config
         self.log = log or logging.getLogger(__name__)
+        self.config: constants.UbiiConfig = config
+        """
+        Config used -- contains e.g. default topic for initial `server configuration` service call
+        """
         self.client: UbiiClient | None = None
+        """
+        The client that owns this protocol
+        """
         super().__init__()
 
     @abc.abstractmethod

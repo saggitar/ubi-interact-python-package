@@ -222,9 +222,9 @@ class RunProtocol(util.CoroutineWrapper):
 
             previous = current
             if current != end_state:
-                # wait until a state is set that is not the previous state
+                # wait until a state is set that is not the current state
                 current = await self.protocol.state.get(
-                    predicate=lambda value: value != previous
+                    predicate=lambda value: value != current
                 )
 
         log.debug(f"{self} finished.")
