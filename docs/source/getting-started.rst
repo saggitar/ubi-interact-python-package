@@ -184,3 +184,15 @@ turning off auto discovery in this example)
    > Imported <class 'ubii.processing_modules.ocr.tesseract_ocr.TesseractOCR_EAST'>
    > ...
 
+
+
+Writing a custom client
+^^^^^^^^^^^^^^^^^^^^^^^
+
+One can also use the package to write a custom client. To poke around and test communication with the `master node`
+start with the default client by using :class:`ubii.node.connect_client`.
+
+1.  Make sure the `master node` is running, note the URL for the service endpoint for json data,
+    e.g. ``http://*:8102/services/json`` (the output of the running master node should show the URL)
+2.  Either set the appropriate environment variable (see :attr:`~ubii.framework.constants.UBII_URL_ENV`) to the
+    url of your service endpoint, or pass it to :class:`ubii.node.connect_client`

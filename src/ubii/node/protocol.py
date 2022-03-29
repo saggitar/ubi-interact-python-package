@@ -110,7 +110,7 @@ class LegacyProtocol(client_.AbstractClientProtocol[States]):
             assert context.service_connection is not None
             service_call = services.ServiceCall(transport=context.service_connection, mapping=service)
 
-            # add exception handling
+            # add exception handling to new class to not change the default behaviour
             class _(type(service_call)):
                 __doc__ = service_call.__doc__
 

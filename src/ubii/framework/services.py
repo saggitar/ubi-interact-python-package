@@ -100,7 +100,7 @@ class ServiceCall(ubii.proto.Service, metaclass=ubii.proto.ProtoMeta):
                 >>> service_call
                 topic: "/services/server_configuration"
                 response_message_format: "ubii.servers.Server"
-                >>> config
+                >>> reply
                 server {
                   id: "f491e47e-e591-4961-b4ca-8e1142175ae8"
                   name: "master-node"
