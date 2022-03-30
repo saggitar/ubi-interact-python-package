@@ -274,4 +274,15 @@ handle signals (e.g. when the user presses ``Ctrl+C`` in the shell) for us.
 .. literalinclude:: ../../src/ubii/cli/main.py
    :pyobject: info_log_client
 
-You can test the
+You can test the client by running the ``example-client`` command when you install this python package with ``[cli]``
+extra ::
+
+    $ pip install ubii-node-python[cli]
+    $ example-client --help
+    usage: example-client [-h] [--url URL] [--verbose] [--debug] [--log-config LOG_CONFIG]                                                                                                                                                  optional arguments:
+      -h, --help            show this help message and exit
+      --url URL             URL of master node service endpoint
+      --verbose, -v
+      --debug
+      --log-config LOG_CONFIG
+
