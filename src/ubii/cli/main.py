@@ -116,12 +116,15 @@ def info_log_client():
     Example for tutorial to create a simple client that prints messages received in the info topics,
     and continuously publishes a value to a custom info topic
     """
+    import asyncio
     from ubii.framework.logging import parse_args
     parser = argparse.ArgumentParser()
     parser.add_argument('--url', type=str, action='store', default=None, help='URL of master node service endpoint')
     args = parse_args(parser=parser)
 
     from ubii.node import connect_client, Subscriptions, Publish, DefaultProtocol
+
+    loop = asyncio.get_event_loop_policy().get_event_loop()
 
     async def run():
         client: UbiiClient[DefaultProtocol]
@@ -143,8 +146,6 @@ def info_log_client():
                 await client[Publish].publish({'topic': '/info/custom_topic', 'string': value})
 
         loop.stop()
-
-    loop = asyncio.get_event_loop_policy().get_event_loop()
 
     from codestare.async_utils.nursery import TaskNursery
     nursery = TaskNursery(name="__main__", loop=loop)

@@ -218,8 +218,8 @@ See `example`_ for full code.
 
 .. literalinclude:: ../../src/ubii/cli/main.py
    :pyobject: info_log_client
-   :lineno-start: 6
-   :lines: 6-9
+   :lineno-start: 7
+   :lines: 7-10
    :linenos:
    :dedent: 4
    :emphasize-lines: 1,4
@@ -230,9 +230,9 @@ pass the URL of the `master node` service endpoint.
 
 .. literalinclude:: ../../src/ubii/cli/main.py
    :pyobject: info_log_client
-   :lineno-start: 11
-   :lines: 11-24
-   :emphasize-lines: 7,10,13
+   :lineno-start: 12
+   :lines: 12-27
+   :emphasize-lines: 9,12,15
    :dedent: 4
 
 
@@ -262,9 +262,9 @@ by the glob pattern we subscribed to earlier.
 
 .. literalinclude:: ../../src/ubii/cli/main.py
    :pyobject: info_log_client
-   :lineno-start: 25
+   :lineno-start: 28
    :emphasize-lines: 6
-   :lines: 25-30
+   :lines: 28-33
    :dedent: 12
 
 Now just start every thing in the `asyncio` event loop. Here we use a :class:`~codestare.async_utils.TaskNursery` to
