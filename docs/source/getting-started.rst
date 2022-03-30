@@ -214,7 +214,7 @@ To test communication with the `master node` start with the default client by us
 Client Example
 ~~~~~~~~~~~~~~
 Goal of this example is to create a Ubi Interact client node and subscribe to a topic with a custom callback.
-The following module level function could e.g. be run as a script.
+See `example`_ for full code.
 
 .. literalinclude:: ../../src/ubii/cli/main.py
    :pyobject: info_log_client
@@ -270,6 +270,8 @@ by the glob pattern we subscribed to earlier.
 
 Now just start every thing in the `asyncio` event loop. Here we use a :class:`~codestare.async_utils.TaskNursery` to
 handle signals (e.g. when the user presses ``Ctrl+C`` in the shell) for us.
+
+.. _example:
 
 .. literalinclude:: ../../src/ubii/cli/main.py
    :pyobject: info_log_client
