@@ -2,8 +2,7 @@ ubii.node package
 =================
 
 .. automodule:: ubii.node
-    :members:
-    :noindex:
+    :no-members:
 
 Submodules
 ----------

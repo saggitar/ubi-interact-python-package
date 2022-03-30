@@ -107,6 +107,8 @@ nodes refer to the `package
 documentation <#ubi-interact-python-node>`__. To start a python client
 refer to `CLI <#CLI>`__.
 
+.. _CLI:
+
 CLI
 ~~~
 
@@ -187,12 +189,89 @@ turning off auto discovery in this example)
 
 
 Writing a custom client
-^^^^^^^^^^^^^^^^^^^^^^^
+-----------------------
 
-One can also use the package to write a custom client. To poke around and test communication with the `master node`
-start with the default client by using :class:`ubii.node.connect_client`.
+The alternative to implementing a `processing module` is to implement a custom client node.
+To test communication with the `master node` start with the default client by using :class:`ubii.node.connect_client`.
+
+.. note::
+
+    You can start a `async` python REPL by using ``python -m asyncio`` to use :ref:`await` directly
+    instead of writing everything in a ``main()`` function and using ``asyncio.run()``
 
 1.  Make sure the `master node` is running, note the URL for the service endpoint for json data,
     e.g. ``http://*:8102/services/json`` (the output of the running master node should show the URL)
+
 2.  Either set the appropriate environment variable (see :attr:`~ubii.framework.constants.UBII_URL_ENV`) to the
-    url of your service endpoint, or pass it to :class:`ubii.node.connect_client`
+    url of your service endpoint, or pass it to :class:`ubii.node.connect_client` e.g. ::
+
+        >>> from ubii.node import connect_client
+        >>> client = await connect_client('http://localhost:8102/services/json')
+
+3.  You can read about the client created by :obj:`~ubii.node.connect_client` in the API
+    documentation.
+
+Client Example
+~~~~~~~~~~~~~~
+Goal of this example is to create a Ubi Interact client node and subscribe to a topic with a custom callback.
+The following module level function could e.g. be run as a script.
+
+.. literalinclude:: ../../src/ubii/cli/main.py
+   :pyobject: info_log_client
+   :lineno-start: 6
+   :lines: 6-9
+   :linenos:
+   :dedent: 4
+   :emphasize-lines: 1,4
+
+Use the :func:`~ubii.framework.logging.parse_args` function to give the argument parser some
+default arguments (to increase verbosity and set `debug` mode). The parser also gets a custom argument to
+pass the URL of the `master node` service endpoint.
+
+.. literalinclude:: ../../src/ubii/cli/main.py
+   :pyobject: info_log_client
+   :lineno-start: 11
+   :lines: 11-24
+   :emphasize-lines: 7,10,13
+   :dedent: 4
+
+
+We subscribe to a topic glob pattern (in our case ``/info/*``) but we use
+the :attr:`default topics <ubii.proto.Constants.DEFAULT_TOPICS>` of the `master node` instead of hard coding that value.
+
+The `default topics` get sent by the `master node` as part of the :class:`~ubii.proto.Server` reply to
+the initial `server configuration` service request using the URL passed via the command line argument
+(:obj:`~ubii.node.connect_client` has defaults if nothing is passed).
+
+.. seealso::
+
+    :meth:`ubii.node.protocol.LegacyProtocol.update_config` -- this callback makes the `server_config` service call
+    and updates the constants in the protocol context with the constants sent by the `master node`
+
+The constants that the client protocol uses, are actually the
+:attr:`constants of the global config <ubii.framework.constants.GLOBAL_CONFIG>` since no other config was passed to
+:obj:`~ubii.node.connect_client`, but referencing them as the
+:attr:`constants of the protocol context <ubii.node.protocol.LegacyProtocol.Context.constants>` is advisable.
+
+Subscribing to the topic pattern returns a :class:`~ubii.framework.topics.Topic` (actually a tuple of topics, one value
+for each pattern used in the subscription call, note the implicit unpacking of the tuple), that can be used to
+register a callback for new topic data. Our example client just registers :func:`print`.
+
+Last but not least we start a loop and publish some very interesting topic data to a topic that should be covered
+by the glob pattern we subscribed to earlier.
+
+
+.. literalinclude:: ../../src/ubii/cli/main.py
+   :pyobject: info_log_client
+   :lineno-start: 25
+   :emphasize-lines: 6
+   :lines: 25-30
+   :dedent: 12
+
+Now just start every thing in the `asyncio` event loop. Here we use a :class:`~codestare.async_utils.TaskNursery` to
+handle signals (e.g. when the user presses ``Ctrl+C`` in the shell) for us.
+
+.. literalinclude:: ../../src/ubii/cli/main.py
+   :pyobject: info_log_client
+
+You can test the

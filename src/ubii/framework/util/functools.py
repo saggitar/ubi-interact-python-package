@@ -53,7 +53,7 @@ def similar(choices: typing.Sequence, item: typing.Any, cutoff=0.70):
 T_Callable = typing.TypeVar('T_Callable', bound=typing.Callable[..., typing.Any])
 
 
-class _append_doc:
+class append_doc:
     """
     Helper to append information to docstrings of callables
     """
@@ -97,7 +97,7 @@ def document_decorator(decorator):
                 "{}def {}{}".format("async " if is_async else '', decorated.__name__, sig)
         }
 
-        _append_doc(decorated)(
+        append_doc(decorated)(
             """
             This callable had the :obj:`~{decorator}` decorator applied.
             Original signature: ``{signature}``
@@ -888,5 +888,6 @@ __all__ = (
     'enrich',
     'calc_delta',
     'dunder',
-    'document_decorator'
+    'document_decorator',
+    'append_doc'
 )

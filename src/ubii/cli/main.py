@@ -8,6 +8,8 @@ from typing import (
     Any
 )
 
+from ubii.framework.client import UbiiClient
+
 try:
     from importlib import metadata
 except ImportError:  # for Python<3.8
@@ -16,6 +18,9 @@ except ImportError:  # for Python<3.8
 log = logging.getLogger(__name__)
 
 SETUPTOOLS_PM_ENTRYPOINT_KEY = 'ubii.processing_modules'
+"""
+Processing modules need to register their entry points with this key
+"""
 
 
 def import_pm(import_name: str):
@@ -44,7 +49,7 @@ def log_to_folder(log_config):
 
 def load_pm_entry_points() -> List[Any]:
     """
-    Loads setuptools entrypoints for key :attr:`.SETUPTOOLS_PM_ENTRYPOINT_KEY`
+    Loads setuptools entrypoints for key :attr:`SETUPTOOLS_PM_ENTRYPOINT_KEY`
 
     Returns:
         list of :class:`~ubii.framework.processing.ProcessingRoutine` types
@@ -56,6 +61,9 @@ def load_pm_entry_points() -> List[Any]:
 
 
 def main():
+    """
+    Entry point for cli script see :ref:`CLI` in the documentation
+    """
     from ubii.node import connect_client
     from ubii.framework.logging import parse_args, logging_setup
     from ubii.framework.client import InitProcessingModules
@@ -98,6 +106,50 @@ def main():
     with log_config:
         nursery.create_task(run())
         loop.run_forever()
+
+    assert not loop.is_running()
+    loop.close()
+
+
+def info_log_client():
+    """
+    Example for tutorial to create a simple client that prints messages received in the info topics,
+    and continuously publishes a value to a custom info topic
+    """
+    from ubii.framework.logging import parse_args
+    parser = argparse.ArgumentParser()
+    parser.add_argument('--url', type=str, action='store', default=None, help='URL of master node service endpoint')
+    args = parse_args(parser=parser)
+
+    from ubii.node import connect_client, Subscriptions, Publish, DefaultProtocol
+
+    async def run():
+        client: UbiiClient[DefaultProtocol]
+        async with connect_client(url=args.url) as client:
+            # we don't hard code the topic, we use the DEFAULT TOPIC from the master node
+            constants = client.protocol.context.constants
+            assert constants
+            info_topic_pattern = constants.DEFAULT_TOPICS.INFO_TOPICS.REGEX_ALL_INFOS
+            info, = await client[Subscriptions].subscribe_regex(info_topic_pattern)
+
+            print(f"Subscribed to topic {info_topic_pattern!r}")
+            info.register_callback(print)
+
+            value = None
+
+            while client.state != client.State.UNAVAILABLE:
+                value = 'foo' if value == 'bar' else 'bar'
+                await asyncio.sleep(1)
+                await client[Publish].publish({'topic': '/info/custom_topic', 'string': value})
+
+        loop.stop()
+
+    loop = asyncio.get_event_loop_policy().get_event_loop()
+
+    from codestare.async_utils.nursery import TaskNursery
+    nursery = TaskNursery(name="__main__", loop=loop)
+    nursery.create_task(run())
+    loop.run_forever()
 
     assert not loop.is_running()
     loop.close()

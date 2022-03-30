@@ -146,11 +146,26 @@ class publish_call(Protocol):
 class Services:
     """
     Behaviour to make service calls (accessed via the service map)
+
+    Example:
+
+        >>> from ubii.node import *
+        >>> client = await connect_client()
+        >>> assert client.implements(Services)
+        >>> await client[Services].service_map.server_config()
+        server {
+          id: "c2741cca-c75a-41d4-820a-80ac6407d791"
+          name: "master-node"
+          [...]
+        }
+
     """
     service_map: services.DefaultServiceMap | None = None
     """
-    The :class:`~.services.DefaultServiceMap` can be accessed with "shortcuts" for service topics (see 
-    :attr:`.services.DefaultServiceMap.defaults`
+    The :class:`~.services.DefaultServiceMap` can be accessed with "shortcuts" for service topics
+    
+    See Also: 
+        :attr:`.services.DefaultServiceMap.defaults` -- how attribute access for the service map works
     """
 
 
@@ -158,6 +173,15 @@ class Services:
 class Subscriptions:
     """
     Behaviour to subscribe and unsubscribe from topics
+
+    Example:
+
+        >>> from ubii.node import *
+        >>> client = await connect_client()
+        >>> start_pm, = await client[Subscriptions].subscribe_topic('/info/processing_module/start')
+        >>> start_pm.subscriber_count
+        1
+
     """
     subscribe_regex: subscribe_call | None = None
     subscribe_topic: subscribe_call | None = None
@@ -391,10 +415,20 @@ class UbiiClient(ubii.proto.Client,
 
         # see if (https://github.com/python/mypy/issues/5865) is resolved to check if mypy gets this
         class _(behaviour):  # type: ignore
+            """
+            Proxy to notify client of changed fields.
+            """
             def __setattr__(self, key, value):
                 super().__setattr__(key, value)
                 client.notify()
 
+            def __repr__(self):
+                fields = dataclasses.fields(self)
+                return (f"{behaviour.__module__}.{behaviour.__name__}"
+                        f"({', '.join('{}={!r}'.format(f.name, getattr(self, f.name)) for f in fields)})")
+
+        from .util.functools import append_doc
+        append_doc(_)(behaviour.__doc__)
         return _
 
     def notify(self) -> None:
@@ -489,6 +523,13 @@ class UbiiClient(ubii.proto.Client,
 
         return util.awaitable_predicate(predicate=fields_not_none, condition=self._change_specs)
 
+    @property
+    def behaviours(self):
+        """
+        List of all behaviours that are currently :meth:`implemented <.implements>`
+        """
+        return [behaviour for behaviour in self._behaviours if self.implements(behaviour)]
+
     async def _initialize(self):
         await self.implements(*self._required_behaviours)
         return self
@@ -514,7 +555,7 @@ class UbiiClient(ubii.proto.Client,
         return self._ctx.__aexit__(*exc_info)
 
     @property
-    def protocol(self) -> T_Protocol:
+    def protocol(self: UbiiClient[T_Protocol]) -> T_Protocol:
         """
         Reference to protocol used by the client
         """
@@ -527,7 +568,8 @@ class UbiiClient(ubii.proto.Client,
         if not dataclasses.is_dataclass(value):
             raise ValueError(f"can only assign dataclass instances to {key}, got {type(value)}")
 
-        self._behaviours[key] = value
+        # create copy of value that is a proxy object
+        self._behaviours[key] = self._patch_behaviour(type(value))(**dataclasses.asdict(value))  # type: ignore
         self.notify()
 
 

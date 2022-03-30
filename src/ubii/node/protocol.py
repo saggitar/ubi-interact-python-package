@@ -1,13 +1,12 @@
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import dataclasses
 import enum
+import functools
 import logging
 import typing
-import contextlib
-import functools
-
 
 try:
     from functools import cached_property
@@ -22,7 +21,7 @@ from ubii.framework import (
     topics,
     services,
     connections,
-    client as client_,
+    client,
     constants,
     util,
     processing,
@@ -45,30 +44,67 @@ class States(enum.IntFlag):
     ANY = STARTING | REGISTERED | CONNECTED | STOPPED | HALTED | CREATED
 
 
-class LegacyProtocol(client_.AbstractClientProtocol[States]):
+class LegacyProtocol(client.AbstractClientProtocol[States]):
     """
     The standard protocol creates one UbiiClient, registers it, implements all required behaviours and
     device registration as well as handling of processing modules.
     """
 
-    # states
     starting_state = States.STARTING
+    """
+    """
     end_state = States.STOPPED
+    """
+    """
 
-    # decorators applied to DefaultProtocol hooks
-    __hook_decorators__ = client_.AbstractClientProtocol.__hook_decorators__.union([util.log_call(log)])
+    __hook_decorators__ = client.AbstractClientProtocol.__hook_decorators__.union([util.log_call(log)])
+    """
+    decorators applied to protocol hooks
+    """
 
     @dataclasses.dataclass
     class Context:
+        """
+        The fields get assigned during the lifetime of the client
+        """
         server: ubii.proto.Server | None = None
+        """
+        The server message as send by the `master node` after the initial ``server_configuration`` service call
+        """
         constants: ubii.proto.Constants | None = None
-        client: client_.UbiiClient | None = None
+        """
+        The constants used by the `master node` (default topics, data types etc.)
+        """
+        client: 'client.UbiiClient' = None
+        """
+        The client that owns the protocol
+        """
         service_connection: connections.AIOHttpRestConnection | None = None
+        """
+        Usable service connection created in :meth:`~ubii.node.protocol.LegacyProtocol.create_service_map`
+        """
         service_map: services.ServiceMap | None = None
+        """
+        Usable service map created in :meth:`~ubii.node.protocol.LegacyProtocol.create_service_map`
+        """
         topic_connection: connections.AIOHttpWebsocketConnection | None = None
-        register_manager: typing.AsyncContextManager[client_.UbiiClient] | None = None
+        """
+        Usable topic connection created in :meth:`~ubii.node.protocol.LegacyProtocol.create_topic_connection`
+        """
+        register_manager: typing.AsyncContextManager['client.UbiiClient'] | None = None
+        """
+        async context manager to register and unregister the client, created in 
+        :meth:`~ubii.node.protocol.LegacyProtocol.register_client`
+        """
         topic_store: topics.TopicStore[topics.BasicTopic] | None = None
+        """
+        Used to access topics that the client is subscribed to, created in 
+        :meth:`~ubii.node.protocol.LegacyProtocol.implement_subscriptions`
+        """
         exc_info: typing.Tuple[Exception | None, typing.Type[Exception] | None, typing.Any] | None = None
+        """
+        Filled when some protocol task raises an exception
+        """
 
     def __init__(self,
                  config: constants.UbiiConfig = constants.GLOBAL_CONFIG,
@@ -76,20 +112,24 @@ class LegacyProtocol(client_.AbstractClientProtocol[States]):
 
         super().__init__(config, log)
         self.aiohttp_session = connections.aiohttp_session()
+        """
+        shared session for `aiohttp` connections
+        """
         self.task_nursery.push_async_exit(self.aiohttp_session)
 
     @cached_property
     def context(self) -> LegacyProtocol.Context:
         """
-        Returning actual object for better typing
+        Returning context object for better typing
         """
         return self.Context()
 
-    @client_.AbstractClientProtocol.state.setter
+    @client.AbstractClientProtocol.state.setter
     def state(self, new_state: States):
-        maybe_suppress = contextlib.suppress(ValueError) if self.state.value == self.end_state else contextlib.nullcontext()
+        maybe_suppress = contextlib.suppress(
+            ValueError) if self.state.value == self.end_state else contextlib.nullcontext()
         with maybe_suppress:
-            client_.AbstractClientProtocol.state.fset(self, new_state)
+            client.AbstractClientProtocol.state.fset(self, new_state)
 
     async def _set_exc_info(self, *exc_info):
         received_exc = exc_info[0] is not None
@@ -100,37 +140,65 @@ class LegacyProtocol(client_.AbstractClientProtocol[States]):
             raise exc_info[1]
 
     async def create_service_map(self, context: LegacyProtocol.Context):
+        """
+        Create a :class:`~ubii.framework.services.ServiceMap` in the context as ``context.service_map``.
+
+        Also initializes
+
+            *   :attr:`context.server <.Context.server>` from :attr:`.config`
+            *   :attr:`context.constants <.Context.server>` from :attr:`.config`
+            *   :attr:`context.service_connection <.Context.service_connection>` with working
+                :class:`ubii.framework.connections.AIOHttpRestConnection` using :attr:`.aiohttp_session`
+
+        """
         context.server = self.config.SERVER
         context.constants = self.config.CONSTANTS
 
         context.service_connection = connections.AIOHttpRestConnection(self.config.DEFAULT_SERVICE_URL)
         context.service_connection.session = self.aiohttp_session
 
+        class ServiceCall(services.ServiceCall):
+            """
+            ServiceCall used in :class:`ubii.node.protocol.LegacyProtocol`
+
+            See Also:
+                :class:`ubii.framework.services.ServiceCall` -- how to use the Service Call
+            """
+
+            def __repr__(self):
+                return f"<{type(self).__name__} object [topic={self.topic}]>"
+
+        # add exception handling to new class to not change the default behaviour
+        ServiceCall.register_decorator(util.exc_handler_decorator(self._set_exc_info))
+
         def create_service_call(service: ubii.proto.Service):
+            """
+            Use service connection of context to create a service call
+            """
             assert context.service_connection is not None
-            service_call = services.ServiceCall(transport=context.service_connection, mapping=service)
-
-            # add exception handling to new class to not change the default behaviour
-            class _(type(service_call)):
-                __doc__ = service_call.__doc__
-
-            _.register_decorator(util.exc_handler_decorator(self._set_exc_info))
-            service_call.__class__ = _
-
-            return service_call
+            return ServiceCall(transport=context.service_connection, mapping=service)
 
         context.service_map = services.DefaultServiceMap(
             service_call_factory=create_service_call
         )
 
     async def update_config(self, context: LegacyProtocol.Context):
+        """
+        Update the server configuration in the context. After completion of this coroutine
+
+        *   :attr:`context.server <.Context.server>` is a :class:`~ubii.proto.Server` message with
+            the configuration of the master node
+        *   :attr:`context.constants <.Context.constants>`  is a :class:`~ubii.proto.Constants` message of the default
+            constants of the master node
+        """
         assert context.service_map is not None
         assert context.constants is not None
         assert context.server is not None
 
         response = await context.service_map[context.constants.DEFAULT_TOPICS.SERVICES.SERVER_CONFIG]()
         ubii.proto.Server.copy_from(context.server, response.server)
-        ubii.proto.Constants.copy_from(context.constants, ubii.proto.Constants.from_json(response.server.constants_json))
+        ubii.proto.Constants.copy_from(context.constants,
+                                       ubii.proto.Constants.from_json(response.server.constants_json))
 
         assert context.service_connection is not None
         # update service connection url for consistency with topic connection:
@@ -140,6 +208,13 @@ class LegacyProtocol(client_.AbstractClientProtocol[States]):
         context.service_connection.url = f"{parsed.scheme}://{ip}:{context.server.port_service_rest}{parsed.path}"
 
     async def update_services(self, context: LegacyProtocol.Context):
+        """
+        Update the service map in the context.
+
+            *   :attr:`context.service_map <.Context.service_map>` is able to perform all service calls advertised
+                by the master node after this coroutine completes.
+        """
+
         assert context.service_map is not None
         assert context.constants is not None
 
@@ -155,8 +230,16 @@ class LegacyProtocol(client_.AbstractClientProtocol[States]):
         context.service_map.defaults.update(constants_service_map)
 
     async def create_client(self, context: LegacyProtocol.Context):
+        """
+        Create a client in the context.
 
-        context.client = self.client or client_.UbiiClient(protocol=self)
+            *   :attr:`context.client <.Context.client>` is a :class:`UbiiClient` using this protocol as
+                :attr:`~UbiiClient.protocol`
+
+        The client is also available as :attr:`.client` attribute
+        """
+
+        context.client = self.client or client.UbiiClient(protocol=self)
         if not self.client:
             warn(
                 f"Not setting the protocol client is deprecated. Created default client {context.client}",
@@ -171,12 +254,15 @@ class LegacyProtocol(client_.AbstractClientProtocol[States]):
     def register_client(self, context: LegacyProtocol.Context):
         """
         Needs to return a context manager, to register and unregister the client, but also
-        sets the ``register_manager`` attribute of the context so that this context manager might
-        be used somewhere else.
+        sets the :attr:`context.register_manager <.Context.register_manager>` attribute
+        so that this context manager might be used somewhere else
         """
 
         @contextlib.asynccontextmanager
         async def context_manager(context: LegacyProtocol.Context):
+            """
+            Entering the context manager registers the client, exiting it unregisters the client
+            """
             assert context.service_map is not None
             assert context.constants is not None
 
@@ -202,7 +288,10 @@ class LegacyProtocol(client_.AbstractClientProtocol[States]):
 
     async def create_topic_connection(self, context: LegacyProtocol.Context):
         """
-        Create a topic connection in the context.
+        Create a :attr:`context.topic_connection <.Context.topic_connection>` using a
+        :class:`ubii.framework.connections.AIOHttpWebSocketConnection` using :attr:`.aiohttp_session`
+
+        The :attr:`.state` will be set to :attr:`States.HALTED` when the topic connection disconnects.
         """
         assert context.client is not None
         assert context.server is not None
@@ -225,14 +314,26 @@ class LegacyProtocol(client_.AbstractClientProtocol[States]):
         self.task_nursery.create_task(set_state_on_disconnect())
 
     async def implement_client(self, context: LegacyProtocol.Context):
+        """
+        Implements
+            *   `subscription behaviour <implement_subscriptions>`
+            *   `publish behaviour <implement_publish>`
+            *   `client registration / deregistration <implement_register>`
+
+        :attr:`context.client <.Context.client>` can be awaited after this coroutine is finished,
+        to return a fully functional client.
+        """
         assert context.client is not None
 
-        context.client[client_.Services].service_map = context.service_map
+        context.client[client.Services].service_map = context.service_map
         self.implement_subscriptions(context)
         self.implement_publish(context)
         self.implement_register(context)
 
     def implement_subscriptions(self, context: LegacyProtocol.Context):
+        """
+        Implement :class:`ubii.node.Subscriptions` behaviour of :attr:`context.client <.Context.client>`
+        """
         assert context.client is not None
 
         context.topic_store = topics.TopicStore(
@@ -286,14 +387,102 @@ class LegacyProtocol(client_.AbstractClientProtocol[States]):
 
             return _topics
 
-        context.client[client_.Subscriptions] = client_.Subscriptions(
-            subscribe_regex=functools.partial(_handle_subscribe, as_regex=True, unsubscribe=False),
-            subscribe_topic=functools.partial(_handle_subscribe, as_regex=False, unsubscribe=False),
-            unsubscribe_regex=functools.partial(_handle_subscribe, as_regex=True, unsubscribe=True),
-            unsubscribe_topic=functools.partial(_handle_subscribe, as_regex=False, unsubscribe=True),
+        # we could do this with functools.partial, but that does not genereate a useful help() for the function
+        # so instead we just manually define them
+
+        def subscribe_regex(*pattern):
+            """
+            Subscribe to topic with glob pattern
+
+            Args:
+                *pattern: unix wildcard patterns
+
+            Example:
+
+                >>> from ubii.node import *
+                >>> client = await connect_client()
+                >>> all_infos, = await client[Subscriptions].subscribe_regex('/info/*')
+
+            Returns:
+                awaitable returning a tuple of processed topics (one for each pattern, same order)
+            """
+            return _handle_subscribe(*pattern, as_regex=True, unsubscribe=False)
+
+        def subscribe_topic(*pattern):
+            """
+            Subscribe to topic with simple topic name
+
+            Args:
+                *pattern: absolute topic names
+
+            Example:
+
+                >>> from ubii.node import *
+                >>> client = await connect_client()
+                >>> start_pm, = await client[Subscriptions].subscribe_topic('/info/processing_module/start')
+
+            Returns:
+                awaitable returning a tuple of processed topics (one for each pattern, same order)
+            """
+            return _handle_subscribe(*pattern, as_regex=False, unsubscribe=False)
+
+        def unsubscribe_regex(*pattern):
+            """
+            Unsubscribe from topic with glob pattern
+
+            Args:
+                *pattern: absolute topic names
+
+            Example:
+
+                >>> from ubii.node import *
+                >>> client = await connect_client()
+                >>> all_infos, = await client[Subscriptions].subscribe_regex('/info/*')
+                >>> all_infos.subscriber_count
+                1
+                >>> all_infos, = await client[Subscriptions].unsubscribe_regex('/info/*')
+                >>> all_infos.subscriber_count
+                0
+
+            Returns:
+                awaitable returning a tuple of processed topics (one for each pattern, same order)
+            """
+            return _handle_subscribe(*pattern, as_regex=True, unsubscribe=True)
+
+        def unsubscribe_topic(*pattern):
+            """
+            Unsubscribe from topic with simple topic name
+
+            Args:
+                *pattern: absolute topic names
+
+            Example:
+
+                >>> from ubii.node import *
+                >>> client = await connect_client()
+                >>> start_pm, = await client[Subscriptions].subscribe_topic('/info/processing_module/start')
+                >>> start_pm.subscriber_count
+                1
+                >>> start_pm, = await client[Subscriptions].unsubscribe_topic('/info/processing_module/start')
+                >>> start_pm.subscriber_count
+                0
+
+            Returns:
+                awaitable returning a tuple of processed topics (one for each pattern, same order)
+            """
+            return _handle_subscribe(*pattern, as_regex=False, unsubscribe=True)
+
+        context.client[client.Subscriptions] = client.Subscriptions(
+            subscribe_regex=subscribe_regex,
+            subscribe_topic=subscribe_topic,
+            unsubscribe_regex=unsubscribe_regex,
+            unsubscribe_topic=unsubscribe_topic,
         )
 
     def implement_publish(self, context: LegacyProtocol.Context):  # noqa don't care if it could be static
+        """
+        Implement :class:`ubii.node.Publish` behaviour of :attr:`context.client <.Context.client>`
+        """
         assert context.client is not None
 
         async def publish(*records: typing.Union[ubii.proto.TopicDataRecord, typing.Dict]):
@@ -309,20 +498,24 @@ class LegacyProtocol(client_.AbstractClientProtocol[States]):
 
             await context.topic_connection.send(data)
 
-        context.client[client_.Publish].publish = publish
+        context.client[client.Publish].publish = publish
 
     def implement_register(self, context: LegacyProtocol.Context):  # noqa
         """
-        Use the ``register_manager`` in the context to give the client additional behaviour
-        (registering and unregistering the client)
+        Implement :class:`ubii.node.Register` behaviour of :attr:`context.client <.Context.client>` using the
+        :attr:`context.register_manager <.Context.register_manager>`
         """
 
         assert context.register_manager is not None
         assert context.client is not None
-        context.client[client_.Register].register = context.register_manager.__aenter__
-        context.client[client_.Register].deregister = functools.partial(context.register_manager.__aexit__, None, None, None)
+        context.client[client.Register].register = context.register_manager.__aenter__
+        context.client[client.Register].deregister = functools.partial(context.register_manager.__aexit__, None, None,
+                                                                       None)
 
     def implement_devices(self, context: LegacyProtocol.Context):
+        """
+        Implement :class:`ubii.node.Devices` behaviour of :attr:`context.client <.Context.client>`
+        """
         assert context.service_map is not None
 
         register_service = context.service_map.device_registration
@@ -363,10 +556,16 @@ class LegacyProtocol(client_.AbstractClientProtocol[States]):
             del pending_devices[device.id]
 
         assert context.client is not None
-        context.client[client_.Devices].register_device = register
-        context.client[client_.Devices].deregister_device = deregister
+        context.client[client.Devices].register_device = register
+        context.client[client.Devices].deregister_device = deregister
 
     async def on_registration(self, context: LegacyProtocol.Context):
+        """
+        Use :meth:`implement_devices` to implement device registration behaviour for the client,
+        and :meth:`implement_processing` to implement handling of processing modules.
+
+        Register all devices of the :attr:`context.client <.Context.client>`
+        """
         await super().on_registration(context)
 
         assert context.client is not None
@@ -387,8 +586,13 @@ class LegacyProtocol(client_.AbstractClientProtocol[States]):
         await self.state.set(States.CONNECTED)
 
     async def implement_processing(self, context: LegacyProtocol.Context):
-
+        """
+        Implement :class:`ubii.node.RunProcessingModules` behaviour of :attr:`context.client <.Context.client>`
+        """
         async def on_start_session(record):
+            """
+            When session is started, handle contained processing modules
+            """
             session: ubii.proto.Session = record.session
             specs: ubii.proto.ProcessingModule
             for specs in session.processing_modules:
@@ -437,11 +641,11 @@ class LegacyProtocol(client_.AbstractClientProtocol[States]):
                 mapping: ubii.proto.TopicInputMapping
                 for mapping in io_mapping.input_mappings or ():
                     if mapping.topic_mux:
-                        subscriber = context.client[client_.Subscriptions].subscribe_regex(
+                        subscriber = context.client[client.Subscriptions].subscribe_regex(
                             mapping.topic_mux.topic_selector
                         )
                     elif mapping.topic:
-                        subscriber = context.client[client_.Subscriptions].subscribe_topic(
+                        subscriber = context.client[client.Subscriptions].subscribe_topic(
                             mapping.topic
                         )
                     else:
@@ -461,16 +665,19 @@ class LegacyProtocol(client_.AbstractClientProtocol[States]):
                         output_topic = None
 
                     assert output_topic, f"No output topic for {mapping}"
-                    output_topic.register_callback(context.client[client_.Publish].publish)
+                    output_topic.register_callback(context.client[client.Publish].publish)
 
                 async with instance.change_specs:
                     instance.change_specs.notify_all()
 
-            add_service = context.client[client_.Services].service_map.pm_runtime_add
+            add_service = context.client[client.Services].service_map.pm_runtime_add
             pms = [pm for pm in processing.ProcessingRoutine.registry.values() if pm.id]
             await add_service(processing_module_list={'elements': pms})
 
         async def on_stop_session(record):
+            """
+            Stop processing modules for session
+            """
             session: ubii.proto.Session = record.session
             halted = []
             module: processing.ProcessingRoutine
@@ -481,7 +688,8 @@ class LegacyProtocol(client_.AbstractClientProtocol[States]):
                 log.debug(f"Stopping processing module {name}")
 
                 async with module.change_specs:
-                    await module.change_specs.wait_for(lambda: module.status == ubii.proto.ProcessingModule.Status.HALTED)
+                    await module.change_specs.wait_for(
+                        lambda: module.status == ubii.proto.ProcessingModule.Status.HALTED)
 
                 for topic in map(module.get_input_topic, module.inputs):
                     if not topic.on_subscribers_change:
@@ -492,12 +700,12 @@ class LegacyProtocol(client_.AbstractClientProtocol[States]):
                     await topic.remove_subscriber()
 
             stopped = await asyncio.gather(*map(processing.ProcessingRoutine.stop, halted))
-            remove_service = context.client[client_.Services].service_map.pm_runtime_remove
+            remove_service = context.client[client.Services].service_map.pm_runtime_remove
             await remove_service(processing_module_list={'elements': stopped})
 
         assert context.client is not None
         assert context.constants is not None
-        subscribe_topic = context.client[client_.Subscriptions].subscribe_topic
+        subscribe_topic = context.client[client.Subscriptions].subscribe_topic
         assert subscribe_topic is not None
 
         # create processing routines for all pms
@@ -513,9 +721,15 @@ class LegacyProtocol(client_.AbstractClientProtocol[States]):
         start.register_callback(on_start_session)
         stop.register_callback(on_stop_session)
 
-        context.client[client_.RunProcessingModules].get_processing_module = processing.ProcessingRoutine.registry.get
+        context.client[client.RunProcessingModules].get_processing_module = processing.ProcessingRoutine.registry.get
 
     async def on_halted(self, context: LegacyProtocol.Context):
+        """
+        When the protocol is in :attr:`States.HALTED` state, we apply some error handling.
+
+        Currently, this callback checks for connection problems (e.g. unavailable `master node`) and
+        restarts the protocol if they are fixed.
+        """
         assert context.service_map is not None
 
         missing_attrs = [field.name for field in dataclasses.fields(context)]
@@ -537,6 +751,10 @@ class LegacyProtocol(client_.AbstractClientProtocol[States]):
         return not connection_problems()
 
     async def on_stop(self, context: LegacyProtocol.Context):
+        """
+        When the protocol is in :attr:`States.STOPPED` state, unsubscribe all topics and stop all running tasks
+        """
+
         assert context.topic_store is not None
 
         for topic in context.topic_store.values():
@@ -549,14 +767,17 @@ class LegacyProtocol(client_.AbstractClientProtocol[States]):
 
     # changed callbacks means state changes have to be adjusted
     state_changes = {
-        (None, starting_state): client_.AbstractClientProtocol.on_start,
-        (starting_state, States.CREATED): client_.AbstractClientProtocol.on_create,
+        (None, starting_state): client.AbstractClientProtocol.on_start,
+        (starting_state, States.CREATED): client.AbstractClientProtocol.on_create,
         (States.CREATED, States.REGISTERED): on_registration,
-        (States.REGISTERED, States.CONNECTED): client_.AbstractClientProtocol.on_connect,
+        (States.REGISTERED, States.CONNECTED): client.AbstractClientProtocol.on_connect,
         (States.ANY, States.HALTED): on_halted,
-        (States.HALTED, starting_state): client_.AbstractClientProtocol.on_start,
-        (States.ANY, end_state): client_.AbstractClientProtocol.on_stop,
+        (States.HALTED, starting_state): client.AbstractClientProtocol.on_start,
+        (States.ANY, end_state): client.AbstractClientProtocol.on_stop,
     }
+    """
+    Callbacks for state changes
+    """
 
 
 class LatePMInitProtocol(LegacyProtocol):
@@ -566,23 +787,27 @@ class LatePMInitProtocol(LegacyProtocol):
     """
 
     async def create_client(self, context: LegacyProtocol.Context):
+        """
+        In addition to the behaviour of :meth:`LegacyProtocol.create_client` also initializes all
+        processing modules of the client defined by it's :class:`InitProcessingModules` behaviour
+        """
         await super().create_client(context)
 
-        assert context.client.implements(client_.InitProcessingModules)
+        assert context.client.implements(client.InitProcessingModules)
         initialized = [
-            pm(context) for pm in context.client[client_.InitProcessingModules].late_init_processing_modules
+            pm(context) for pm in context.client[client.InitProcessingModules].late_init_processing_modules
             if isinstance(pm, type) and issubclass(pm, processing.ProcessingRoutine)
         ]
         if initialized:
-            context.client[client_.InitProcessingModules].late_init_processing_modules = initialized
+            context.client[client.InitProcessingModules].late_init_processing_modules = initialized
 
         context.client.processing_modules += initialized
 
     def __setattr__(self, key, value):
         if key == 'client' and value is not None:
-            assert isinstance(value, client_.UbiiClient)
-            if not value.implements(client_.InitProcessingModules):
-                value[client_.InitProcessingModules].late_init_processing_modules = []
+            assert isinstance(value, client.UbiiClient)
+            if not value.implements(client.InitProcessingModules):
+                value[client.InitProcessingModules].late_init_processing_modules = []
 
         super(LatePMInitProtocol, self).__setattr__(key, value)
 
@@ -606,16 +831,19 @@ def __getattr__(name):
         raise AttributeError(f"{__name__} has no attribute {name}")
 
 
-dynamic_names = (
-    'DefaultProtocol',
-)
+if typing.TYPE_CHECKING:
+    DefaultProtocol = LegacyProtocol
+    dynamic_names = ()
+else:
+    dynamic_names = (
+        'DefaultProtocol',
+    )
 
-__all__ = (
+__all__ = dynamic_names + (
     'States',
     'LatePMInitProtocol',
     'LegacyProtocol',
 )
 
-
 def __dir__():
-    return __all__ + dynamic_names
+    return sorted(__all__)

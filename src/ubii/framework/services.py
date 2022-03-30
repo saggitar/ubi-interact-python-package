@@ -4,6 +4,7 @@ import abc
 import copy
 import functools
 import logging
+import pprint
 from typing import (
     TypeVar,
     Generic,
@@ -460,3 +461,12 @@ class DefaultServiceMap(ServiceMap[T_Service]):
             info += f"Best match[es] in default topics: {', '.join(map(repr, matches))}"
 
         return info
+
+    def __repr__(self):
+        kls = self.__class__
+        elements = f"<{type(self.elements).__name__} message at {id(self.elements)}>"
+        defaults = f"<{type(self.defaults).__name__} with {len(self.defaults)} items>"
+        return f"<{kls.__module__}.{kls.__name__} object at {id(self)} [defaults={defaults}, elements={elements}]>"
+
+    def __str__(self):
+        return pprint.pformat({name: getattr(self, name) for name in self.defaults if getattr(self, name)})
