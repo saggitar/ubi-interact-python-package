@@ -240,8 +240,7 @@ We subscribe to a topic glob pattern (in our case ``/info/*``) but we use
 the :attr:`default topics <ubii.proto.Constants.DEFAULT_TOPICS>` of the `master node` instead of hard coding that value.
 
 The `default topics` get sent by the `master node` as part of the :class:`~ubii.proto.Server` reply to
-the initial `server configuration` service request using the URL passed via the command line argument
-(:obj:`~ubii.node.connect_client` has defaults if nothing is passed).
+the initial `server configuration` service request performed by the client protocol
 
 .. seealso::
 
