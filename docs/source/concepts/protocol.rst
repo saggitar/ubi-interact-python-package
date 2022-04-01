@@ -25,3 +25,10 @@ Specific `Protocols` are currently used for two things:
     *   define a :ref:`Processing Module's <processing>` behaviour during it's lifetime
 
 
+.. seealso::
+
+    :class:`ubii.framework.client.AbstractClientProtocol` -- base for client behaviour protocols
+
+    :mod:`ubii.node.protocol` -- several client protocol implementations e.g. :class:`ubii.node.protocol.DefaultProtocol`
+
+    :class:`ubii.framework.processing.ProcessingProtocol` -- protocol for processing modules

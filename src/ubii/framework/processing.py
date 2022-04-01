@@ -594,10 +594,11 @@ class ProcessingProtocol(protocol.AbstractProtocol[ubii.proto.ProcessingModule.S
 
     class pm_proxy:
         """
-        Define some decorators for callables like :meth:`~ProcessingRoutine.on_processing`,
-        i.e. callables taking a :class:`~ProcessingRoutine` instance and
-        :class:`typing.SimpleNamespace` object as arguments, maybe returning a ``asyncio`` coroutine
-        (like :meth:`~ProcessingRoutine.on_processing` defined with ``async def``)
+        Define some decorators for callables like :meth:`~ProcessingProtocol.on_processing`, because
+        all lifecycle callbacks need to set the :attr:`~ProcessingRoutine.status` of the corresponding
+        processing routine, and call the corresponding callbacks (e.g. if a :meth:`ProcessingProtocol.on_processing` callback
+        is called, it needs to call the :meth:`ProcessingRoutine.on_processing` callback of the
+        :attr:`managed processing routine <ProcessingProtocol.pm>`)
         """
         _Status = typing.Union[PM_STAT, ubii.proto.ProcessingModule.Status]
 
@@ -760,7 +761,7 @@ class ProcessingProtocol(protocol.AbstractProtocol[ubii.proto.ProcessingModule.S
         super().__init__()
         self.pm: ProcessingRoutine = pm
         """
-        reference to the :class:`ubii.proto.ProcessingModule` wrapper that owns this protocol 
+        reference to the :class:`~ubii.proto.ProcessingModule` wrapper that owns this protocol 
         """
         self.created_tasks: typing.List[asyncio.Task] = []
         """
@@ -773,7 +774,7 @@ class ProcessingProtocol(protocol.AbstractProtocol[ubii.proto.ProcessingModule.S
         """
         First lifecycle method called after :attr:`pm` has been initialized
 
-        Calls :meth:`~ProcessingRoutine.on_init` and sets the
+        Calls :meth:`pm.on_init() <ProcessingRoutine.on_init>` and sets the
         :attr:`~ProcessingRoutine.status` to :attr:`ub.ProcessingModule.Status.INITIALIZED`.
 
         Creates the following attributes in the context:
@@ -835,7 +836,7 @@ class ProcessingProtocol(protocol.AbstractProtocol[ubii.proto.ProcessingModule.S
     @pm_proxy.set_status_in_pm(ubii.proto.ProcessingModule.Status.CREATED)
     async def on_created(self, context):
         """
-        Calls :meth:`~ProcessingRoutine.on_created` and sets the
+        Calls :meth:`pm.on_created() <ProcessingRoutine.on_created>` and sets the
         :attr:`~ProcessingRoutine.status` to :attr:`ub.ProcessingModule.Status.CREATED`.
 
         Prepares the context for further processing:
@@ -872,7 +873,7 @@ class ProcessingProtocol(protocol.AbstractProtocol[ubii.proto.ProcessingModule.S
     @pm_proxy.set_status_in_pm(ubii.proto.ProcessingModule.Status.PROCESSING)
     async def on_processing(self, context):
         """
-        Calls :meth:`~ProcessingRoutine.on_processing` and sets the
+        Calls :meth:`pm.on_processing() <ProcessingRoutine.on_processing>` and sets the
         :attr:`~ProcessingRoutine.status` to
         :attr:`ubii.proto.ProcessingModule.Status.PROCESSING`.
 
@@ -903,7 +904,7 @@ class ProcessingProtocol(protocol.AbstractProtocol[ubii.proto.ProcessingModule.S
     @pm_proxy.set_status_in_pm(ubii.proto.ProcessingModule.Status.HALTED)
     async def on_halted(self, context):
         """
-        Calls :meth:`~ProcessingRoutine.on_halted` and sets the
+        Calls :meth:`pm.on_halted() <ProcessingRoutine.on_halted>` and sets the
         :attr:`~ProcessingRoutine.status` to :attr:`ub.ProcessingModule.Status.HALTED`.
 
         :meth:`Halts <Scheduler.halt>` the ``context.scheduler``
@@ -917,7 +918,7 @@ class ProcessingProtocol(protocol.AbstractProtocol[ubii.proto.ProcessingModule.S
     @pm_proxy.set_status_in_pm(ubii.proto.ProcessingModule.Status.DESTROYED)
     async def on_destroyed(self, context):
         """
-        Calls :meth:`~ProcessingRoutine.on_destroyed` and sets the
+        Calls :meth:`pm.on_destroyed() <ProcessingRoutine.on_destroyed>` and sets the
         :attr:`~ProcessingRoutine.status` to :attr:`ub.ProcessingModule.Status.DESTROYED`.
 
         Awaits cancellation of  all tasks that have been started by this protocol.
