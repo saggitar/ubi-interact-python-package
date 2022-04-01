@@ -1,12 +1,9 @@
 import argparse
 import asyncio
 import logging
+import typing
 import warnings
 from pathlib import Path
-from typing import (
-    List,
-    Any
-)
 
 from ubii.framework.client import UbiiClient
 
@@ -47,7 +44,7 @@ def log_to_folder(log_config):
     return log_config
 
 
-def load_pm_entry_points() -> List[Any]:
+def load_pm_entry_points() -> typing.List[typing.Any]:
     """
     Loads setuptools entrypoints for key :attr:`SETUPTOOLS_PM_ENTRYPOINT_KEY`
 

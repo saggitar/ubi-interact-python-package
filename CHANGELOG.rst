@@ -1,3 +1,11 @@
+0.2.0a1.dev29 (2022-04-01)
+==========================
+
+Documentation
+-------------
+- Updated documentation of ``codestare.async_utils`` module
+
+
 0.2.0a1.dev22 (2022-03-25)
 ==========================
 

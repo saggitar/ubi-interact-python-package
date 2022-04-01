@@ -250,14 +250,15 @@ the initial `server configuration` service request performed by the client proto
 The constants that the client protocol uses, are actually the
 :attr:`constants of the global config <ubii.framework.constants.GLOBAL_CONFIG>` since no other config was passed to
 :obj:`~ubii.node.connect_client`, but referencing them as the
-:attr:`constants of the protocol context <ubii.node.protocol.LegacyProtocol.Context.constants>` is advisable.
+:attr:`client.protocol.constants <ubii.node.protocol.LegacyProtocol.Context.constants>` is advisable if one
+later decides to not use the global configuration.
 
 Subscribing to the topic pattern returns a :class:`~ubii.framework.topics.Topic` (actually a tuple of topics, one value
-for each pattern used in the subscription call, note the implicit unpacking of the tuple), that can be used to
-register a callback for new topic data. Our example client just registers :func:`print`.
+for each pattern used in the subscription call, note the unpacking of the tuple) which can be used to
+register a callback for new topic data. The example client just registers :func:`print`.
 
-Last but not least we start a loop and publish some very interesting topic data to a topic that should be covered
-by the glob pattern we subscribed to earlier.
+Last but not least, start a loop and publish some very interesting topic data to a topic that should be covered
+by the glob pattern the client subscribed to.
 
 
 .. literalinclude:: ../../src/ubii/cli/main.py
@@ -267,7 +268,7 @@ by the glob pattern we subscribed to earlier.
    :lines: 28-33
    :dedent: 12
 
-Now just start every thing in the `asyncio` event loop. Here we use a :class:`~codestare.async_utils.TaskNursery` to
+Now just start everything in the `asyncio` event loop. You can use a :class:`~codestare.async_utils.TaskNursery` to
 handle signals (e.g. when the user presses ``Ctrl+C`` in the shell) for us.
 
 .. _example:
