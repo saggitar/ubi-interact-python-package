@@ -1,6 +1,7 @@
 """
-Make sure to import all modules with import side effects (e.g. marshal rule updates)
 """
+
+# Make sure to import all modules with import side effects (e.g. marshal rule updates)
 from .constants import (
     UbiiConfig,
     GLOBAL_CONFIG

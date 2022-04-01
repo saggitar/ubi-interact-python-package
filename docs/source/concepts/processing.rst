@@ -1,3 +1,6 @@
+.. _processing:
+
+
 Processing Modules
 ==================
 
