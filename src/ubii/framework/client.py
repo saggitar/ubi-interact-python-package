@@ -794,7 +794,7 @@ class AbstractClientProtocol(protocol.AbstractProtocol[T_EnumFlag], util.Registr
         """
         hook_function: util.hook
         for hook_function, hk in itertools.product(cls.hook_function.registry.values(), cls.__hook_decorators__):
-            if hk not in hook_function.decorators:
+            if hk not in hook_function.decorators():
                 hook_function.register_decorator(hk)
 
         super().__init_subclass__()

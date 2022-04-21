@@ -19,7 +19,7 @@ import warnings
 
 import aiohttp
 
-import ubii.proto as ub
+import ubii.proto
 from . import (
     services,
     topics,
@@ -146,7 +146,7 @@ class AIOHttpWebsocketConnection(AIOHttpConnection, topics.DataConnection):
     Logger for outgoing traffic
     """
 
-    def __anext__(self) -> t.Awaitable[ub.TopicData]:
+    def __anext__(self) -> t.Awaitable[ubii.proto.TopicData]:
         return self._stream.__anext__()  # type: ignore
 
     def __init__(self, url, host_ip=local_ip):
@@ -228,7 +228,7 @@ class AIOHttpWebsocketConnection(AIOHttpConnection, topics.DataConnection):
 
             del self.ws
 
-    async def _stream_coro(self) -> ub.TopicData:
+    async def _stream_coro(self) -> ubii.proto.TopicData:
         await self.events.connected.wait()
         assert self.ws is not None
         message: aiohttp.WSMessage
@@ -242,7 +242,7 @@ class AIOHttpWebsocketConnection(AIOHttpConnection, topics.DataConnection):
 
                 self.log_socket_in.debug(f"Received {message.data}")
             elif message.type == aiohttp.WSMsgType.BINARY:
-                data = ub.TopicData.deserialize(message.data)
+                data = ubii.proto.TopicData.deserialize(message.data)
                 self.log_socket_in.info(f"Received {data}")
                 yield data
             else:
@@ -311,7 +311,7 @@ class AIOHttpWebsocketConnection(AIOHttpConnection, topics.DataConnection):
     def client_id(self):
         self._client_id = None
 
-    async def send(self, data: ub.TopicData, timeout=None):
+    async def send(self, data: ubii.proto.TopicData, timeout=None):
         """
         Use this coroutine to send :class:`~ubii.proto.TopicData` messages to the `master node`.
         Will wait until :attr:`.events.connected` is set i.e. until the connection has a
@@ -330,7 +330,7 @@ class AIOHttpWebsocketConnection(AIOHttpConnection, topics.DataConnection):
         await asyncio.wait_for(self.events.connected.wait(), timeout=timeout)
         assert self.ws is not None
         self.log_socket_out.info(f"Sending {data}")
-        await asyncio.wait_for(self.ws.send_bytes(ub.TopicData.serialize(data)), timeout=timeout)
+        await asyncio.wait_for(self.ws.send_bytes(ubii.proto.TopicData.serialize(data)), timeout=timeout)
 
 
 class AIOHttpRestConnection(AIOHttpConnection, services.ServiceConnection):
@@ -338,7 +338,7 @@ class AIOHttpRestConnection(AIOHttpConnection, services.ServiceConnection):
     Send Service Request Messages
     """
 
-    async def send(self, request: ub.ServiceRequest, timeout=None) -> ub.ServiceReply:
+    async def send(self, request: ubii.proto.ServiceRequest, timeout=None) -> ubii.proto.ServiceReply:
         """
         Send a :class:`~ubii.proto.ServiceRequest` and wait for :class:`~ubii.proto.ServiceReply` from `master node`.
 
@@ -363,7 +363,7 @@ class AIOHttpRestConnection(AIOHttpConnection, services.ServiceConnection):
         await asyncio.wait_for(self._session_is_set.wait(), timeout=timeout)
         async with self.session.post(self.url, headers=self.headers, json=request, timeout=timeout) as resp:
             json = await asyncio.wait_for(resp.text(), timeout=timeout)
-            return ub.ServiceReply.from_json(json, ignore_unknown_fields=True)  # master node bug requires ignore
+            return ubii.proto.ServiceReply.from_json(json, ignore_unknown_fields=True)  # master node bug requires ignore
 
 
 def aiohttp_session():

@@ -157,26 +157,17 @@ class LegacyProtocol(client.AbstractClientProtocol[States]):
         context.service_connection = connections.AIOHttpRestConnection(self.config.DEFAULT_SERVICE_URL)
         context.service_connection.session = self.aiohttp_session
 
-        class ServiceCall(services.ServiceCall):
-            """
-            ServiceCall used in :class:`ubii.node.protocol.LegacyProtocol`
-
-            See Also:
-                :class:`ubii.framework.services.ServiceCall` -- how to use the Service Call
-            """
-
-            def __repr__(self):
-                return f"<{type(self).__name__} object [topic={self.topic}]>"
-
-        # add exception handling to new class to not change the default behaviour
-        ServiceCall.register_decorator(util.exc_handler_decorator(self._set_exc_info))
-
         def create_service_call(service: ubii.proto.Service):
             """
             Use service connection of context to create a service call
             """
             assert context.service_connection is not None
-            return ServiceCall(transport=context.service_connection, mapping=service)
+            service_call = services.ServiceCall(transport=context.service_connection, mapping=service)
+            # add exception handling to new class to not change the default behaviour
+            services.ServiceCall.register_decorator(
+                util.exc_handler_decorator(self._set_exc_info),
+                instance=service_call)
+            return service_call
 
         context.service_map = services.DefaultServiceMap(
             service_call_factory=create_service_call
@@ -195,7 +186,8 @@ class LegacyProtocol(client.AbstractClientProtocol[States]):
         assert context.constants is not None
         assert context.server is not None
 
-        response = await context.service_map[context.constants.DEFAULT_TOPICS.SERVICES.SERVER_CONFIG]()
+        service_call = context.service_map[context.constants.DEFAULT_TOPICS.SERVICES.SERVER_CONFIG]
+        response = await service_call()
         ubii.proto.Server.copy_from(context.server, response.server)
         ubii.proto.Constants.copy_from(context.constants,
                                        ubii.proto.Constants.from_json(response.server.constants_json))
@@ -589,6 +581,7 @@ class LegacyProtocol(client.AbstractClientProtocol[States]):
         """
         Implement :class:`ubii.node.RunProcessingModules` behaviour of :attr:`context.client <.Context.client>`
         """
+
         async def on_start_session(record):
             """
             When session is started, handle contained processing modules
@@ -609,12 +602,13 @@ class LegacyProtocol(client.AbstractClientProtocol[States]):
                 async with pm.change_specs:
                     # MergeFrom appends outputs and inputs, CopyFrom overwrites stuff, so we first need to "merge"
                     # with custom logic (overwriting all non-falsy values)
-                    values = ubii.proto.ProcessingModule.to_dict(pm)
-                    changes = ubii.proto.ProcessingModule.to_dict(specs)
-                    values.update(**{k: v for k, v in changes.items() if v})  # important: if v!
+                    changes = {
+                        attr: value for attr, value in ubii.proto.ProcessingModule.to_dict(specs).items() if
+                        attr in specs
+                    }
 
                     # then overwrite specs
-                    ubii.proto.ProcessingModule.copy_from(pm, values)
+                    ubii.proto.ProcessingModule.copy_from(pm, changes)
                     pm.change_specs.notify_all()
 
                 assert specs.name in processing.ProcessingRoutine.registry
@@ -628,9 +622,11 @@ class LegacyProtocol(client.AbstractClientProtocol[States]):
                 assert io_mapping.processing_module_id is not None
                 assert io_mapping.processing_module_name is not None
 
-                instance = (
+                instance: processing.ProcessingRoutine = (
                     processing.ProcessingRoutine.registry[io_mapping.processing_module_name]
                 )
+
+                assert context.topic_store is not None
 
                 await instance.apply_io_mapping(
                     io_mapping,
@@ -641,38 +637,35 @@ class LegacyProtocol(client.AbstractClientProtocol[States]):
                 mapping: ubii.proto.TopicInputMapping
                 for mapping in io_mapping.input_mappings or ():
                     if mapping.topic_mux:
-                        subscriber = context.client[client.Subscriptions].subscribe_regex(
+                        subscribe = context.client[client.Subscriptions].subscribe_regex(
                             mapping.topic_mux.topic_selector
                         )
                     elif mapping.topic:
-                        subscriber = context.client[client.Subscriptions].subscribe_topic(
+                        subscribe = context.client[client.Subscriptions].subscribe_topic(
                             mapping.topic
                         )
                     else:
-                        subscriber = None
+                        subscribe = None
 
-                    if subscriber:
-                        topic, = await subscriber
+                    if subscribe:
+                        topic, = await subscribe
                         assert topic.on_subscribers_change
 
                 # publish
-                for mapping in io_mapping.output_mappings or ():
-                    if mapping.topic_demux:
-                        output_topic = instance.local_output_topics.get(mapping.topic_demux.topic_selector)
-                    elif mapping.topic:
-                        output_topic = instance.local_output_topics.get(mapping.topic)
-                    else:
-                        output_topic = None
-
-                    assert output_topic, f"No output topic for {mapping}"
-                    output_topic.register_callback(context.client[client.Publish].publish)
+                if io_mapping.output_mappings:
+                    topic_map = instance.local_output_topics
+                    decorator = topic_map.helpers.on_create_register_callback(context.client[client.Publish].publish)
+                    if decorator not in type(topic_map).create_topic.decorators(topic_map):
+                        type(topic_map).create_topic.register_decorator(
+                            decorator, instance=topic_map
+                        )
 
                 async with instance.change_specs:
                     instance.change_specs.notify_all()
 
-            add_service = context.client[client.Services].service_map.pm_runtime_add
+            pm_runtime_add = context.client[client.Services].service_map.pm_runtime_add
             pms = [pm for pm in processing.ProcessingRoutine.registry.values() if pm.id]
-            await add_service(processing_module_list={'elements': pms})
+            await pm_runtime_add(processing_module_list={'elements': pms})
 
         async def on_stop_session(record):
             """
@@ -691,7 +684,7 @@ class LegacyProtocol(client.AbstractClientProtocol[States]):
                     await module.change_specs.wait_for(
                         lambda: module.status == ubii.proto.ProcessingModule.Status.HALTED)
 
-                for topic in map(module.get_input_topic, module.inputs):
+                for topic in map(module.get_input, module.inputs):
                     if not topic.on_subscribers_change:
                         warn(f"No callback on_subscribers_change on {topic}")
                         continue
@@ -844,6 +837,7 @@ __all__ = dynamic_names + (
     'LatePMInitProtocol',
     'LegacyProtocol',
 )
+
 
 def __dir__():
     return sorted(__all__)

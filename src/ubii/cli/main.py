@@ -1,4 +1,3 @@
-import argparse
 import asyncio
 import logging
 import typing
@@ -61,6 +60,7 @@ def main():
     """
     Entry point for cli script see :ref:`CLI` in the documentation
     """
+    import argparse
     from ubii.node import connect_client
     from ubii.framework.logging import parse_args, logging_setup
     from ubii.framework.client import InitProcessingModules
@@ -114,6 +114,7 @@ def info_log_client():
     and continuously publishes a value to a custom info topic
     """
     import asyncio
+    import argparse
     from ubii.framework.logging import parse_args
     parser = argparse.ArgumentParser()
     parser.add_argument('--url', type=str, action='store', default=None, help='URL of master node service endpoint')

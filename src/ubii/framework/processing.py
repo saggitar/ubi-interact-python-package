@@ -17,8 +17,10 @@ from . import (
     util,
     topics
 )
+from .util.typing import AsyncGetter, AsyncSetter
 
 __protobuf__ = ubii.proto.__protobuf__
+
 log = logging.Logger(__name__)
 
 __json_name_to_field_name__ = {field.json_name: field.name for field in
@@ -28,6 +30,39 @@ Used in :meth:`.ProcessingProtocol.helpers.fix_io_fmt` to compute the field name
 :attr:`ubii.proto.TopicDataRecord.type` one-of group from the message type given by a 
 :attr:`ubii.proto.ModuleIO.message_format` field. 
 """
+
+
+def fix_io_fmt(message_format: str) -> str:
+    """
+    Computes the field name of the :attr:`~ubii.proto.TopicDataRecord.type` oneof corresponding to the
+    type in a :attr:`~ubii.proto.ModuleIO.message_format` field (of the form ``ubii.{proto_package}.{type}``
+    as defined in the .proto file, not the python package!)
+
+    Example:
+
+        The :attr:`~ProcessingRoutine.inputs` of a routine contain a
+        :class:`ubii.proto.ModuleIO` message with :attr:`~ubii.proto.ModuleIO.message_format`
+        ``ubii.dataStructure.Matrix4x4``. The name of the corresponding field in a
+        :class:`ubii.proto.TopicDataRecord` is ``matrix4x4``.
+        This method performs this conversion.
+
+    Args:
+        message_format: format string for message type
+
+    Returns:
+        name of corresponding field in a :class:`ubii.proto.TopicDataRecord` message
+
+    """
+    if not message_format.startswith('ubii.'):
+        return message_format
+
+    ubii_name = ubii.proto.util.get_import_name(message_format)
+    field_name = __json_name_to_field_name__.get(
+        f'{ubii_name.type[0].lower() + ubii_name.type[1:]}'
+    )
+    assert field_name, f"fixing field name for {message_format} failed."
+    return field_name
+
 
 MAX_WORKERS = 8
 
@@ -54,6 +89,23 @@ def default_perf_calc(scheduler: 'Scheduler') -> float:
         return 1. - (avg - scheduler.delay) / scheduler.delay  # 1 - rel error
 
 
+def check_datatype(io: ubii.proto.ModuleIO, record: ubii.proto.TopicDataRecord):
+    """
+    Check if ModuleIO datatype matches record 'type' oneof name
+
+    Args:
+        io: a IO definition
+        record: a record
+
+    Returns:
+        True if the right field is set, false otherwise
+
+    See Also:
+        :func:`fix_io_fmt` -- helper to translate message specification to oneof field name
+    """
+    return bool(record) and fix_io_fmt(io.message_format) == ubii.proto.TopicDataRecord.pb(record).WhichOneof('type')
+
+
 class Scheduler(util.CoroutineWrapper):
     """
     A Scheduler is a wrapper around the coroutine created by its :meth:`get_trigger_loop` method.
@@ -63,7 +115,7 @@ class Scheduler(util.CoroutineWrapper):
 
     def __init__(self,
                  callback: typing.Callable[..., typing.Any],
-                 inputs: typing.Iterable[typing.Callable[[], typing.Awaitable]],
+                 inputs: typing.Iterable[AsyncGetter],
                  mode: ubii.proto.ProcessingMode,
                  *,
                  perf_metric=default_perf_calc):
@@ -86,7 +138,7 @@ class Scheduler(util.CoroutineWrapper):
         self._callback = None
         self._perf_metric = perf_metric.__get__(self, type(self))
 
-        self.inputs: typing.Iterable[typing.Callable[[], typing.Awaitable]] = inputs
+        self.inputs: typing.Iterable[AsyncGetter] = inputs
         """
         callables to create awaitables for possibly needed inputs
         """
@@ -306,8 +358,8 @@ class ProcessingRoutine(ubii.proto.ProcessingModule, metaclass=util.ProtoRegistr
             default_factory=functools.partial(topics.BasicTopic, task_nursery=self._protocol.task_nursery)
         )
 
-        self._input_topic_getter = util.hook(lambda _: None)
-        self._output_topic_getter = util.hook(lambda _: None)
+        self._input_source_getter = None
+        self._output_destination_getter = None
 
     def _eval_string_funcs(self):
         suffix = '_stringified'
@@ -352,23 +404,19 @@ class ProcessingRoutine(ubii.proto.ProcessingModule, metaclass=util.ProtoRegistr
         """
         return self._change_specs
 
-    @property
-    def get_input_topic(self) -> util.functools.hook[typing.Callable[[ubii.proto.ModuleIO], topics.Topic | None]]:
-        """
-        Use this callable to map :attr:`ubii.proto.ProcessingModule.inputs` to topics
+    def input_getter(
+            self, io: ubii.proto.ModuleIO
+    ) -> AsyncGetter[ubii.proto.TopicDataRecord | ubii.proto.TopicDataRecordList] | None:
+        if not self._input_source_getter:
+            return None
 
-        Will be set when :meth:`.apply_io_mapping` is called.
-        """
-        return self._input_topic_getter
+        return self._input_source_getter(io)
 
-    @property
-    def get_output_topic(self) -> util.functools.hook[typing.Callable[[ubii.proto.ModuleIO], topics.Topic | None]]:
-        """
-        Use this callable to map :attr:`ubii.proto.ProcessingModule.outputs` to topics
+    def output_setter(self, io: ubii.proto.ModuleIO) -> AsyncSetter | None:
+        if not self._output_destination_getter:
+            return None
 
-        Will be set when :meth:`.apply_io_mapping` is called.
-        """
-        return self._output_topic_getter
+        return self._output_destination_getter(io)
 
     async def apply_io_mapping(self,
                                io_mapping: ubii.proto.IOMapping,
@@ -385,28 +433,65 @@ class ProcessingRoutine(ubii.proto.ProcessingModule, metaclass=util.ProtoRegistr
                 a mapping for input topics to look up the topic source of the
                 :attr:`ubii.proto.IOMapping.input_mappings`
         """
-
-        get_name = (lambda io: io.internal_name)
         get_input_mapping = {mapping.input_name: mapping for mapping in io_mapping.input_mappings}.get
         get_output_mapping = {mapping.output_name: mapping for mapping in io_mapping.output_mappings}.get
 
-        def get_topic(topic_mapping: typing.Mapping[str, topics.Topic]):
-            # TODO: Make Topic Muxer if necessary
-            return lambda mapping: topic_mapping.get(mapping.topic or mapping.topic_mux.topic_selector)
+        def getter(topic_map: typing.Mapping[..., topics.Topic],
+                   io: ubii.proto.ModuleIO):
+            mapping: ubii.proto.TopicInputMapping = get_input_mapping(io.internal_name)
+            if mapping is None:
+                raise ValueError(f"No mapping with input name {io.internal_name} found")
 
-        _input_decorators = self.get_input_topic.decorators
-        _output_decorators = self.get_output_topic.decorators
+            if mapping.topic_mux:
+                muxer = topics.TopicMuxer.registry.get(mapping.topic_mux.id)
+                if not muxer:
+                    muxer = topics.TopicMuxer(mapping=mapping.topic_mux)
+                    topic_map[muxer.topic_selector].register_callback(muxer.on_record)
 
-        self._input_topic_getter = util.hook(
-            util.compose(get_name, get_input_mapping, get_topic(remote_topic_map))
-        )
-        self._output_topic_getter = util.hook(
-            util.compose(get_name, get_output_mapping, get_topic(self.local_output_topics))
-        )
+                return muxer.records.get
+            elif mapping.topic:
+                return topic_map[mapping.topic].buffer.get
+                # once_false_then_true = itertools.chain([False], itertools.repeat(True)).__next__
+                # right_datatype = functools.partial(check_datatype, io)
+                # return functools.partial(
+                #     topic_map[mapping.topic].buffer.get,
+                #     predicate=lambda record: once_false_then_true() and right_datatype(record)
+                # )
+            else:
+                raise ValueError(f"Invalid input mapping {mapping}")
 
-        # carry over decorators
-        list(map(self._input_topic_getter.register_decorator, _input_decorators))
-        list(map(self._output_topic_getter.register_decorator, _output_decorators))
+        def setter(topic_map: typing.Mapping[..., topics.Topic],
+                   io: ubii.proto.ModuleIO):
+            mapping: ubii.proto.TopicOutputMapping = get_output_mapping(io.internal_name)
+            if mapping is None:
+                raise ValueError(f"No mapping with input name {io.internal_name} found")
+
+            if mapping.topic_demux:
+                demuxer = topics.TopicDemuxer.registry.get(mapping.topic_demux.id)
+                if not demuxer:
+                    demuxer = topics.TopicDemuxer(mapping=mapping.topic_demux)
+
+                return demuxer.records.set
+            elif mapping.topic:
+                async def set_value(record: ubii.proto.TopicDataRecord):
+                    assert isinstance(record, ubii.proto.TopicDataRecord)
+
+                    if not fix_io_fmt(io.message_format) in record:
+                        log.warning(f"{record} does not have the {fix_io_fmt(io.message_format)} field set required"
+                                    f" by the ModuleIO data format, skipping")
+                        return
+
+                    record.topic = record.topic or mapping.topic
+                    topic = topic_map[record.topic]
+                    await topic.buffer.has_waiter
+                    await topic.buffer.set(record)
+
+                return set_value
+            else:
+                raise ValueError(f"Invalid output mapping {mapping}")
+
+        self._input_source_getter = functools.partial(getter, remote_topic_map)
+        self._output_destination_getter = functools.partial(setter, self.local_output_topics)
 
         if io_mapping.output_mappings or io_mapping.input_mappings:
             async with self.change_specs:
@@ -533,7 +618,7 @@ class ProcessingRoutine(ubii.proto.ProcessingModule, metaclass=util.ProtoRegistr
         return pm
 
     def __str__(self):
-        info = f"name: {self.name!r}"
+        info = f"name={self.name!r}"
         return f"{self.__class__.__name__}({info})"
 
     validation_rules: 'typing.List[typing.Callable[[ProcessingRoutine], None]]' = [
@@ -678,48 +763,11 @@ class ProcessingProtocol(protocol.AbstractProtocol[ubii.proto.ProcessingModule.S
             ctx.delta_time = scheduler.delta_time
             inputs = vars(ctx.inputs)
 
-            # dirty fix to get right attribute depending on data_format string
-            def extract_value(result: ubii.proto.TopicDataRecord, data_format: str):
-                attr_name = data_format.split('.')[-1]
-                return getattr(result, f"{attr_name[0].lower()}{attr_name[1:]}")
-
             inputs.update(**{
-                result.meta[0]: extract_value(result.value, result.meta[1])
+                result.meta: result.value
                 for result in map(lambda task: task.result(), ctx.scheduler.done)
             })
             ctx.inputs = types.SimpleNamespace(**inputs)
-
-        @classmethod
-        def fix_io_fmt(cls, message_format: str) -> str:
-            """
-            Computes the field name of the :attr:`~ubii.proto.TopicDataRecord.type` oneof corresponding to the
-            type in a :attr:`~ubii.proto.ModuleIO.message_format` field (of the form ``ubii.{proto_package}.{type}``
-            as defined in the .proto file, not the python package!)
-
-            Example:
-
-                The :attr:`~ProcessingRoutine.inputs` of a routine contain a
-                :class:`ubii.proto.ModuleIO` message with :attr:`~ubii.proto.ModuleIO.message_format`
-                ``ubii.dataStructure.Matrix4x4``. The name of the corresponding field in a
-                :class:`ubii.proto.TopicDataRecord` is ``matrix4x4``.
-                This method performs this conversion.
-
-            Args:
-                message_format: format string for message type
-
-            Returns:
-                name of corresponding field in a :class:`ubii.proto.TopicDataRecord` message
-
-            """
-            if not message_format.startswith('ubii.'):
-                return message_format
-
-            ubii_name = ubii.proto.util.get_import_name(message_format)
-            field_name = __json_name_to_field_name__.get(
-                f'{ubii_name.type[0].lower() + ubii_name.type[1:]}'
-            )
-            assert field_name, f"fixing field name for {message_format} failed."
-            return field_name
 
         @classmethod
         def publish_outputs_to_topics(cls, pm: ProcessingRoutine, ctx: types.SimpleNamespace):
@@ -737,16 +785,18 @@ class ProcessingProtocol(protocol.AbstractProtocol[ubii.proto.ProcessingModule.S
             """
             get_output_io = {io.internal_name: io for io in pm.outputs}.get
 
-            for io, value in zip(map(get_output_io, vars(ctx.outputs)), vars(ctx.outputs).values()):
+            for name, value in vars(ctx.outputs).items():
                 if value == ProcessingProtocol.helpers.__no_output__:
                     continue
 
-                topic = pm.get_output_topic(io)
+                io = get_output_io(name)
+                if not io:
+                    log.warning(f"No output topic for argument {name!r} defined in {pm}. Defined output handler[s] "
+                                f"{', '.join(map(lambda o: repr(o.internal_name), pm.outputs))}.")
+                    continue
+
                 ctx.nursery.create_task(
-                    topic.buffer.set({
-                        'topic': topic.pattern,
-                        cls.fix_io_fmt(io.message_format): value
-                    })
+                    pm.output_setter(io)(value)
                 )
 
     def __init__(self, pm: ProcessingRoutine):
@@ -786,6 +836,8 @@ class ProcessingProtocol(protocol.AbstractProtocol[ubii.proto.ProcessingModule.S
         -   ``context.scheduler`` a :class:`Scheduler` instance, responsible for
             scheduling processing calls. Scheduled callback when inputs are available will set
             ``context.trigger_processing``
+        -   ``context.muxer`` a reference to the :class:`TopicMuxer` type, needed to extract information
+            from the records
 
         Finally, sets the :attr:`~ProcessingProtocol.status` to
         :attr:`PM_STAT.CREATED`
@@ -797,11 +849,13 @@ class ProcessingProtocol(protocol.AbstractProtocol[ubii.proto.ProcessingModule.S
         # use the Processing Protocol as a task nursery if possible ?
         context.loop = asyncio.get_running_loop()
         context.nursery = self.task_nursery or context.loop
+        context.muxer = topics.TopicMuxer
+        context.demuxer = topics.TopicDemuxer
 
         # callable to create input_mapping dict from module io iterable
-        make_input_dict: util.make_dict[typing.Tuple[str, str], topics.Topic] = util.make_dict(
-            key=lambda io: (io.internal_name, io.message_format),
-            value=self.pm.get_input_topic,
+        make_input_dict: util.make_dict[typing.Tuple[str, str], AsyncGetter] = util.make_dict(
+            key=lambda io: io.internal_name,
+            value=self.pm.input_getter,
             filter_none=True
         )
 
@@ -824,7 +878,7 @@ class ProcessingProtocol(protocol.AbstractProtocol[ubii.proto.ProcessingModule.S
         context.trigger_processing = asyncio.Event()
         context.scheduler = Scheduler(
             callback=context.trigger_processing.set,
-            inputs=[util.enrich((name, msg_fmt), topic.buffer.get) for (name, msg_fmt), topic in inputs.items()],
+            inputs=[util.enrich(name, getter) for name, getter in inputs.items()],
             mode=self.pm.processing_mode
         )
 

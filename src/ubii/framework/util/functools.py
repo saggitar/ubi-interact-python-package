@@ -1,5 +1,8 @@
 from __future__ import annotations
 
+import types
+from collections import namedtuple
+
 import asyncio
 import difflib
 import functools
@@ -10,11 +13,18 @@ import re
 import sys
 import typing
 import warnings
-from collections import namedtuple
+import weakref
 
 import ubii.proto as ub
 from . import RegistryMeta
 from .typing import S, T, ExcInfo
+
+
+# helper function, equivalent to functools._unwrap_partial
+def _unwrap_partial(func):
+    while isinstance(func, functools.partial):
+        func = func.func
+    return func
 
 
 def similar(choices: typing.Sequence, item: typing.Any, cutoff=0.70):
@@ -197,26 +207,36 @@ class hook(typing.Generic[T_Callable]):
         """
         Reference to unmodified callable
         """
-        self._decorators = list(decorators or ())
+        self._global_decorators = list(decorators or ())
+        self._instance_decorators: typing.MutableMapping[int, typing.List] = {}
+        self._instance_callables: typing.MutableMapping[int, typing.Callable] = {}
         self._applied = None
         functools.wraps(func)(self)
 
-    @property
-    def decorators(self):
+    def decorators(self, instance: object | None = None):
         """
         List of registered decorators
-        """
-        return self._decorators
 
-    def register_decorator(self, decorator) -> None:
+        Args:
+            instance: return decorators for this specific instance -- `optional`
+        """
+        return self._global_decorators + self._instance_decorators.get(id(instance), []) if instance else []
+
+    def register_decorator(self, decorator, instance: object | None = None) -> None:
         """
         Add decorator to internal list of decorators and re-apply all decorators at next call
 
         Args:
             decorator: some callable
+            instance: only register decorator for this specific instance -- `optional`
         """
-        self._decorators.append(decorator)
-        self.cache_clear()
+        if instance is not None:
+            weakref.finalize(instance, lambda key: self._instance_decorators.pop(key, None), id(instance))
+            self._instance_decorators.setdefault(id(instance), []).append(decorator)
+            self._instance_callables.pop(id(instance), None)
+        else:
+            self._global_decorators.append(decorator)
+            self.cache_clear()
 
     def cache_clear(self):
         """
@@ -224,17 +244,31 @@ class hook(typing.Generic[T_Callable]):
         """
         self._applied = None
 
-    def __call__(self, *args, **kwargs):
+    def __call__(self, *args, __first_argument_is_instance=False, **kwargs):
         if self._applied is None:
-            self._applied = compose(*self.decorators)(self.func)
+            self._applied = compose(*self._global_decorators)(self.func) if self._global_decorators else self.func
 
-        return self._applied(*args, **kwargs)
+        if args and __first_argument_is_instance:
+            instance = args[0]
+            if id(instance) not in self._instance_callables and id(instance) in self._instance_decorators:
+                self._instance_callables[id(instance)] = compose(*self._instance_decorators[id(instance)])(self)
+            else:
+                self._instance_callables[id(instance)] = self
+
+            func = self._instance_callables[id(instance)]
+        else:
+            func = self._applied
+
+        return func(*args, **kwargs)
 
     def __get__(self, instance=None, owner=None):
         if instance is None:
             return self
 
-        return functools.partial(self, instance)
+        # we need to mangle the name
+        special_args = {f"_{type(self).__name__}__first_argument_is_instance": True}
+
+        return functools.partial(self, instance, **special_args)
 
 
 class registry(typing.Generic[S, T]):
@@ -548,81 +582,20 @@ class compose:
 
     def __init__(self, *funcs):
         self._info = ', '.join(map(repr, funcs))
+        if not funcs:
+            raise ValueError(f"No callables passed to compose")
+
         self.funcs = funcs
         """
         Tuple of original callables
         """
-        self._reduced = functools.reduce(lambda g, f: lambda *a: f(g(*a)), funcs) if funcs else (lambda x: x)
+        self._reduced = functools.reduce(lambda g, f: lambda *a: f(g(*a)), funcs)
 
     def __call__(self, *args):
         return self._reduced(*args)
 
     def __repr__(self):
         return f"compose({self._info})"
-
-
-class awaitable_predicate:
-    """
-    Typically, to let an ``async`` coroutine wait until some predicate is `True`, one uses a :class:`asyncio.Condition`.
-    :meth:`Condition.wait_for(predicate) <asyncio.Condition.wait_for>` will block the coroutine until the ``predicate``
-    returns `True` -- ``predicate`` will be reevaluated every time the condition
-    :meth:`notifies <asyncio.Condition.notify>` waiting coroutines.
-
-    An :class:`awaitable_predicate` object does exactly that, but it can also be evaluated to a boolean to make
-    code more concise
-
-    Example:
-
-        >>> from ubii.framework import util
-        >>> value = 0
-        >>> is_zero = util.awaitable_predicate(lambda: value == 0)
-        >>> bool(is_zero)
-        True
-        >>> value = 1
-        >>> bool(is_zero)
-        False
-
-        Or we can `wait` until the predicate is actually `True`
-
-        >>> [...]  # continued from above
-        >>> async def set_value(number):
-        ...     global value
-        ...     async with is_zero.condition:
-        ...             value = number
-        ...             is_zero.condition.notify()
-        ...
-        >>> async def wait_for_zero():
-        ...     await is_zero
-        ...     print(f"Finally! value: {value}")
-        ...
-        >>> import asyncio
-        >>> async def main():
-        ...     asyncio.create_task(wait_for_zero())
-        ...     for n in reversed(range(3)):
-        ...             await set_value(n)
-        ...
-        >>> asyncio.run(main())
-        Finally! value: 0
-
-    """
-
-    def __init__(self, predicate: typing.Callable[[], bool], condition: asyncio.Condition | None = None):
-        self.condition = condition or asyncio.Condition()
-        self.predicate = predicate
-        self.waiting = None
-
-    async def _waiter(self):
-        async with self.condition:
-            await self.condition.wait_for(self.predicate)
-
-    def __await__(self):
-        if self.waiting is None:
-            self.waiting = self._waiter()
-
-        return self.waiting.__await__()
-
-    def __bool__(self):
-        return self.predicate()
 
 
 class make_dict(typing.Generic[S, T]):
@@ -779,8 +752,17 @@ class enrich(typing.Callable[..., 'enrich.result']):
             meta: Something that each call to this callable should return in the :attr:`~.result.meta` field
             func: Simple callable or coroutine function. Result will be available as :attr:`~.result.value` field
         """
+        assert callable(func), f"{func} needs to be a callable"
         self._reduced: typing.Union[async_compose, compose]
-        if asyncio.iscoroutinefunction(func):
+
+        # func opjects can be kinda complex, so to choose the right kind of "compose" we need to find
+        # out what actually is happening
+        # sadly inspect.iscoroutinefunction does not handle bound methods the way we need
+
+        base = _unwrap_partial(func) if isinstance(func, functools.partial) else func
+        base = base.__func__ if inspect.ismethod(base) else base
+
+        if asyncio.iscoroutinefunction(base):
             async def attach(value):
                 return self.result(value=value, meta=meta)
 
@@ -822,7 +804,7 @@ class dunder:
         return compose(cls.repr(*attrs), cls.hash(*attrs))
 
     @classmethod
-    def repr(cls, *attrs):
+    def repr(cls, *attrs, patch_str_for_builtins: bool = True):
         """
         Creates a __repr__ method on the class, that is basically ::
 
@@ -832,6 +814,8 @@ class dunder:
 
         Args:
             *attrs: the names of attributes that should be part of the __repr__
+            patch_str_for_builtins: if True, types that inherit directly from builtins will receive a __str__ method
+                as well (so set this to false if you implement __str__ yourself) -- **optional**
 
         Returns:
             a class decorator
@@ -840,10 +824,17 @@ class dunder:
         def __repr__(instance):
             info = {attr: getattr(instance, attr, None) for attr in attrs}
             return (f"<{instance.__class__.__module__}.{instance.__class__.__name__} "
-                    f"with {', '.join('{}={!r}'.format(k, v) for k, v in info.items())}>")
+                    f"[{', '.join('{}={!r}'.format(k, v) for k, v in info.items())}]>")
 
         def decorator(kls):
             kls.__repr__ = functools.wraps(kls.__repr__)(__repr__)
+
+            # builtin types use a C implementation for __str__ and patching __repr__ after the type has been
+            # created will not make the C __str__ method fall back to the new __repr__ like expected, so we
+            # need to explicitly patch the __str__ method of types that inherit the __str__ from builtins
+            if isinstance(kls.__str__, types.WrapperDescriptorType) and patch_str_for_builtins:
+                kls.__str__ = kls.__repr__
+
             return kls
 
         return decorator
@@ -882,7 +873,6 @@ __all__ = (
     'ProtoRegistry',
     'function_chain',
     'compose',
-    'awaitable_predicate',
     'make_dict',
     'async_compose',
     'enrich',

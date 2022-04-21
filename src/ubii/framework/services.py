@@ -132,7 +132,7 @@ class ServiceCall(ubii.proto.Service, metaclass=ubii.proto.ProtoMeta):
             return reply
 
     @classmethod
-    def register_decorator(cls, decorator) -> None:
+    def register_decorator(cls, decorator, instance: object | None = None) -> None:
         """
         Since :meth:`.__call__` is a :class:`~ubii.util.hook`, you can easily decorate it.
         There are two ways to do that -- either directly use the fact that :meth:`.__call__` is a
@@ -141,18 +141,19 @@ class ServiceCall(ubii.proto.Service, metaclass=ubii.proto.ProtoMeta):
             from ubii.framework.services import ServiceCall
             ServiceCall.__call__.register_decorator(decorator)
 
-        Or use this method ::
+        Or use this method for convenience ::
 
             from ubii.framework.services import ServiceCall
             ServiceCall.register_decorator(decorator)
 
         Args:
             decorator: Some callable to decorate :meth:`.__call__`
+            instance: only register decorator for this instance -- *optional*
 
         See Also:
             :class:`ubii.framework.util.functools.hook` -- more info about the hook decorator
         """
-        cls.__call__.register_decorator(decorator)
+        cls.__call__.register_decorator(decorator, instance=instance)
 
 
 T_Service = TypeVar('T_Service', bound=ServiceCall)

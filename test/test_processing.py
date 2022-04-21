@@ -4,7 +4,6 @@ import pytest
 
 import ubii.proto as ub
 from ubii.framework import processing
-from ubii.framework import util
 from ubii.framework.client import RunProcessingModules, InitProcessingModules, Subscriptions, Publish
 
 pytestmark = pytest.mark.asyncio
@@ -17,7 +16,7 @@ js_on_processing_stringified = ub.ProcessingModule(
     on_processing_stringified='\n'.join((
         "function processingCallback(deltaTime, inputs) {",
         "  let outputs = {};",
-        "  outputs.serverBool = !inputs.clientBool;",
+        "  outputs.outputBool = !inputs.inputBool;",
         "  return {outputs};",
         "}",
     )),
@@ -28,9 +27,11 @@ py_on_processing_stringified = ub.ProcessingModule(
     on_processing_stringified='\n'.join((
         'def on_processing(self, context):',
         '    import logging',
+        '    import ubii.proto',
         '    log = logging.getLogger("ubii.interact.protocol")',
         '    log.info(f"------- delta_time: {context.delta_time} ---------")',
-        '    context.outputs.serverBool = not context.inputs.clientBool',
+        '    input_record = context.inputs.inputBool',
+        '    context.outputs.outputBool = ubii.proto.TopicDataRecord(bool=not input_record.bool)',
     )),
     language=ub.ProcessingModule.Language.PY,
 )
@@ -58,13 +59,13 @@ class Processing:
             on_processing_stringified="",
             inputs=[
                 {
-                    'internal_name': 'clientBool',
+                    'internal_name': 'inputBool',
                     'message_format': 'bool'
                 },
             ],
             outputs=[
                 {
-                    'internal_name': 'serverBool',
+                    'internal_name': 'outputBool',
                     'message_format': 'bool'
                 }
             ],
@@ -74,8 +75,8 @@ class Processing:
     @pytest.fixture(scope='class')
     async def base_session(self, client, base_module):
         await client
-        client_bool_topic = f"{client.id}/client_bool"
-        server_bool_topic = f"{client.id}/server_bool"
+        client_bool_topic = f"{client.id}/input_bool"
+        server_bool_topic = f"{client.id}/output_bool"
         io_mappings = [
             {
                 'processing_module_name': base_module.name,
@@ -109,21 +110,19 @@ class Processing:
 
     @pytest.fixture(scope='class')
     async def test_value(self, startup, client, base_session, start_session):
-        value_accessor = util.accessor()
         topic, = await client[Subscriptions].subscribe_topic(base_session.server_bool)
+        yield topic.buffer
 
-        _ = topic.register_callback(lambda rec: value_accessor.set(rec.bool))
-        yield value_accessor
-
-    @pytest.mark.parametrize('data', [False, True, False, True, False, False, False])
-    @pytest.mark.parametrize('delay', [1, 0.1, 0.01, 0.001])
-    async def test_processing_module(self, client, test_value, base_session, delay, data):
+    @pytest.mark.parametrize('data', [False])
+    @pytest.mark.parametrize('delay', [1, 1])
+    @pytest.mark.parametrize('timeout', [4])
+    async def test_processing_module(self, client, test_value, base_session, delay, timeout, data):
         await asyncio.sleep(delay)
         await client[Publish].publish({'topic': base_session.client_bool, 'bool': data})
-        result = await asyncio.wait_for(test_value.get(), timeout=0.3)
+        record = await asyncio.wait_for(test_value.get(), timeout=timeout)
 
-        assert isinstance(result, bool)
-        assert result != data
+        assert isinstance(record.bool, bool)
+        assert record.bool != data
 
 
 class TestPy(Processing):
@@ -163,6 +162,3 @@ class TestJS(Processing):
         await client
         await start_session(session_spec)
         yield True
-
-
-

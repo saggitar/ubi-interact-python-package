@@ -33,13 +33,17 @@ See Also:
 
 from __future__ import annotations
 
+import functools
+
 import abc
 import asyncio
 import contextlib
 import fnmatch
 import logging
+import re
 import typing
 import warnings
+import weakref
 
 try:
     from functools import cached_property
@@ -120,6 +124,7 @@ class TopicDataBufferManager(typing.Generic[T_Buffer], abc.ABC):
         """
         Use this attribute to synchronize access to the managed resource
         """
+
 
 @util.dunder.repr('pattern', 'token_factory', 'task_nursery')
 class Topic(typing.AsyncIterator[T_Buffer], TopicDataBufferManager[T_Buffer], typing.Generic[T_Buffer, T_Token],
@@ -202,6 +207,8 @@ class Topic(typing.AsyncIterator[T_Buffer], TopicDataBufferManager[T_Buffer], ty
         """
         self._subscriber_count = 0
 
+        self._callback_tokens: typing.Dict[int, typing.Tuple[T_Token, ...]] = {}
+
     @property
     def subscriber_count(self):
         """
@@ -240,6 +247,42 @@ class Topic(typing.AsyncIterator[T_Buffer], TopicDataBufferManager[T_Buffer], ty
         async with self._wait_for_event():
             self.subscriber_count -= 1
 
+    @cached_property
+    def registered_callbacks(self) -> typing.Container[typing.Callable]:
+        """
+        Use this property to check if a callback is registered in this topic
+
+        Example:
+            >>> import itertools
+            >>> topic = Topic('foo', token_factory=itertools.count().__next__)
+            >>> print in topic.registered_callbacks
+            False
+            >>> token = topic.register_callback(print)
+            >>> print in topic.registered_callbacks
+            True
+        """
+
+        class id_container:
+            def __init__(self, mapping: typing.Mapping[T_Token, typing.Any]):
+                self._mapping = mapping
+
+            def __contains__(self, item):
+                return id(item) in self._mapping
+
+        return id_container(self._callback_tokens)
+
+    def get_token(self, callback: typing.Callable) -> typing.Tuple[T_Token]:
+        """
+        If the callback is registered in this topic, get the registration token[s]
+
+        Args:
+            callback: some callback that could have been registered previously
+
+        Returns:
+            tuple of all registration tokens for callable or None if callback was not registered
+        """
+        return self._callback_tokens.get(id(callback), None)
+
     async def remove_all_subscribers(self):
         """
         Set subscriber count to ``0`` and wait for :attr:`.on_subscriber_change` callback to finish
@@ -273,9 +316,16 @@ class Topic(typing.AsyncIterator[T_Buffer], TopicDataBufferManager[T_Buffer], ty
             a unique token (supplied by the :attr:`token_factory`) to deregister the callback later
         """
         token = self.token_factory()
+
         self.callback_tasks[token] = self.task_nursery.create_task(
             TopicCoroutine(shared_resource_accessor=self.buffer, callback=callback)
         )
+
+        # callbacks might not be hashable, so we use their id to attach the information
+        existing = self._callback_tokens.setdefault(id(callback), ())
+        self._callback_tokens[id(callback)] = existing + (token,)
+        weakref.finalize(callback, lambda key: self._callback_tokens.pop(key, None), id(callback))
+
         return token
 
     async def unregister_callback(self, token: T_Token, timeout=None) -> bool:
@@ -334,11 +384,9 @@ class BasicTopic(Topic[ubii.proto.TopicDataRecord, int]):
         super().__init__(pattern, token_factory=self.integer_token_factory(), **kwargs)
         self._buffer: ubii.proto.TopicDataRecord | None = None
 
-    @util.hook
     def _set_buffer(self, value):
         self._buffer = value
 
-    @util.hook
     def _get_buffer(self):
         return self._buffer
 
@@ -464,6 +512,28 @@ class TopicStore(MatchMapping[Topic_co]):
             raise KeyError(f"Can't delete item with key {key}")
 
         del self.data[key]
+
+
+    class helpers:
+        """
+        Some decorators to decorate the :meth:`~TopicStore.on_create` method that can be useful
+        """
+
+        class on_create_register_callback:
+            """
+            This decorator can simply be applied once, if you later want to add additional callbacks
+            just add them to the :attr:`.callbacks` of the registered :class:`on_create_register_callback`
+            """
+            def __init__(self, *callbacks):
+                self.callbacks = callbacks
+
+            def __call__(self, on_create: util.hook):
+                @functools.wraps(on_create)
+                def decorated(store: TopicStore, key: str):
+                    on_create(store, key)
+                    [store[key].register_callback(cb) for cb in self.callbacks]
+
+                return decorated
 
 
 class StreamSplitRoutine(util.CoroutineWrapper[typing.Any, typing.Any, None]):
@@ -595,3 +665,110 @@ class OnSubscribersChange:
             )
 
         self.event.set()
+
+
+class TopicMuxer(ubii.proto.TopicMux, metaclass=util.ProtoRegistry):
+    __unique_key_attr__ = 'id'
+    __record_identities__: typing.MutableMapping[int, str] = {}
+
+    def __init__(self, mapping=None, **kwargs):
+        if isinstance(mapping, ubii.proto.TopicMux):
+            mapping = ubii.proto.TopicMux.pb(mapping)
+
+        super().__init__(mapping=mapping, **kwargs)
+
+        if not self.id:
+            raise ValueError(f"Can't create {type(self)} object without valid 'id'")
+
+        self._records: typing.MutableMapping[str, ubii.proto.TopicDataRecord] = {}
+
+    @classmethod
+    def identity(cls, record: ubii.proto.TopicDataRecord):
+        return cls.__record_identities__.get(id(record))
+
+    @staticmethod
+    def type(record: ubii.proto.TopicDataRecord):
+        return type(record).pb(record).WhichOneof('type')
+
+    def _save_identity(self, record):
+        identity_matches = re.findall(self.identity_match_pattern, record.topic)
+        if len(identity_matches) > 0:
+            if len(identity_matches) != 1:
+                warnings.warn(
+                    f"{len(identity_matches)} identity matches found for topic {record.topic}, using first"
+                )
+
+            # add finalizer to remove object id when record is garbage collected
+            weakref.finalize(record, lambda key: self.__record_identities__.pop(key, None), id(record))
+            self.__record_identities__[id(record)] = identity_matches[0]
+
+    def _make_record_list(self) -> typing.List[ubii.proto.TopicDataRecord]:
+        return list(self._records.values())
+
+    def _set_records(self, records: typing.List[ubii.proto.TopicDataRecord]):
+        for record in records:
+            data_type = self.type(record)
+
+            if self.data_type and self.data_type != data_type:
+                continue
+
+            mapped: ubii.proto.TopicDataRecord = self._records.setdefault(record.topic, record)
+            # this seems redundant, but I really don't like if / else statements here, so maybe we reinitialize some
+            # fields, but who cares
+            changes = {k: v for k, v in type(record).to_dict(record).items() if k in record}
+            if changes:
+                type(mapped).copy_from(instance=mapped, other=changes)
+
+            self._save_identity(mapped)
+
+    records = util.condition_property(fget=_make_record_list, fset=_set_records)
+
+    async def on_record(self, record: ubii.proto.TopicDataRecord):
+        await self.records.set([record])
+
+
+class TopicDemuxer(ubii.proto.TopicDemux, metaclass=util.ProtoRegistry):
+    DEFAULT_REGEX_OUTPUT_PARAM = r'{{#[0-9]+}}'
+
+    __unique_key_attr__ = 'id'
+    __record_params__: typing.MutableMapping[int, typing.Tuple] = {}
+
+    def __init__(self, mapping=None, param_regex=DEFAULT_REGEX_OUTPUT_PARAM, **kwargs):
+        if isinstance(mapping, ubii.proto.TopicDemux):
+            mapping = ubii.proto.TopicDemux.pb(mapping)
+
+        super().__init__(mapping=mapping, **kwargs)
+
+        if not self.id:
+            raise ValueError(f"Can't create {type(self)} object without valid 'id'")
+
+        self._param_regex = param_regex
+        self._matches = {match for match in re.finditer(self._param_regex, self.output_topic_format)}
+        self._records: typing.MutableMapping[..., ubii.proto.TopicDataRecord] = {}
+
+    @classmethod
+    def set_output_params(cls, record: ubii.proto.TopicDataRecord, *params):
+        weakref.finalize(record, lambda key: cls.__record_params__.pop(key, None), id(record))
+        cls.__record_params__[id(record)] = params
+
+    def _make_record_list(self) -> typing.List[ubii.proto.TopicDataRecord]:
+        return list(self._records.values())
+
+    def _set_records(self, records: typing.List[ubii.proto.TopicDataRecord]):
+        for record in records:
+            data_type = self.type(record)
+
+            if self.data_type and self.data_type != data_type:
+                continue
+
+            topic = self.output_topic_format
+
+            mapped = self._records.setdefault(record.topic, record)
+            # this seems redundant, but I really don't like if / else statements here, so maybe we reinitialize some
+            # fields, but who cares
+            changes = {k: v for k, v in type(record).to_dict(record).items() if k in record}
+            if changes:
+                type(mapped).copy_from(instance=mapped, other=changes)
+            record.topic = self.output_topic_format
+
+    records = util.condition_property(fget=_make_record_list, fset=_set_records)

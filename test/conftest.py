@@ -132,8 +132,9 @@ async def start_session(client_spec):
         nonlocal _started
         assert client.implements(Services)
         response = await client[Services].service_map.session_runtime_start(session=session)
-        await asyncio.sleep(3)  # session needs to start up
+        await asyncio.sleep(4)  # session needs to start up
         _started.append(response.session)
+        return response.session
 
     yield _start
 

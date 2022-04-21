@@ -27,7 +27,7 @@ from typing import (
     Callable,
     Tuple,
     Optional,
-    Type
+    Type, Awaitable
 )
 
 try:
@@ -97,6 +97,14 @@ class Documented(Protocol):
     __doc__: str
 
 
+AsyncGetter = Callable[[], Awaitable[T]]
+"""
+"""
+
+AsyncSetter = Callable[[T], Awaitable[None]]
+"""
+"""
+
 __all__ = (
     'SimpleCoroutine',
     'Decorator',
@@ -112,6 +120,8 @@ __all__ = (
     'T_EnumFlag',
     'T_co',
     'T_contra',
+    'AsyncSetter',
+    'AsyncGetter',
 )
 """
 names that should be imported from :mod:`ubii.util.typing` and not from other modules

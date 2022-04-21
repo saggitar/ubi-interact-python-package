@@ -7,6 +7,7 @@ from codestare.async_utils import (
     CoroutineWrapper,
     TaskNursery,
     async_exit_on_exc,
+    awaitable_predicate,
     RegistryMeta,
     Registry,
 )
@@ -22,7 +23,6 @@ from .functools import (
     ProtoRegistry,
     function_chain,
     compose,
-    awaitable_predicate,
     make_dict,
     async_compose,
     enrich,
@@ -53,6 +53,7 @@ def debug(enabled: bool | None = None) -> bool:
 
 __all__ = (
     "accessor",
+    "awaitable_predicate",
     "condition_property",
     "make_async",
     "CoroutineWrapper",
@@ -68,7 +69,6 @@ __all__ = (
     "ProtoRegistry",
     "function_chain",
     "compose",
-    "awaitable_predicate",
     "make_dict",
     "merge_dicts",
     "async_compose",
