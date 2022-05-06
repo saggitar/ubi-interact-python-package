@@ -633,6 +633,15 @@ class LegacyProtocol(client.AbstractClientProtocol[States]):
                     remote_topic_map=context.topic_store
                 )
 
+                # publish
+                if io_mapping.output_mappings:
+                    topic_map = instance.local_output_topics
+                    decorator = topic_map.helpers.on_create_register_callback(context.client[client.Publish].publish)
+                    if decorator not in type(topic_map).create_topic.decorators(topic_map):
+                        type(topic_map).create_topic.register_decorator(
+                            decorator, instance=topic_map
+                        )
+
                 # subscribe
                 mapping: ubii.proto.TopicInputMapping
                 for mapping in io_mapping.input_mappings or ():
@@ -651,14 +660,6 @@ class LegacyProtocol(client.AbstractClientProtocol[States]):
                         topic, = await subscribe
                         assert topic.on_subscribers_change
 
-                # publish
-                if io_mapping.output_mappings:
-                    topic_map = instance.local_output_topics
-                    decorator = topic_map.helpers.on_create_register_callback(context.client[client.Publish].publish)
-                    if decorator not in type(topic_map).create_topic.decorators(topic_map):
-                        type(topic_map).create_topic.register_decorator(
-                            decorator, instance=topic_map
-                        )
 
                 async with instance.change_specs:
                     instance.change_specs.notify_all()

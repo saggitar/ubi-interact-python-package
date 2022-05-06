@@ -114,7 +114,7 @@ class Scheduler(util.CoroutineWrapper):
     """
 
     def __init__(self,
-                 callback: typing.Callable[..., typing.Any],
+                 callback: typing.Callable[[], typing.Awaitable],
                  inputs: typing.Iterable[AsyncGetter],
                  mode: ubii.proto.ProcessingMode,
                  *,
@@ -158,7 +158,7 @@ class Scheduler(util.CoroutineWrapper):
         """
         used mode, determines which conditions need to be matched to schedule the callback
         """
-        self.callback: typing.Callable[..., typing.Any] = callback
+        self.callback: typing.Callable[[], typing.Awaitable] = callback
         """
         callback to be scheduled
         """
@@ -171,7 +171,7 @@ class Scheduler(util.CoroutineWrapper):
         """
         self._stop_during_next_iteration = False
 
-        super().__init__(coroutine=self.get_trigger_loop())
+        super().__init__(coroutine=self._trigger_loop())
 
     @property
     def delay(self) -> float:
@@ -205,7 +205,7 @@ class Scheduler(util.CoroutineWrapper):
         return self._perf_metric()
 
     @property
-    def callback(self) -> typing.Callable[..., typing.Any] | None:
+    def callback(self) -> typing.Callable[[], typing.Awaitable] | None:
         """
         reference to callable that needs to be scheduled. If this attribute is set, a slightly altered version
         of the supplied callable will be used instead.
@@ -235,7 +235,7 @@ class Scheduler(util.CoroutineWrapper):
         """
         self._stop_during_next_iteration = True
 
-    def get_trigger_loop(self) -> typing.Coroutine:
+    async def _trigger_loop(self):
         """
         This method is used to generate the coroutine that is wrapped internally.
         There is no need to call this method manually, just `await` the scheduler.
@@ -245,35 +245,32 @@ class Scheduler(util.CoroutineWrapper):
         :attr:`.inputs` are `ready` (this means that either `one` or `all` of the input awaitables finished,
         depending on the :attr:`.mode`) and / or the :attr:`.delay` has passed.
         """
-
-        async def _trigger_loop():
-            with self.executor as pool:
-                while not self._stop_during_next_iteration:
-                    start_time = self._loop.time()
-                    self.done, self.pending = await asyncio.wait(
-                        [get() for get in self.inputs],
-                        timeout=(self.delay if self.mode.frequency else None),
-                        return_when=(
-                            asyncio.ALL_COMPLETED
-                            if self.mode.trigger_on_input and self.mode.trigger_on_input.all_inputs_need_update else
-                            asyncio.FIRST_COMPLETED
-                        )
+        with self.executor as pool:
+            while not self._stop_during_next_iteration:
+                start_time = self._loop.time()
+                self.done, self.pending = await asyncio.wait(
+                    [get() for get in self.inputs],
+                    timeout=(self.delay if self.mode.frequency else None),
+                    return_when=(
+                        asyncio.ALL_COMPLETED
+                        if self.mode.trigger_on_input and self.mode.trigger_on_input.all_inputs_need_update else
+                        asyncio.FIRST_COMPLETED
                     )
-                    end_time = self._loop.time()
-                    remaining = self.delay - (end_time - start_time)
-                    if remaining > 0:
-                        await asyncio.sleep(remaining)
+                )
+                end_time = self._loop.time()
+                remaining = self.delay - (end_time - start_time)
+                if remaining > 0:
+                    await asyncio.sleep(remaining)
 
-                    await self._loop.run_in_executor(pool, self._callback)
+                await self._loop.run_in_executor(pool, self._callback)
 
-                    with contextlib.suppress(asyncio.CancelledError):
-                        for awaitable in self.pending:
-                            awaitable.cancel()
-                            await awaitable
-
-        return _trigger_loop()
+                with contextlib.suppress(asyncio.CancelledError):
+                    for awaitable in self.pending:
+                        awaitable.cancel()
+                        await awaitable
 
 
+@util.dunder.repr('id', 'name', 'status')
 class ProcessingRoutine(ubii.proto.ProcessingModule, metaclass=util.ProtoRegistry):
     """
     This adds a :class:`ProcessingProtocol` providing processing behaviour to a
@@ -437,7 +434,20 @@ class ProcessingRoutine(ubii.proto.ProcessingModule, metaclass=util.ProtoRegistr
         get_output_mapping = {mapping.output_name: mapping for mapping in io_mapping.output_mappings}.get
 
         def getter(topic_map: typing.Mapping[..., topics.Topic],
-                   io: ubii.proto.ModuleIO):
+                   io: ubii.proto.ModuleIO) -> typing.Callable[[], typing.Awaitable]:
+            """
+            Depending on the :class:`~ubii.proto.InputMapping` for the IO specification,
+            return a callable that returns an awaitable to get the next record in a topic,
+            or the :attr:`~TopicMuxer.records` of a muxer
+
+            Args:
+                topic_map: This topic map will manage the topics that we access
+                io: use this specification to look up the :class:`~ubii.proto.InputMapping` in the
+                    :class:`~ubii.proto.IOMapping` passed to :meth:`apply_io_mapping`
+
+            Returns:
+                a callable returning an awaitable to await new topic data
+            """
             mapping: ubii.proto.TopicInputMapping = get_input_mapping(io.internal_name)
             if mapping is None:
                 raise ValueError(f"No mapping with input name {io.internal_name} found")
@@ -446,50 +456,85 @@ class ProcessingRoutine(ubii.proto.ProcessingModule, metaclass=util.ProtoRegistr
                 muxer = topics.TopicMuxer.registry.get(mapping.topic_mux.id)
                 if not muxer:
                     muxer = topics.TopicMuxer(mapping=mapping.topic_mux)
-                    topic_map[muxer.topic_selector].register_callback(muxer.on_record)
-
+                    topic_map[muxer.topic_selector].register_callback(lambda record: muxer.records.set([record]))
                 return muxer.records.get
             elif mapping.topic:
-                return topic_map[mapping.topic].buffer.get
-                # once_false_then_true = itertools.chain([False], itertools.repeat(True)).__next__
-                # right_datatype = functools.partial(check_datatype, io)
-                # return functools.partial(
-                #     topic_map[mapping.topic].buffer.get,
-                #     predicate=lambda record: once_false_then_true() and right_datatype(record)
-                # )
+                return functools.partial(
+                    topic_map[mapping.topic].buffer.get,
+                    predicate=functools.partial(check_datatype, io),
+                    await_next_write=True
+                )
             else:
                 raise ValueError(f"Invalid input mapping {mapping}")
 
         def setter(topic_map: typing.Mapping[..., topics.Topic],
-                   io: ubii.proto.ModuleIO):
+                   io: ubii.proto.ModuleIO) -> typing.Callable[..., typing.Awaitable[None]]:
+
+            """
+            Depending on the :class:`~ubii.proto.OutputMapping` for the IO specification,
+            return a callable that returns an awaitable to set the record in a topic (using a :class:`TopicDemuxer`
+            is necessary)
+
+            Args:
+                topic_map: This topic map will manage the topics that we access
+                io: use this specification to look up the :class:`~ubii.proto.OutputMapping` in the
+                    :class:`~ubii.proto.IOMapping` passed to :meth:`apply_io_mapping`
+
+            Returns:
+                a callable returning an awaitable to set topic data
+            """
             mapping: ubii.proto.TopicOutputMapping = get_output_mapping(io.internal_name)
             if mapping is None:
                 raise ValueError(f"No mapping with input name {io.internal_name} found")
+
+            async def set_value(record: ubii.proto.TopicDataRecord, default_topic=mapping.topic) -> None:
+                """
+                Set data for topic from the topic map, if the records datatype matches the datatype
+                specified in the :class:`~ubii.proto.ModuleIO` specification
+
+                Args:
+                    record: a topic data record that should be written to a topic
+                    default_topic: the default topic that should be used if the record has no topic set
+
+                """
+                assert isinstance(record, ubii.proto.TopicDataRecord)
+
+                if not fix_io_fmt(io.message_format) in record:
+                    log.warning(f"{record} does not have the {fix_io_fmt(io.message_format)} field set required"
+                                f" by the ModuleIO data format, skipping")
+                    return
+
+                record.topic = record.topic or default_topic
+                topic = topic_map[record.topic]
+                # if the previous call creates a new topic with default callbacks, setting the record instantly
+                # might not trigger the callback, so we wait until the topic is ready
+                await topic.buffer.has_waiter
+                # then write the data
+                await topic.buffer.set(record)
 
             if mapping.topic_demux:
                 demuxer = topics.TopicDemuxer.registry.get(mapping.topic_demux.id)
                 if not demuxer:
                     demuxer = topics.TopicDemuxer(mapping=mapping.topic_demux)
 
-                return demuxer.records.set
+                async def set_value_demux(records: typing.List) -> None:
+                    """
+                    When demuxing, the :class:`TopicDemuxer` converts the record objects
+                    to actual :class:`ubii.proto.TopicDataRecord` messages
+
+                    Args:
+                        records: objects that represent a record with additional meta information
+                    """
+                    for record in demuxer.convert_record_objects(records).elements:
+                        await set_value(record)
+
+                return set_value_demux
             elif mapping.topic:
-                async def set_value(record: ubii.proto.TopicDataRecord):
-                    assert isinstance(record, ubii.proto.TopicDataRecord)
-
-                    if not fix_io_fmt(io.message_format) in record:
-                        log.warning(f"{record} does not have the {fix_io_fmt(io.message_format)} field set required"
-                                    f" by the ModuleIO data format, skipping")
-                        return
-
-                    record.topic = record.topic or mapping.topic
-                    topic = topic_map[record.topic]
-                    await topic.buffer.has_waiter
-                    await topic.buffer.set(record)
-
                 return set_value
             else:
                 raise ValueError(f"Invalid output mapping {mapping}")
 
+        # input is retrieved from remote topic map, output topics are created locally for each processing module
         self._input_source_getter = functools.partial(getter, remote_topic_map)
         self._output_destination_getter = functools.partial(setter, self.local_output_topics)
 

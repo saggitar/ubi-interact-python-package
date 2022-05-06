@@ -113,9 +113,9 @@ class Processing:
         topic, = await client[Subscriptions].subscribe_topic(base_session.server_bool)
         yield topic.buffer
 
-    @pytest.mark.parametrize('data', [False])
-    @pytest.mark.parametrize('delay', [1, 1])
-    @pytest.mark.parametrize('timeout', [4])
+    @pytest.mark.parametrize('data', [False, True])
+    @pytest.mark.parametrize('delay', [1, 0.1, 0.001])
+    @pytest.mark.parametrize('timeout', [0.4])
     async def test_processing_module(self, client, test_value, base_session, delay, timeout, data):
         await asyncio.sleep(delay)
         await client[Publish].publish({'topic': base_session.client_bool, 'bool': data})

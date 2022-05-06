@@ -33,13 +33,15 @@ See Also:
 
 from __future__ import annotations
 
-import functools
+import copy
 
 import abc
 import asyncio
 import contextlib
 import fnmatch
+import functools
 import logging
+import proto
 import re
 import typing
 import warnings
@@ -95,21 +97,20 @@ class TopicCoroutine(util.CoroutineWrapper[typing.Any, typing.Any, None], typing
     """
 
     def __init__(self, *,
-                 shared_resource_accessor: util.accessor[T_Buffer],
+                 buffer: typing.AsyncIterator[T_Buffer],
                  callback: Consumer[T_Buffer]):
         """
         Args:
-            shared_resource_accessor: e.g. the buffer of a topic
+            buffer: Iterator producing buffer value
             callback: a callable consuming the buffer values
         """
         self.__name__ = callback.__name__ if hasattr(callback, '__name__') else repr(callback)  # type: ignore
-        self.accessor = shared_resource_accessor
+        self.topic = buffer
         self.callback = util.make_async(callback)
         super().__init__(coroutine=self._run())
 
     async def _run(self):
-        while True:
-            value: T_Buffer = await self.accessor.get()
+        async for value in self.topic:
             await self.callback(value)
 
 
@@ -168,7 +169,7 @@ class Topic(typing.AsyncIterator[T_Buffer], TopicDataBufferManager[T_Buffer], ty
     on_subscribers_change: OnSubscribersChange | None
 
     async def __anext__(self) -> T_Buffer:
-        return await self.buffer.get()
+        return await self.buffer.get(await_next_write=True)
 
     def __init__(self: Topic[T_Buffer, T_Token],
                  pattern,
@@ -318,7 +319,7 @@ class Topic(typing.AsyncIterator[T_Buffer], TopicDataBufferManager[T_Buffer], ty
         token = self.token_factory()
 
         self.callback_tasks[token] = self.task_nursery.create_task(
-            TopicCoroutine(shared_resource_accessor=self.buffer, callback=callback)
+            TopicCoroutine(buffer=self, callback=callback)
         )
 
         # callbacks might not be hashable, so we use their id to attach the information
@@ -401,7 +402,7 @@ class BasicTopic(Topic[ubii.proto.TopicDataRecord, int]):
            :class:`~codestare.async_utils.descriptor.accessor` -- details about access to shared resource
 
         """
-        return util.accessor(funcs=(self._get_buffer, self._set_buffer))
+        return util.accessor(funcs=(self._get_buffer, self._set_buffer), name='buffer')
 
 
 class MatchMapping(typing.Mapping[str, T_co], abc.ABC):
@@ -513,7 +514,6 @@ class TopicStore(MatchMapping[Topic_co]):
 
         del self.data[key]
 
-
     class helpers:
         """
         Some decorators to decorate the :meth:`~TopicStore.on_create` method that can be useful
@@ -524,6 +524,7 @@ class TopicStore(MatchMapping[Topic_co]):
             This decorator can simply be applied once, if you later want to add additional callbacks
             just add them to the :attr:`.callbacks` of the registered :class:`on_create_register_callback`
             """
+
             def __init__(self, *callbacks):
                 self.callbacks = callbacks
 
@@ -667,9 +668,81 @@ class OnSubscribersChange:
         self.event.set()
 
 
+class MetaMuxRecord(ubii.proto.TopicDataRecord, metaclass=ubii.proto.ProtoMeta):
+    """
+    TopicDataRecords need to get additional meta information when they are produced by a Muxer.
+    This meta information is not part of the proto schema. This mechanism is similar to the JS way
+    muxers ands demuxers are implemented, to keep the processing code comparable.
+    """
+
+    __record_meta__: typing.MutableMapping[int, typing.MutableMapping] = {}
+
+    def __init__(self, mapping: typing.Dict | proto.Message = None, *, ignore_unknown_fields: bool = False, **kwargs):
+        """
+
+        Args:
+            mapping: A dictionary or message to be
+                used to determine the values for this message. If it is a dictionary, keys that are not part
+                of the proto schema will be added to the metadata instead
+            ignore_unknown_fields: If True, do not raise errors for
+                unknown fields. Only applied if `mapping` is a mapping type or there
+                are keyword parameters.
+            **kwargs: Keys and values corresponding to the fields of the message.
+                Any keyword arguments that are passed on initialisation, that are not part of
+                the :class:`~ubii.proto.TopicDataRecord` schema, will be simply inserted into the metadata mapping.
+        """
+        field_names = list(ubii.proto.TopicDataRecord.pb().DESCRIPTOR.fields_by_name)
+
+        # let's help super().__init__  a bit by handling unusual behaviours
+        if isinstance(mapping, ubii.proto.TopicDataRecord):
+            mapping = ubii.proto.TopicDataRecord.pb(mapping)
+        elif isinstance(mapping, typing.Mapping):
+            kwargs.update(**{k: v for k, v in mapping.items() if k not in field_names})
+            mapping = {k: v for k, v in mapping.items() if k in field_names}
+
+        metadata = {k: v for k, v in kwargs.items() if k not in field_names}
+        kwargs = {k: v for k, v in kwargs.items() if k in field_names}
+
+        super().__init__(mapping=mapping, ignore_unknown_fields=ignore_unknown_fields, **kwargs)
+        self.metadata(**metadata)
+
+    def metadata(self: MetaMuxRecord, **kwargs) -> typing.Optional[typing.MutableMapping]:
+        """
+        :class:`~ubii.proto.TopicDataRecord` overwrites attribute access, so we can't write any
+        attributes that are not part of the protobuf specification.
+
+        This method allows saving metadata for a record in a specified way, without altering
+        the proto schema.
+
+        Args:
+            **kwargs: If you specify keyword arguments, they will be written to the metadata mapping
+
+        Returns:
+            if metadata has been associated with the record, returns the metadata mapping, otherwise returns None
+        """
+        if kwargs:
+            if id(self) not in self.__record_meta__:
+                # add finalizer to remove object id when record is garbage collected
+                weakref.finalize(self, lambda key: self.__record_meta__.pop(key, None), id(self))
+            mapping = self.__record_meta__.setdefault(id(self), {})
+            mapping.update(kwargs)
+
+        return self.__record_meta__.get(id(self), None)
+
+    @property
+    def type(self) -> str | None:
+        """
+        Returns attribute name of the attribute that is set in the `type` oneof group for convenience
+        """
+        return type(self).pb(self).WhichOneof('type')
+
+
 class TopicMuxer(ubii.proto.TopicMux, metaclass=util.ProtoRegistry):
+    """
+    A :class:`TopicMuxer` defines a special :attr:`.records` attribute, to handle topic data records. The muxer
+    will identify metadata for the records, and associate it with them.
+    """
     __unique_key_attr__ = 'id'
-    __record_identities__: typing.MutableMapping[int, str] = {}
 
     def __init__(self, mapping=None, **kwargs):
         if isinstance(mapping, ubii.proto.TopicMux):
@@ -680,58 +753,80 @@ class TopicMuxer(ubii.proto.TopicMux, metaclass=util.ProtoRegistry):
         if not self.id:
             raise ValueError(f"Can't create {type(self)} object without valid 'id'")
 
-        self._records: typing.MutableMapping[str, ubii.proto.TopicDataRecord] = {}
+        self._records: typing.MutableMapping[typing.Any, TopicMuxer.MuxedRecord] = {}
 
-    @classmethod
-    def identity(cls, record: ubii.proto.TopicDataRecord):
-        return cls.__record_identities__.get(id(record))
-
-    @staticmethod
-    def type(record: ubii.proto.TopicDataRecord):
-        return type(record).pb(record).WhichOneof('type')
-
-    def _save_identity(self, record):
+    def _compute_identity(self, record):
         identity_matches = re.findall(self.identity_match_pattern, record.topic)
         if len(identity_matches) > 0:
             if len(identity_matches) != 1:
-                warnings.warn(
-                    f"{len(identity_matches)} identity matches found for topic {record.topic}, using first"
-                )
+                warnings.warn(f"{len(identity_matches)} identity matches found for topic {record.topic}, using first."
+                              f" Consider refining the 'identity_match_pattern' regular expression "
+                              f"{self.identity_match_pattern!r}")
 
-            # add finalizer to remove object id when record is garbage collected
-            weakref.finalize(record, lambda key: self.__record_identities__.pop(key, None), id(record))
-            self.__record_identities__[id(record)] = identity_matches[0]
+            return identity_matches[0]
 
-    def _make_record_list(self) -> typing.List[ubii.proto.TopicDataRecord]:
+    def _get_records(self) -> 'typing.List[MetaMuxRecord]':
         return list(self._records.values())
 
-    def _set_records(self, records: typing.List[ubii.proto.TopicDataRecord]):
+    def _identify_records(self, records: typing.List[ubii.proto.TopicDataRecord]):
         for record in records:
-            data_type = self.type(record)
+            assert isinstance(record, ubii.proto.TopicDataRecord)
+            assert 'topic' in record, "Invalid record, no topic set!"
 
-            if self.data_type and self.data_type != data_type:
+            metarecord = MetaMuxRecord(mapping=record, identity=self._compute_identity(record))
+            if metarecord.type and self.data_type != metarecord.type:
                 continue
 
-            mapped: ubii.proto.TopicDataRecord = self._records.setdefault(record.topic, record)
-            # this seems redundant, but I really don't like if / else statements here, so maybe we reinitialize some
-            # fields, but who cares
-            changes = {k: v for k, v in type(record).to_dict(record).items() if k in record}
-            if changes:
-                type(mapped).copy_from(instance=mapped, other=changes)
+            # we are not updating any records client code might have saved. If you want to get up to date records,
+            # use the records condition property
+            self._records[record.topic] = metarecord
 
-            self._save_identity(mapped)
+    records = util.condition_property(fget=_get_records, fset=_identify_records)
+    """
+    Use this :class:`util.condition_property` to read and write records handled by the
+    muxer (which will convert them to :class:`MetaMuxRecord` objects
+    that carry additional meta information)
 
-    records = util.condition_property(fget=_make_record_list, fset=_set_records)
-
-    async def on_record(self, record: ubii.proto.TopicDataRecord):
-        await self.records.set([record])
+    Example:
+        *The example uses an async interpreter* ::
+        
+            >>> import asyncio
+            >>> from ubii.framework.topics import TopicMuxer
+            >>> import ubii.proto
+            >>> muxer = TopicMuxer(
+            ...     id="fake-id",
+            ...     data_type='int32',
+            ...     topic_selector='/topic/*',
+            ...     identity_match_pattern='(?:/topic/([0-9a-z-]+))'
+            ... )
+            >>> records = [ubii.proto.TopicDataRecord(topic=f"/topic/{num}", int32=num) for num in range(5)]
+            >>> records
+            [topic: "/topic/0"
+            int32: 0
+            , topic: "/topic/1"
+            int32: 1
+            , topic: "/topic/2"
+            int32: 2
+            , topic: "/topic/3"
+            int32: 3
+            , topic: "/topic/4"
+            int32: 4
+            ]
+            >>> await muxer.records.set(records)
+            >>> muxed = await muxer.records.get(predicate=lambda _ : True)
+            >>> muxed[0].metadata()
+            {'identity': '0'}
+            
+    """
 
 
 class TopicDemuxer(ubii.proto.TopicDemux, metaclass=util.ProtoRegistry):
-    DEFAULT_REGEX_OUTPUT_PARAM = r'{{#[0-9]+}}'
-
+    """
+    A Demuxer converts :class:`MetaMuxRecord` objects to regular records, by setting their attributes
+    (currently only the topic) according to their associated metadata and it's own attributes.
+    """
+    DEFAULT_REGEX_OUTPUT_PARAM = r'{{#([0-9]+)}}'
     __unique_key_attr__ = 'id'
-    __record_params__: typing.MutableMapping[int, typing.Tuple] = {}
 
     def __init__(self, mapping=None, param_regex=DEFAULT_REGEX_OUTPUT_PARAM, **kwargs):
         if isinstance(mapping, ubii.proto.TopicDemux):
@@ -742,33 +837,94 @@ class TopicDemuxer(ubii.proto.TopicDemux, metaclass=util.ProtoRegistry):
         if not self.id:
             raise ValueError(f"Can't create {type(self)} object without valid 'id'")
 
-        self._param_regex = param_regex
-        self._matches = {match for match in re.finditer(self._param_regex, self.output_topic_format)}
-        self._records: typing.MutableMapping[..., ubii.proto.TopicDataRecord] = {}
+        self._param_regex = re.compile(param_regex)
 
-    @classmethod
-    def set_output_params(cls, record: ubii.proto.TopicDataRecord, *params):
-        weakref.finalize(record, lambda key: cls.__record_params__.pop(key, None), id(record))
-        cls.__record_params__[id(record)] = params
+    @staticmethod
+    def _replace_with_param(params: typing.Tuple | None, match: re.Match):
+        # fallback = whole match, no replacements
 
-    def _make_record_list(self) -> typing.List[ubii.proto.TopicDataRecord]:
-        return list(self._records.values())
+        fallback = match.group()
+        if not len(match.groups()) == 1:
+            warnings.warn(f"{len(match.groups())} groups in match, 1 is required")
+            return fallback
 
-    def _set_records(self, records: typing.List[ubii.proto.TopicDataRecord]):
-        for record in records:
-            data_type = self.type(record)
+        try:
+            num_param = int(match.group(1))
+        except TypeError:
+            warnings.warn(f"Can't convert first match group {match.group(1)} to integer")
+            # fallback, return whole match, don't replace
+            return fallback
 
-            if self.data_type and self.data_type != data_type:
-                continue
+        if params is None:
+            warnings.warn(f"No parameters specified")
+            return fallback
 
-            topic = self.output_topic_format
+        try:
+            param = params[num_param]
+        except IndexError:
+            warnings.warn(f"Param {num_param} from parameters {params} can't be accessed")
+            return fallback
 
-            mapped = self._records.setdefault(record.topic, record)
-            # this seems redundant, but I really don't like if / else statements here, so maybe we reinitialize some
-            # fields, but who cares
-            changes = {k: v for k, v in type(record).to_dict(record).items() if k in record}
-            if changes:
-                type(mapped).copy_from(instance=mapped, other=changes)
-            record.topic = self.output_topic_format
+        return param
 
-    records = util.condition_property(fget=_make_record_list, fset=_set_records)
+    def _convert(self, meta_record: MetaMuxRecord | typing.Dict) -> ubii.proto.TopicDataRecord | None:
+        if not isinstance(meta_record, MetaMuxRecord):
+            meta_record = MetaMuxRecord(mapping=meta_record)
+
+        if meta_record.type and self.data_type != meta_record.type:
+            return
+
+        topic = self._param_regex.sub(
+            functools.partial(self._replace_with_param, meta_record.metadata().get('output_params')),
+            self.output_topic_format
+        )
+
+        meta_record.topic = topic or meta_record.topic
+        return meta_record
+
+    def convert_record_objects(self, records: typing.List) -> ubii.proto.TopicDataRecordList:
+        """
+        The Demuxer converts the records to actual TopicDataRecords with the right topic
+
+        Args:
+            records: records with metadata, likely created as outputs of a processing module
+
+        Returns:
+            elements contain all records that where successfully converted
+
+        Example:
+            *The example uses an async interpreter* ::
+
+                >>> import asyncio
+                >>> from ubii.framework.topics import TopicDemuxer
+                >>> import ubii.proto
+                >>> records = [{'int32': num, 'output_params': (str(num),)} for num in range(5)]
+                >>> demuxer = TopicDemuxer(
+                ...     id='fake-id',
+                ...     data_type='int32',
+                ...     output_topic_format='/topic/{{#0}}'
+                ... )
+                >>> demuxer.convert_record_objects(records)
+                elements {
+                  topic: "/topic/0"
+                  int32: 0
+                }
+                elements {
+                  topic: "/topic/1"
+                  int32: 1
+                }
+                elements {
+                  topic: "/topic/2"
+                  int32: 2
+                }
+                elements {
+                  topic: "/topic/3"
+                  int32: 3
+                }
+                elements {
+                  topic: "/topic/4"
+                  int32: 4
+                }
+        """
+
+        return ubii.proto.TopicDataRecordList(elements=[r for r in map(self._convert, records) if r is not None])

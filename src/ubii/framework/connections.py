@@ -345,7 +345,7 @@ class AIOHttpRestConnection(AIOHttpConnection, services.ServiceConnection):
         Args:
             request: as proto plus message wrapper object for a request
             timeout: if not set, wait indefinitely. Else wait for ``timeout`` seconds for the connection to become
-                usable (needs a :attr:`.session`), then send the message and wait for ``timeout`` seconds for reply,
+                usable (needs a :attr:`~AIOHttpRestConnection.session`), then send the message and wait for ``timeout`` seconds for reply,
                 then raise error
 
         Returns:
