@@ -20,7 +20,7 @@ import warnings
 import aiohttp
 
 import ubii.proto
-from . import (
+from ubii.framework import (
     services,
     topics,
     util
@@ -378,7 +378,7 @@ def aiohttp_session():
     Both sessions use the :class:`ubii.proto.util.ProtoEncoder` to serialize json, and raise Exceptions when
     requests fail (see :attr:`aiohttp.ClientSession.raise_for_status`)
 
-    >>> from ubii.framework import connections
+    >>> from ubii.node import connections
     >>> from ubii.framework import debug
     >>> session = connections.aiohttp_session()
     >>> debug(True)

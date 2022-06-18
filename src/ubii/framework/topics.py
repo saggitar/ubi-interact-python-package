@@ -33,8 +33,6 @@ See Also:
 
 from __future__ import annotations
 
-import copy
-
 import abc
 import asyncio
 import contextlib

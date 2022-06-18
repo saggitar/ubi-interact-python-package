@@ -20,12 +20,13 @@ import ubii.proto
 from ubii.framework import (
     topics,
     services,
-    connections,
     client,
     constants,
     util,
     processing,
 )
+
+from . import connections
 
 log = logging.getLogger(__name__)
 
