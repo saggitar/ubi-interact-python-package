@@ -19,8 +19,21 @@ Processing modules need to register their entry points with this key
 """
 
 
-def import_pm(import_name: str):
-    module, attribute = import_name.rsplit('.', maxsplit=1)
+def import_name(name: str):
+    """
+    Utility method, imports the module where the name is located
+
+    Example::
+
+        client_type = import_name('ubii.framework.client.UbiiClient')
+
+    Args:
+        name: full name, e.g. 'the.module.attribute'
+
+    Returns:
+        the attribute with specified name, from the imported module
+    """
+    module, attribute = name.rsplit('.', maxsplit=1)
     assert module
     assert attribute
     from importlib import import_module
@@ -28,14 +41,23 @@ def import_pm(import_name: str):
     return getattr(module, attribute)
 
 
-def log_to_folder(log_config):
+def log_to_folder(log_config, folder='logs/'):
+    """
+    Changes the log config so that all logs are written to the specified folder
+    Args:
+        folder: path to folder that should be prefixed
+        log_config: configuration dictionary in :func:`logging.config.dictConfig` format
+
+    Returns:
+        changed dictionary
+    """
     for name, config in log_config['handlers'].items():
         log_file = config.get('filename', None)
         if log_file is None:
             continue
 
-        if not log_file.startswith('logs/'):
-            log_file = Path(f"logs/{log_file}")
+        if not log_file.startswith(folder):
+            log_file = Path(f"{folder}{log_file}")
             config['filename'] = str(log_file)
 
         log_file.parent.mkdir(parents=True, exist_ok=True)
@@ -78,7 +100,7 @@ def main():
     if not args.no_discover:
         pms.update(load_pm_entry_points())
     if args.processing_modules:
-        pms.update(import_pm(name) for name in args.processing_modules)
+        pms.update(import_name(name) for name in args.processing_modules)
 
     if pms:
         print(f"Imported {', '.join(map(repr, pms))}")
@@ -111,7 +133,7 @@ def main():
 def info_log_client():
     """
     Example for tutorial to create a simple client that prints messages received in the info topics,
-    and continuously publishes a value to a custom info topic
+    and continuously publishes a value to a custom info topic. See :ref:`Client Example`
     """
     import asyncio
     import argparse

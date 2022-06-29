@@ -211,6 +211,9 @@ To test communication with the `master node` start with the default client by us
 3.  You can read about the client created by :obj:`~ubii.node.connect_client` in the API
     documentation.
 
+
+.. _Client Example:
+
 Client Example
 ~~~~~~~~~~~~~~
 Goal of this example is to create a Ubi Interact client node and subscribe to a topic with a custom callback.
