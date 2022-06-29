@@ -130,7 +130,7 @@ class unsubscribe_call(Protocol):
 
 
 class publish_call(Protocol):
-    async def __call__(self, *records: ubii.proto.TopicDataRecord | typing.Dict) -> typing.Awaitable[None]:
+    def __call__(self, *records: ubii.proto.TopicDataRecord | typing.Dict) -> typing.Awaitable[None]:
         """
         publish_call objects need to have this call signature
 
@@ -184,9 +184,21 @@ class Subscriptions:
 
     """
     subscribe_regex: subscribe_call | None = None
+    """
+    await to subscribe with regex
+    """
     subscribe_topic: subscribe_call | None = None
+    """
+    await to subscribe with simple topic
+    """
     unsubscribe_regex: unsubscribe_call | None = None
+    """
+    await to unsubscribe with regex
+    """
     unsubscribe_topic: unsubscribe_call | None = None
+    """
+    await to unsubscribe with simple topic
+    """
 
 
 @dataclasses.dataclass(**_data_kwargs)
@@ -197,6 +209,9 @@ class Publish:
     otherwise they should be wrapped in a :class:`ubii.proto.TopicData` message.
     """
     publish: publish_call | None = None
+    """
+    await to publish topic data
+    """
 
 
 @dataclasses.dataclass(**_data_kwargs)
@@ -222,7 +237,13 @@ class Devices:
     Behavior to register and deregister Devices (optional)
     """
     register_device: typing.Callable[[ubii.proto.Device], typing.Awaitable[ubii.proto.Device]] | None = None
+    """
+    await to register a device
+    """
     deregister_device: typing.Callable[[ubii.proto.Device], typing.Awaitable[None]] | None = None
+    """
+    await to deregister a device
+    """
 
 
 @dataclasses.dataclass(**_data_kwargs)

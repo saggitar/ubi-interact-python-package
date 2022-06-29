@@ -690,7 +690,7 @@ class PM_STAT(enum.IntFlag):
     DESTROYED = enum.auto()
 
 
-class ProcessingProtocol(protocol.AbstractProtocol[ubii.proto.ProcessingModule.Status]):
+class ProcessingProtocol(protocol.AbstractProtocol[PM_STAT]):
     """
     This :class:`~ubii.framework.protocol.AbstractProtocol` implementation defines the Protocol used to run
     :class:`ProcessingRoutines <ProcessingRoutine>`.

@@ -11,4 +11,5 @@ Submodules
    :maxdepth: 4
 
    ubii.node.connect
+   ubii.node.connections
    ubii.node.protocol

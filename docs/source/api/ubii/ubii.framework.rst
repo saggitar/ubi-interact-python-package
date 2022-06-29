@@ -19,7 +19,6 @@ Submodules
    :maxdepth: 4
 
    ubii.framework.client
-   ubii.framework.connections
    ubii.framework.constants
    ubii.framework.errors
    ubii.framework.logging

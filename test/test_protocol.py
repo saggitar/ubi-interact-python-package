@@ -1,9 +1,19 @@
+from __future__ import annotations
+
+from typing import Callable, Optional
+
+from dataclasses import dataclass
+
+import enum
+
 import asyncio
 import logging
 import random
 
 import pytest
 
+import ubii.framework.client
+from ubii.framework.client import UbiiClient
 from ubii.framework.protocol import AbstractProtocol, RunProtocol
 from ubii.node.protocol import DefaultProtocol, States as UbiiStates
 
@@ -72,3 +82,76 @@ async def test_default_protocol_stop(protocol: DefaultProtocol):
     assert client.id
     await protocol.stop()
     assert protocol.state.value == protocol.end_state
+
+
+class TestProtocol(AbstractProtocol):
+    class TestStates(enum.IntFlag):
+        START = enum.auto()
+        RUNNING = enum.auto()
+        END = enum.auto()
+        ANY = START | RUNNING | END
+
+    async def on_start(self, context):
+        print(f"starting with context:\n-> {context}")
+        await asyncio.sleep(2) # simulating some setup IO ...
+        await self.state.set(self.TestStates.RUNNING)
+
+    async def on_run(self, context):
+        print(f"running with context:\n-> {context}")
+
+    async def on_stop(self, context):
+        print(f"stopping with context:\n-> {context}")
+
+    starting_state = TestStates.START
+    end_state = TestStates.END
+
+    state_changes = {
+        (None, TestStates.START): on_start,
+        (TestStates.START, TestStates.RUNNING): on_run,
+        (TestStates.ANY, TestStates.END): on_stop,
+    }
+
+
+@dataclass(init=True, repr=True, eq=True)
+class FooBehaviour:
+    foo: Callable[[str], None] | None = None
+
+@dataclass(init=True, repr=True, eq=True)
+class BarBehaviour:
+    bar: str | None = None
+
+class FakeClientProtocol(TestProtocol):
+    TestStates = TestProtocol.TestStates
+
+    def __init__(self):
+        super().__init__()
+        self.client: UbiiClient | None = None
+
+    async def on_run(self, context):
+        assert self.client is not None
+        self.client[FooBehaviour].foo = print
+
+    state_changes = {**TestProtocol.state_changes, (TestStates.START, TestStates.RUNNING): on_run}
+
+
+async def test_fake_protocol():
+    protocol = FakeClientProtocol()
+
+    client = UbiiClient(
+        name='Test Client',
+        required_behaviours=(FooBehaviour,),
+        optional_behaviours=(BarBehaviour,),
+        protocol=protocol
+    )
+    protocol.client = client
+
+    async def use_behaviours():
+        await client.implements(BarBehaviour, FooBehaviour)
+        client[FooBehaviour].foo(f"Using behaviours -> {client[BarBehaviour].bar}")
+
+    async def implement_bar():
+        client[BarBehaviour].bar = 'Bar'
+
+    async with client as started_client:
+        assert not started_client.implements(BarBehaviour)
+        await asyncio.gather(implement_bar(), use_behaviours())

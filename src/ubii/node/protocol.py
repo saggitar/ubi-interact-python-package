@@ -790,11 +790,13 @@ class LatePMInitProtocol(LegacyProtocol):
 
         assert context.client.implements(client.InitProcessingModules)
         initialized = [
-            pm(context) for pm in context.client[client.InitProcessingModules].late_init_processing_modules
+            pm(context) for pm
+            in context.client[client.InitProcessingModules].late_init_processing_modules
             if isinstance(pm, type) and issubclass(pm, processing.ProcessingRoutine)
         ]
         if initialized:
-            context.client[client.InitProcessingModules].late_init_processing_modules = initialized
+            context.client[
+                client.InitProcessingModules].late_init_processing_modules = initialized
 
         context.client.processing_modules += initialized
 
