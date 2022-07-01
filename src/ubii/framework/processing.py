@@ -114,7 +114,7 @@ class Scheduler(util.CoroutineWrapper):
     """
 
     def __init__(self,
-                 callback: typing.Callable[[], typing.Awaitable],
+                 callback: typing.Callable[[], None],
                  inputs: typing.Iterable[AsyncGetter],
                  mode: ubii.proto.ProcessingMode,
                  *,
@@ -158,7 +158,7 @@ class Scheduler(util.CoroutineWrapper):
         """
         used mode, determines which conditions need to be matched to schedule the callback
         """
-        self.callback: typing.Callable[[], typing.Awaitable] = callback
+        self.callback: typing.Callable[[], None] = callback
         """
         callback to be scheduled
         """
@@ -235,6 +235,26 @@ class Scheduler(util.CoroutineWrapper):
         """
         self._stop_during_next_iteration = True
 
+    def _wait(self):
+        """
+        Create input awaitables from :attr:`.inputs`, start possible coroutines as tasks
+
+        Returns:
+            awaitable that waits for inputs to become ready, depending on :attr:`.mode`
+        """
+        awts = [
+            self._loop.create_task(awt) if asyncio.iscoroutine(awt) else awt
+            for awt
+            in [get() for get in self.inputs]
+        ]
+        timeout = (self.delay if self.mode.frequency else None)
+        return_when = (
+            asyncio.ALL_COMPLETED
+            if self.mode.trigger_on_input and self.mode.trigger_on_input.all_inputs_need_update else
+            asyncio.FIRST_COMPLETED
+        )
+        return asyncio.wait(awts, timeout=timeout, return_when=return_when)
+
     async def _trigger_loop(self):
         """
         This method is used to generate the coroutine that is wrapped internally.
@@ -248,15 +268,7 @@ class Scheduler(util.CoroutineWrapper):
         with self.executor as pool:
             while not self._stop_during_next_iteration:
                 start_time = self._loop.time()
-                self.done, self.pending = await asyncio.wait(
-                    [get() for get in self.inputs],
-                    timeout=(self.delay if self.mode.frequency else None),
-                    return_when=(
-                        asyncio.ALL_COMPLETED
-                        if self.mode.trigger_on_input and self.mode.trigger_on_input.all_inputs_need_update else
-                        asyncio.FIRST_COMPLETED
-                    )
-                )
+                self.done, self.pending = await self._wait()
                 end_time = self._loop.time()
                 remaining = self.delay - (end_time - start_time)
                 if remaining > 0:
@@ -964,7 +976,7 @@ class ProcessingProtocol(protocol.AbstractProtocol[PM_STAT]):
         #    await self.pm.change_specs.wait_for(lambda: self.pm.get_output_topic.decorators)
 
         # wait until processing is triggered and change state to processing
-        await context.trigger_processing.wait()
+        await context.trigger_processing._wait()
         self.helpers.write_scheduler_data_to_context(context.scheduler, context)
         await self.state.set(PM_STAT.PROCESSING)
 
