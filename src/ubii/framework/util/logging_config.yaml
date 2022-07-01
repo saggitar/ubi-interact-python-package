@@ -49,10 +49,10 @@ loggers:
   ubii.framework.services:
     propagate: no
     handlers: [services]
-  ubii.framework.connections.in.socket:
+  ubii.node.connections.in.socket:
     propagate: no
     handlers: [websocket-in]
-  ubii.framework.connections.out.socket:
+  ubii.node.connections.out.socket:
     propagate: no
     handlers: [websocket-out]
   codestare:

@@ -104,12 +104,15 @@ _data_kwargs = {'init': True, 'repr': True, 'eq': True}
 
 
 class subscribe_call(Protocol):
-    def __call__(self, *pattern: str) -> typing.Awaitable[typing.Tuple[topics.Topic, ...]]:
+    def __call__(self,
+                 *pattern: str,
+                 callback: topics.Consumer | None = None) -> typing.Awaitable[typing.Tuple[topics.Topic, ...]]:
         """
         subscribe_call objects need to have this call signature
 
         Args:
             *pattern: unix wildcard patterns or absolute topic names
+            callback: optional callback that should be registered for the subscribed topics
 
         Returns:
             awaitable returning a tuple of processed topics (one for each pattern, same order)
@@ -630,10 +633,7 @@ class AbstractClientProtocol(protocol.AbstractProtocol[T_EnumFlag], util.Registr
         """
         Config used -- contains e.g. default topic for initial `server configuration` service call
         """
-        self.client: UbiiClient | None = None
-        """
-        The client that owns this protocol
-        """
+        self._client: UbiiClient | None = None
         super().__init__()
 
     @abc.abstractmethod

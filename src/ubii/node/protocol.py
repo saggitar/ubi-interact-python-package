@@ -348,18 +348,21 @@ class LegacyProtocol(client.AbstractClientProtocol[States]):
             await context.service_map.topic_subscription(topic_subscription=message)
 
         class OnSubscribersChanged(topics.OnSubscribersChange):
-            def __init__(self, client_id, as_regex, callback: topics.OnSubscribeCallback):
+            def __init__(self, topic_store, client_id, as_regex, callback: topics.OnSubscribeCallback):
                 super().__init__(client_id, as_regex, callback)
-                self.topic_store = context.topic_store
+                self.topic_store = topic_store
 
             def __call__(self, topic: topics.Topic, change: typing.Tuple[int, int]):
-                super().__call__(topic, change)
+                task = super().__call__(topic, change)
                 old, new = change
                 if new == 0 and old > 0:
                     del self.topic_store[topic.pattern]
 
+                return task
+
         async def _handle_subscribe(*topic_patterns, as_regex=False, unsubscribe=False):
             assert context.topic_store is not None
+
             if not topic_patterns:
                 raise ValueError(f"No topics passed")
 
@@ -367,7 +370,9 @@ class LegacyProtocol(client.AbstractClientProtocol[States]):
 
             for topic in _topics:
                 if not topic.on_subscribers_change:
+                    assert context.client.id
                     topic.on_subscribers_change = OnSubscribersChanged(
+                        topic_store=context.topic_store,
                         client_id=context.client.id,
                         as_regex=as_regex,
                         callback=on_subscribe_callback

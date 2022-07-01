@@ -70,7 +70,7 @@ class AbstractProtocol(Generic[T_EnumFlag], abc.ABC):
         """
         Condition to notify / wait for changed :attr:`.context`
         """
-        self.task_nursery = util.TaskNursery(name=f"Task Nursery for {self}")
+        self.task_nursery = util.TaskNursery(name=lambda: f"Task Nursery for {self}")
         """
         This manages the tasks created by the protocol as well as teardown behaviour if the protocol is stopped
         """

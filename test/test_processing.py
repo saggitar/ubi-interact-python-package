@@ -144,7 +144,8 @@ class TestPy(Processing):
         pm: processing.ProcessingRoutine = processing.ProcessingRoutine.registry[module_spec.name]
         async with pm.change_specs:
             await pm.change_specs.wait_for(
-                lambda: pm.status == pm.Status.CREATED or pm.status == pm.Status.PROCESSING)
+                lambda: pm.status == pm.Status.CREATED or pm.status == pm.Status.PROCESSING
+            )
 
 
 class TestJS(Processing):

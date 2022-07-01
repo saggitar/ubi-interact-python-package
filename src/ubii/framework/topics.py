@@ -184,7 +184,7 @@ class Topic(typing.AsyncIterator[T_Buffer], TopicDataBufferManager[T_Buffer], ty
             **kwargs: passed to super class init methods
         """
         super().__init__(**kwargs)
-        self.on_subscribers_change = None
+        self.on_subscribers_change: OnSubscribersChange | None = None
         """
         Special callback to execute when :attr:`.subscriber_count` changes -- defaults to :obj:`None`
         """
@@ -631,12 +631,12 @@ class OnSubscribersChange:
                  client_id: str,
                  as_regex: bool,
                  callback: OnSubscribeCallback):
-        self.as_regex = as_regex
-        self.client_id = client_id
-        self.event = asyncio.Event()
-        self.callback = callback
+        self.as_regex: bool = as_regex
+        self.client_id: str = client_id
+        self.event: asyncio.Event = asyncio.Event()
+        self.callback: OnSubscribeCallback = callback
 
-    def __call__(self, topic: Topic, change: typing.Tuple[int, int]):
+    def __call__(self, topic: Topic, change: typing.Tuple[int, int]) -> asyncio.Task | None:
         """
         Called when subscriber counts change in a topic.
 
@@ -652,18 +652,22 @@ class OnSubscribersChange:
 
         """
         old, new = change
+        task = None
 
         if new == 0 and old > 0:
-            topic.task_nursery.create_task(
+            task = topic.task_nursery.create_task(
                 self.callback(self.client_id, topic.pattern, as_regex=self.as_regex, unsubscribe=True)
             )
 
         if new == 1 and old < 1:
-            topic.task_nursery.create_task(
+            task = topic.task_nursery.create_task(
                 self.callback(self.client_id, topic.pattern, as_regex=self.as_regex, unsubscribe=False)
             )
 
-        self.event.set()
+        if task:
+            task.add_done_callback(lambda _: self.event.set())
+
+        return task
 
 
 class MetaMuxRecord(ubii.proto.TopicDataRecord, metaclass=ubii.proto.ProtoMeta):

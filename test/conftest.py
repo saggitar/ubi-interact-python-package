@@ -8,6 +8,7 @@ import pytest
 import typing as t
 import yaml
 
+import ubii.proto
 import ubii.proto as ub
 from ubii.framework.client import Devices, UbiiClient, Services
 from ubii.node.protocol import DefaultProtocol
@@ -126,6 +127,7 @@ async def start_session(client_spec):
 
     async def _start(session):
         client = await client_spec
+
         if session.id:
             raise ValueError(f"Session {session} already started.")
 
