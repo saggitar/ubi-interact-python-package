@@ -642,6 +642,7 @@ class LegacyProtocol(client.AbstractClientProtocol[States]):
                 # publish
                 if io_mapping.output_mappings:
                     topic_map = instance.local_output_topics
+                    # the local topic map needs to auto-publish data that is written to topics
                     decorator = topic_map.helpers.on_create_register_callback(context.client[client.Publish].publish)
                     if decorator not in type(topic_map).create_topic.decorators(topic_map):
                         type(topic_map).create_topic.register_decorator(
@@ -666,7 +667,6 @@ class LegacyProtocol(client.AbstractClientProtocol[States]):
                         topic, = await subscribe
                         assert topic.on_subscribers_change
 
-
                 async with instance.change_specs:
                     instance.change_specs.notify_all()
 
@@ -679,8 +679,11 @@ class LegacyProtocol(client.AbstractClientProtocol[States]):
             Stop processing modules for session
             """
             session: ubii.proto.Session = record.session
+            get_io_mappings = {io_map.processing_module_id: io_map for io_map in session.io_mappings}.get
             halted = []
+
             module: processing.ProcessingRoutine
+
             for name, module in processing.ProcessingRoutine.registry.items():
                 if module.session_id != session.id:
                     continue
@@ -691,13 +694,12 @@ class LegacyProtocol(client.AbstractClientProtocol[States]):
                     await module.change_specs.wait_for(
                         lambda: module.status == ubii.proto.ProcessingModule.Status.HALTED)
 
-                for topic in map(module.get_input, module.inputs):
-                    if not topic.on_subscribers_change:
-                        warn(f"No callback on_subscribers_change on {topic}")
-                        continue
-
-                    # triggers unsubscribe if necessary
-                    await topic.remove_subscriber()
+                io_map: ubii.proto.IOMapping = get_io_mappings(module.id)
+                for input_source in io_map.input_mappings:
+                    if 'topic' in input_source:
+                        await context.topic_store[input_source.topic].remove_subscriber()
+                    elif 'topic_mux' in input_source:
+                        await context.topic_store[input_source.topic_mux.topic_selector].remove_subscriber()
 
             stopped = await asyncio.gather(*map(processing.ProcessingRoutine.stop, halted))
             remove_service = context.client[client.Services].service_map.pm_runtime_remove

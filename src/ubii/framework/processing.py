@@ -976,7 +976,7 @@ class ProcessingProtocol(protocol.AbstractProtocol[PM_STAT]):
         #    await self.pm.change_specs.wait_for(lambda: self.pm.get_output_topic.decorators)
 
         # wait until processing is triggered and change state to processing
-        await context.trigger_processing._wait()
+        await context.trigger_processing.wait()
         self.helpers.write_scheduler_data_to_context(context.scheduler, context)
         await self.state.set(PM_STAT.PROCESSING)
 
