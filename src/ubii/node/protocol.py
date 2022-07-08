@@ -738,11 +738,8 @@ class LegacyProtocol(client.AbstractClientProtocol[States]):
 
         # register callbacks
         default_topics = context.constants.DEFAULT_TOPICS
-        start, = await subscribe_topic(default_topics.INFO_TOPICS.START_SESSION)
-        stop, = await subscribe_topic(default_topics.INFO_TOPICS.STOP_SESSION)
-        start.register_callback(on_start_session)
-        stop.register_callback(on_stop_session)
-
+        await subscribe_topic(default_topics.INFO_TOPICS.START_SESSION).with_callback(on_start_session)
+        await subscribe_topic(default_topics.INFO_TOPICS.STOP_SESSION).with_callback(on_stop_session)
         context.client[client.RunProcessingModules].running_pms = running_pms
 
     async def on_halted(self, context: LegacyProtocol.Context):
