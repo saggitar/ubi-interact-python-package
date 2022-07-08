@@ -11,11 +11,15 @@ from ubii.framework import (
 from ubii.framework.util.typing import Protocol
 from . import protocol as default_protocol_
 
+P = typing.TypeVar('P', bound=protocol.AbstractProtocol)
+
 log = logging.getLogger(__name__)
 
 
-class connect(typing.Awaitable[client.UbiiClient[client.AbstractClientProtocol]],
-              typing.AsyncContextManager[client.UbiiClient[client.AbstractClientProtocol]]):
+class connect(typing.Awaitable[client.UbiiClient[P]],
+              typing.AsyncContextManager[client.UbiiClient[P]],
+              typing.ContextManager[client.UbiiClient[P]],
+              typing.Generic[P]):
     """
     Use this callable to easily get a running Ubi Interact Node. If you don't want to change the
     node behaviour significantly, this is the go-to to connect with the `master node`.
@@ -53,9 +57,7 @@ class connect(typing.Awaitable[client.UbiiClient[client.AbstractClientProtocol]]
                      instance: connect,
                      *,
                      client_type: typing.Type[client.UbiiClient],
-                     protocol_type: typing.Type[protocol.AbstractProtocol]) -> client.UbiiClient[
-            protocol.AbstractProtocol
-        ]:
+                     protocol_type: typing.Type[P]) -> client.UbiiClient[P]:
             """
             :class:`ClientFactory` objects need to have this call signature
 
@@ -68,11 +70,11 @@ class connect(typing.Awaitable[client.UbiiClient[client.AbstractClientProtocol]]
                 A client using the protocol
             """
 
-    def __init__(self,
+    def __init__(self: connect[P],
                  url=None,
                  config: constants.UbiiConfig = constants.GLOBAL_CONFIG,
                  client_type: typing.Type[client.UbiiClient] = client.UbiiClient,
-                 protocol_type: typing.Type[protocol.AbstractProtocol] = default_protocol_.DefaultProtocol):
+                 protocol_type: typing.Type[P] = default_protocol_.DefaultProtocol):
         """
         Args:
             url: URL of the `master node`, overwrites the
@@ -95,7 +97,7 @@ class connect(typing.Awaitable[client.UbiiClient[client.AbstractClientProtocol]]
         else:
             log.debug(f"Using {factory} to create {client_type} with {protocol_type}")
 
-        self.client = factory(
+        self.client: client.UbiiClient[P] = factory(
             self,
             client_type=client_type,
             protocol_type=protocol_type
@@ -123,7 +125,7 @@ class connect(typing.Awaitable[client.UbiiClient[client.AbstractClientProtocol]]
         protocol.client = client
         return client
 
-    def __await__(self) -> typing.Generator[typing.Any, None, client.UbiiClient]:
+    def __await__(self) -> typing.Generator[typing.Any, None, client.UbiiClient[P]]:
         return self.client.__await__()
 
     def __aenter__(self):
@@ -132,7 +134,7 @@ class connect(typing.Awaitable[client.UbiiClient[client.AbstractClientProtocol]]
     def __aexit__(self, *exc_infos):
         return self.client.__aexit__(*exc_infos)
 
-    def __enter__(self):
+    def __enter__(self: connect[P]) -> client.UbiiClient[P]:
         return self.client
 
     def __exit__(self, *exc_info):

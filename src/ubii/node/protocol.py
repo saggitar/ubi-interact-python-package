@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import itertools
+
 import asyncio
 import contextlib
 import dataclasses
@@ -7,6 +9,7 @@ import enum
 import functools
 import logging
 import typing
+import weakref
 
 try:
     from functools import cached_property
@@ -334,10 +337,7 @@ class LegacyProtocol(client.AbstractClientProtocol[States]):
         )
 
         async def on_subscribe_callback(
-                client_id: str,
-                *topic_patterns: str,
-                as_regex: bool = False,
-                unsubscribe: bool = False,
+                client_id: str, *topic_patterns: str, as_regex: bool = False, unsubscribe: bool = False
         ):
             message = {
                 'client_id': client_id,
@@ -360,35 +360,53 @@ class LegacyProtocol(client.AbstractClientProtocol[States]):
 
                 return task
 
-        async def _handle_subscribe(*topic_patterns, as_regex=False, unsubscribe=False):
-            assert context.topic_store is not None
+        class _handle_subscribe(util.CoroutineWrapper):
+            def __init__(self, *topic_patterns, as_regex=False, unsubscribe=False):
+                self.topic_patterns = topic_patterns
+                self.as_regex = as_regex
+                self.unsubscribe = unsubscribe
+                self.topics = tuple(context.topic_store[topic] for topic in self.topic_patterns)
 
-            if not topic_patterns:
-                raise ValueError(f"No topics passed")
+                assert context.topic_store is not None
+                if not self.topic_patterns:
+                    raise ValueError(f"No topics passed")
 
-            _topics = tuple(context.topic_store[topic] for topic in topic_patterns)
+                for topic in self.topics:
+                    if not topic.on_subscribers_change:
+                        assert context.client.id
+                        topic.on_subscribers_change = OnSubscribersChanged(
+                            topic_store=context.topic_store,
+                            client_id=context.client.id,
+                            as_regex=self.as_regex,
+                            callback=on_subscribe_callback
+                        )
 
-            for topic in _topics:
-                if not topic.on_subscribers_change:
-                    assert context.client.id
-                    topic.on_subscribers_change = OnSubscribersChanged(
-                        topic_store=context.topic_store,
-                        client_id=context.client.id,
-                        as_regex=as_regex,
-                        callback=on_subscribe_callback
-                    )
+                super().__init__(coroutine=self.__call())
 
-                if unsubscribe:
-                    await topic.remove_all_subscribers()
-                else:
-                    await topic.add_subscriber()
+            async def with_callback(self, callback: topics.Consumer) -> (
+                    typing.Tuple[typing.Tuple[topics.Topic, ...], typing.Tuple]
+            ):
+                if self.unsubscribe:
+                    raise NotImplementedError("This is only supported for 'subscribe' calls")
 
-            return _topics
+                tokens = [topic.register_callback(callback) for topic in self.topics]
+                await asyncio.gather(*[topic.buffer.has_waiting_read for topic in self.topics])
+                await self
+                return self.topics, tuple(tokens)
+
+            async def __call(self):
+                for topic in self.topics:
+                    if self.unsubscribe:
+                        await topic.remove_all_subscribers()
+                    else:
+                        await topic.add_subscriber()
+
+                return self.topics
 
         # we could do this with functools.partial, but that does not genereate a useful help() for the function
         # so instead we just manually define them
 
-        def subscribe_regex(*pattern):
+        def subscribe_regex(*pattern: str):
             """
             Subscribe to topic with glob pattern
 
@@ -406,7 +424,7 @@ class LegacyProtocol(client.AbstractClientProtocol[States]):
             """
             return _handle_subscribe(*pattern, as_regex=True, unsubscribe=False)
 
-        def subscribe_topic(*pattern):
+        def subscribe_topic(*pattern: str):
             """
             Subscribe to topic with simple topic name
 
@@ -424,7 +442,7 @@ class LegacyProtocol(client.AbstractClientProtocol[States]):
             """
             return _handle_subscribe(*pattern, as_regex=False, unsubscribe=False)
 
-        def unsubscribe_regex(*pattern):
+        def unsubscribe_regex(*pattern: str):
             """
             Unsubscribe from topic with glob pattern
 
@@ -447,7 +465,7 @@ class LegacyProtocol(client.AbstractClientProtocol[States]):
             """
             return _handle_subscribe(*pattern, as_regex=True, unsubscribe=True)
 
-        def unsubscribe_topic(*pattern):
+        def unsubscribe_topic(*pattern: str):
             """
             Unsubscribe from topic with simple topic name
 
@@ -587,6 +605,8 @@ class LegacyProtocol(client.AbstractClientProtocol[States]):
         """
         Implement :class:`ubii.node.RunProcessingModules` behaviour of :attr:`context.client <.Context.client>`
         """
+        pm_subscriptions: weakref.WeakValueDictionary[int, topics.Topic] = weakref.WeakValueDictionary()
+        running_pms = []
 
         async def on_start_session(record):
             """
@@ -603,7 +623,7 @@ class LegacyProtocol(client.AbstractClientProtocol[States]):
                     raise ValueError(f"No processing module routine with name {specs.name} found")
 
                 # start processing
-                await processing.ProcessingRoutine.start(pm)
+                running_pms.append(await processing.ProcessingRoutine.start(pm))
 
                 async with pm.change_specs:
                     # MergeFrom appends outputs and inputs, CopyFrom overwrites stuff, so we first need to "merge"
@@ -666,6 +686,8 @@ class LegacyProtocol(client.AbstractClientProtocol[States]):
                     if subscribe:
                         topic, = await subscribe
                         assert topic.on_subscribers_change
+                        weakref.finalize(instance, lambda pm_: pm_subscriptions.pop(id(pm_), None), instance)
+                        pm_subscriptions[id(instance)] = topic
 
                 async with instance.change_specs:
                     instance.change_specs.notify_all()
@@ -679,7 +701,6 @@ class LegacyProtocol(client.AbstractClientProtocol[States]):
             Stop processing modules for session
             """
             session: ubii.proto.Session = record.session
-            get_io_mappings = {io_map.processing_module_id: io_map for io_map in session.io_mappings}.get
             halted = []
 
             module: processing.ProcessingRoutine
@@ -694,12 +715,11 @@ class LegacyProtocol(client.AbstractClientProtocol[States]):
                     await module.change_specs.wait_for(
                         lambda: module.status == ubii.proto.ProcessingModule.Status.HALTED)
 
-                io_map: ubii.proto.IOMapping = get_io_mappings(module.id)
-                for input_source in io_map.input_mappings:
-                    if 'topic' in input_source:
-                        await context.topic_store[input_source.topic].remove_subscriber()
-                    elif 'topic_mux' in input_source:
-                        await context.topic_store[input_source.topic_mux.topic_selector].remove_subscriber()
+                input_topic_source = pm_subscriptions.get(id(module), None)
+                if input_topic_source:
+                    await input_topic_source.remove_subscriber()
+
+                running_pms.remove(module)
 
             stopped = await asyncio.gather(*map(processing.ProcessingRoutine.stop, halted))
             remove_service = context.client[client.Services].service_map.pm_runtime_remove
@@ -723,7 +743,7 @@ class LegacyProtocol(client.AbstractClientProtocol[States]):
         start.register_callback(on_start_session)
         stop.register_callback(on_stop_session)
 
-        context.client[client.RunProcessingModules].get_processing_module = processing.ProcessingRoutine.registry.get
+        context.client[client.RunProcessingModules].running_pms = running_pms
 
     async def on_halted(self, context: LegacyProtocol.Context):
         """
@@ -760,10 +780,10 @@ class LegacyProtocol(client.AbstractClientProtocol[States]):
         assert context.topic_store is not None
 
         for topic in context.topic_store.values():
-            await topic.remove_all_subscribers()
-
             if topic.task_nursery is not self.task_nursery:
                 await topic.task_nursery.aclose()
+
+            await topic.remove_all_subscribers()
 
         await self.task_nursery.aclose()
 
@@ -794,24 +814,29 @@ class LatePMInitProtocol(LegacyProtocol):
         processing modules of the client defined by it's :class:`InitProcessingModules` behaviour
         """
         await super().create_client(context)
+        already_initialized_pms = list(context.client.processing_modules)
+        late_initialized = []
 
         assert context.client.implements(client.InitProcessingModules)
-        initialized = [
-            pm(context) for pm
-            in context.client[client.InitProcessingModules].late_init_processing_modules
-            if isinstance(pm, type) and issubclass(pm, processing.ProcessingRoutine)
-        ]
-        if initialized:
-            context.client[
-                client.InitProcessingModules].late_init_processing_modules = initialized
+        for pm in context.client[client.InitProcessingModules].module_types:
+            if not isinstance(pm, type) or not issubclass(pm, processing.ProcessingRoutine):
+                continue
 
-        context.client.processing_modules += initialized
+            instance: processing.ProcessingRoutine = pm(context)
+            assert instance.name in processing.ProcessingRoutine.registry
+            late_initialized.append(instance)
+
+        context.client[client.InitProcessingModules].initialized = late_initialized
+        context.client.processing_modules = already_initialized_pms + late_initialized
 
     def __setattr__(self, key, value):
         if key == 'client' and value is not None:
             assert isinstance(value, client.UbiiClient)
-            if not value.implements(client.InitProcessingModules):
-                value[client.InitProcessingModules].late_init_processing_modules = []
+            value: client.UbiiClient
+            if value[client.InitProcessingModules].module_types is None:
+                value[client.InitProcessingModules].module_types = []
+            if value[client.InitProcessingModules].initialized is None:
+                value[client.InitProcessingModules].initialized = []
 
         super(LatePMInitProtocol, self).__setattr__(key, value)
 

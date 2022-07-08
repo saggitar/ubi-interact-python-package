@@ -65,7 +65,7 @@ class AbstractProtocol(Generic[T_EnumFlag], abc.ABC):
         super().__init__()
         self.__name__: str = self.__class__.__name__
         self._state = None
-        self._run = None
+        self._run: asyncio.Task | None = None
         self.change_context = asyncio.Condition()
         """
         Condition to notify / wait for changed :attr:`.context`
@@ -127,7 +127,11 @@ class AbstractProtocol(Generic[T_EnumFlag], abc.ABC):
         else:
             warnings.warn(f"{self} already running.")
 
-        self.task_nursery.push_async_callback(self.stop)
+        async def stop_if_running(protocol: AbstractProtocol):
+            if protocol._run:
+                await protocol.stop()
+
+        self.task_nursery.push_async_callback(lambda: stop_if_running(self))
         return self
 
     async def stop(self) -> None:
@@ -142,6 +146,7 @@ class AbstractProtocol(Generic[T_EnumFlag], abc.ABC):
         assert self._run, "Protocol not running, `start()` first"
         await self.state.set(self.end_state)
         await self._run
+        self._run = None
 
     async def __aenter__(self):
         self.start()
@@ -211,7 +216,7 @@ class RunProtocol(util.CoroutineWrapper):
                         previous = current
                         current = self.protocol.state.value
 
-                        log.debug(f"Changed state during exception {initial}")
+                        log.debug(f"Changed state during exception {initial}: {previous!r} -> {current!r}")
                         try:
                             result = await self._run_state_change_callback(previous, current, context)
                         except Exception as nested:

@@ -1,0 +1,61 @@
+version: 1
+formatters:
+  brief:
+    format: '%(message)s'
+  precise:
+    format: '%(asctime)s - %(name)s - %(levelname)s - %(message)s'
+    datefmt: '%Y-%m-%d %H:%M:%S'
+  http:
+    format: '%(asctime)s - %(levelname)s - %(message)s'
+    datefmt: '%Y-%m-%d %H:%M:%S'
+handlers:
+  console:
+    class : logging.StreamHandler
+    formatter: brief
+    level   : DEBUG
+    stream  : ext://sys.stdout
+  log:
+    class : logging.FileHandler
+    formatter: precise
+    level: DEBUG
+    filename: ubii.log
+    mode: w
+  websocket-in:
+    class : logging.FileHandler
+    formatter: http
+    level: DEBUG
+    filename: websocket.in.log
+    mode: w
+  websocket-out:
+    class : logging.FileHandler
+    formatter: http
+    level: DEBUG
+    filename: websocket.out.log
+    mode: w
+  services:
+    class : logging.FileHandler
+    formatter: http
+    level: DEBUG
+    filename: services.log
+    mode: w
+loggers:
+  ubii.framework:
+    propagate: yes
+  ubii.framework.topics:
+    propagate: no
+  aiohttp.client:
+    propagate: no
+    handlers: [services]
+  ubii.framework.services:
+    propagate: no
+    handlers: [services]
+  ubii.node.connections.in.socket:
+    propagate: no
+    handlers: [websocket-in]
+  ubii.node.connections.out.socket:
+    propagate: no
+    handlers: [websocket-out]
+  codestare:
+    propagate: yes
+root:
+  handlers: [console, log]

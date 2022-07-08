@@ -150,10 +150,6 @@ class Scheduler(util.CoroutineWrapper):
         """
         contains awaitables created from ``inputs`` argument that finished when callback needs to be scheduled
         """
-        self.pending: typing.List[typing.Awaitable] = []
-        """
-        contains awaitables created from ``inputs`` argument that did not finish when callback needs to be scheduled
-        """
         self.mode: 'ubii.proto.ProcessingMode' = mode
         """
         used mode, determines which conditions need to be matched to schedule the callback
@@ -169,7 +165,15 @@ class Scheduler(util.CoroutineWrapper):
         callbacks are possibly non-async callables, will be scheduled in this executor using 
         :meth:`asyncio.loop.run_in_executor`
         """
+        self.task_clean_frequency = 10
+        """
+        After every n callback schedules, cancel old input awaitables
+        """
+
         self._stop_during_next_iteration = False
+
+        self._old_input_tasks = []
+        self._scheduling_count = 0
 
         super().__init__(coroutine=self._trigger_loop())
 
@@ -275,11 +279,19 @@ class Scheduler(util.CoroutineWrapper):
                     await asyncio.sleep(remaining)
 
                 await self._loop.run_in_executor(pool, self._callback)
+                self._scheduling_count += 1
+                self._old_input_tasks.extend(self.pending)
+                if self._scheduling_count % self.task_clean_frequency == 0:
+                    self._scheduling_count = 0
+                    await self._clean_old_inputs()
 
-                with contextlib.suppress(asyncio.CancelledError):
-                    for awaitable in self.pending:
-                        awaitable.cancel()
-                        await awaitable
+            await self._clean_old_inputs()
+
+    async def _clean_old_inputs(self):
+        with contextlib.suppress(asyncio.CancelledError):
+            for awaitable in self._old_input_tasks:
+                awaitable.cancel()
+                await awaitable
 
 
 @util.dunder.repr('id', 'name', 'status')
@@ -474,7 +486,7 @@ class ProcessingRoutine(ubii.proto.ProcessingModule, metaclass=util.ProtoRegistr
                 return functools.partial(
                     topic_map[mapping.topic].buffer.get,
                     predicate=functools.partial(check_datatype, io),
-                    await_next_write=True
+                    wait_for_write=True
                 )
             else:
                 raise ValueError(f"Invalid input mapping {mapping}")
@@ -518,11 +530,11 @@ class ProcessingRoutine(ubii.proto.ProcessingModule, metaclass=util.ProtoRegistr
 
                 record.topic = record.topic or default_topic
                 topic = topic_map[record.topic]
+
                 # if the previous call creates a new topic with default callbacks, setting the record instantly
-                # might not trigger the callback, so we wait until the topic is ready
-                await topic.buffer.has_waiter
+                # might not trigger the callback, so we wait until the topic buffer is ready
                 # then write the data
-                await topic.buffer.set(record)
+                await topic.buffer.set(record, wait_for_read=True)
 
             if mapping.topic_demux:
                 demuxer = topics.TopicDemuxer.registry.get(mapping.topic_demux.id)
@@ -822,7 +834,7 @@ class ProcessingProtocol(protocol.AbstractProtocol[PM_STAT]):
 
             inputs.update(**{
                 result.meta: result.value
-                for result in map(lambda task: task.result(), ctx.scheduler.done)
+                for result in map(lambda task: task.result(), scheduler.done)
             })
             ctx.inputs = types.SimpleNamespace(**inputs)
 
@@ -1045,6 +1057,7 @@ class ProcessingProtocol(protocol.AbstractProtocol[PM_STAT]):
         (AnyState, PM_STAT.PROCESSING): on_processing,
         (AnyState, PM_STAT.HALTED): on_halted,
         (PM_STAT.HALTED, PM_STAT.DESTROYED): on_destroyed,
+        (PM_STAT.DESTROYED, PM_STAT.INITIALIZED): on_init,
     }
     """
     Possible state changes and respective callbacks

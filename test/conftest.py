@@ -8,7 +8,6 @@ import pytest
 import typing as t
 import yaml
 
-import ubii.proto
 import ubii.proto as ub
 from ubii.framework.client import Devices, UbiiClient, Services
 from ubii.node.protocol import DefaultProtocol
@@ -55,7 +54,6 @@ async def configure_logging(request):
         yield
         # closing the context manager closes the files, so wait a little bit for remaining messages to be written
         await asyncio.sleep(1)
-
 
 
 @pytest.fixture(scope='session', autouse=True)
@@ -124,14 +122,15 @@ def register_device(client):
 @pytest.fixture(scope='class')
 async def start_session(client_spec):
     _started = []
+    client: UbiiClient | None = None
 
     async def _start(session):
+        nonlocal _started, client
         client = await client_spec
 
         if session.id:
             raise ValueError(f"Session {session} already started.")
 
-        nonlocal _started
         assert client.implements(Services)
         response = await client[Services].service_map.session_runtime_start(session=session)
         await asyncio.sleep(4)  # session needs to start up
@@ -141,9 +140,8 @@ async def start_session(client_spec):
     yield _start
 
     for session in _started:
-        pass
-        # raises error
-        # await client_spec.services.session_runtime_stop(session=session)
+        assert client is not None
+        await client[Services].service_map.session_runtime_stop(session=session)
 
 
 P = t.TypeVar('P', bound=proto.message.Message)

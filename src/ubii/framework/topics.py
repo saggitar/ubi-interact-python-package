@@ -33,6 +33,8 @@ See Also:
 
 from __future__ import annotations
 
+import itertools
+
 import abc
 import asyncio
 import contextlib
@@ -167,7 +169,9 @@ class Topic(typing.AsyncIterator[T_Buffer], TopicDataBufferManager[T_Buffer], ty
     on_subscribers_change: OnSubscribersChange | None
 
     async def __anext__(self) -> T_Buffer:
-        return await self.buffer.get(await_next_write=True)
+        value = await self.buffer.get()
+        assert value is not None
+        return value
 
     def __init__(self: Topic[T_Buffer, T_Token],
                  pattern,
@@ -348,8 +352,9 @@ class Topic(typing.AsyncIterator[T_Buffer], TopicDataBufferManager[T_Buffer], ty
             warnings.warn(f"No callback for {token} found in {self}")
             return False
 
-        await asyncio.wait(self.task_nursery.stop_task(task), timeout=timeout)
-        return True
+        stop = asyncio.create_task(self.task_nursery.stop_task(task))
+        _, pending = await asyncio.wait((stop,), timeout=timeout)
+        return not pending
 
 
 class BasicTopic(Topic[ubii.proto.TopicDataRecord, int]):
@@ -381,13 +386,13 @@ class BasicTopic(Topic[ubii.proto.TopicDataRecord, int]):
 
     def __init__(self, pattern, **kwargs) -> None:
         super().__init__(pattern, token_factory=self.integer_token_factory(), **kwargs)
-        self._buffer: ubii.proto.TopicDataRecord | None = None
+        self._buffer_value: ubii.proto.TopicDataRecord | None = None
 
     def _set_buffer(self, value):
-        self._buffer = value
+        self._buffer_value = value
 
     def _get_buffer(self):
-        return self._buffer
+        return self._buffer_value
 
     @cached_property
     def buffer(self) -> util.accessor[ubii.proto.TopicDataRecord]:
@@ -530,7 +535,8 @@ class TopicStore(MatchMapping[Topic_co]):
                 @functools.wraps(on_create)
                 def decorated(store: TopicStore, key: str):
                     on_create(store, key)
-                    [store[key].register_callback(cb) for cb in self.callbacks]
+                    for cb in self.callbacks:
+                        store[key].register_callback(cb)
 
                 return decorated
 

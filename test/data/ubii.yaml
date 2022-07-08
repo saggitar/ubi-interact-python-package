@@ -1,3 +1,0 @@
-PROTO_SPEC_STORAGE:
-  client: ./specs/
-  processing_modules: .

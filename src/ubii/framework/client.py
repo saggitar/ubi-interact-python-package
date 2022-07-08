@@ -104,22 +104,39 @@ _data_kwargs = {'init': True, 'repr': True, 'eq': True}
 
 
 class subscribe_call(Protocol):
-    def __call__(self,
-                 *pattern: str,
-                 callback: topics.Consumer | None = None) -> typing.Awaitable[typing.Tuple[topics.Topic, ...]]:
+    patterns: typing.Tuple[str, ...]
+
+    def with_callback(self, callback: topics.Consumer) -> (
+            typing.Awaitable[typing.Tuple[typing.Tuple[topics.Topic, ...], typing.Tuple]]
+    ):
+        """
+        set optional callback that should be registered for the subscribed topics
+
+        Args:
+            *callback: topic data consumer
+
+        Returns:
+            topic and tokens for callback de-registration
+        """
+
+    def __call__(self, *pattern: str) -> subscribe_call:
         """
         subscribe_call objects need to have this call signature
+        needs to set :attr:`.patterns` attribute.
 
         Args:
             *pattern: unix wildcard patterns or absolute topic names
-            callback: optional callback that should be registered for the subscribed topics
+        """
 
+    def __await__(self) -> typing.Generator[typing.Any, None, typing.Tuple[topics.Topic, ...]]:
+        """
         Returns:
-            awaitable returning a tuple of processed topics (one for each pattern, same order)
+            a tuple of processed topics (one for each pattern, in :attr:`.patterns` same order)
         """
 
 
 class unsubscribe_call(Protocol):
+
     def __call__(self, *pattern: str) -> typing.Awaitable[typing.Tuple[topics.Topic, ...]]:
         """
         unsubscribe_call objects need to have this call signature
@@ -254,9 +271,9 @@ class RunProcessingModules:
     """
     Behavior to update and run processing modules
     """
-    get_processing_module: typing.Callable[[str], ubii.proto.ProcessingModule] | None = None
+    running_pms: typing.Iterable[ubii.proto.ProcessingModule] | None = None
     """
-    get PM by name
+    List of specs of all running processing modules
     """
 
 
@@ -265,12 +282,13 @@ class InitProcessingModules:
     """
     Behavior to initialize ProcessingModules after registration
     """
-    late_init_processing_modules: typing.List[ubii.proto.ProcessingModule] | typing.List[
-        typing.Type[ubii.proto.ProcessingModule]
-    ] | None = None
+    module_types: typing.Iterable[typing.Type[ubii.proto.ProcessingModule]] | None = None
     """
-    List of types or objects that are subclasses / instances of :class:`ubii.proto.ProcessingModule`.
-    Will contain types initially, and instances after initialization of the modules.
+    List of types are subclasses of :class:`ubii.proto.ProcessingModule`.
+    """
+    initialized: typing.Iterable[ubii.proto.ProcessingModule] | None = None
+    """
+    Instances of the :class:`ubii.proto.ProcessingModule` subclasses after initialization
     """
 
 
@@ -388,10 +406,16 @@ class UbiiClient(ubii.proto.Client,
 
     __unique_key_attr__: str = 'id'
 
-    def __init__(self: UbiiClient[T_Protocol], mapping=None, *, protocol: T_Protocol,
-                 required_behaviours: typing.Tuple[typing.Type, ...] = (Services, Subscriptions, Publish),
+    def __init__(self: UbiiClient[T_Protocol],
+                 mapping=None, *,
+                 protocol: T_Protocol,
+                 required_behaviours: typing.Tuple[typing.Type, ...] = (
+                         Services, Subscriptions, Publish
+                 ),
                  optional_behaviours: typing.Tuple[typing.Type, ...] = (
-                         Register, Devices, RunProcessingModules, InitProcessingModules), **kwargs):
+                         Register, Devices, RunProcessingModules, InitProcessingModules
+                 ),
+                 **kwargs):
         """
         Creates a :class:`UbiiClient` object.
         The :class:`UbiiClient` is awaitable. When it is used in an :ref:`await`, the coroutine will
@@ -442,6 +466,7 @@ class UbiiClient(ubii.proto.Client,
             """
             Proxy to notify client of changed fields.
             """
+
             def __setattr__(self, key, value):
                 super().__setattr__(key, value)
                 client.notify()

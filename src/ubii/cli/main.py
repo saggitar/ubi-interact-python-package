@@ -5,6 +5,7 @@ import warnings
 from pathlib import Path
 
 from ubii.framework.client import UbiiClient
+from ubii.framework.protocol import AbstractProtocol
 
 try:
     from importlib import metadata
@@ -93,8 +94,9 @@ def main():
     parser.add_argument('--no-discover', action='store_true', default=False)
 
     args = parse_args(parser=parser)
-
-    log_config = logging_setup.change(config=log_to_folder(args.log_config))
+    log_config = logging_setup.change(
+        config=log_to_folder(logging_setup.effective_config.config)
+    )
 
     pms = set()
     if not args.no_discover:
@@ -110,8 +112,8 @@ def main():
     async def run():
         with connect_client() as client:
             client.is_dedicated_processing_node = True
+            client[InitProcessingModules] = InitProcessingModules(module_types=pms, initialized=[])
             assert client.implements(InitProcessingModules)
-            client[InitProcessingModules].late_init_processing_modules = pms
             await client
 
             while client.state != client.State.UNAVAILABLE:

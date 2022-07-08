@@ -124,7 +124,7 @@ def parse_args(parser: argparse.ArgumentParser | None = None) -> argparse.Namesp
 
     parser.add_argument('--verbose', '-v', action='count', default=0)
     parser.add_argument('--debug', action='store_true', default=False)
-    parser.add_argument('--log-config', action='store', default=__config__)
+    parser.add_argument('--log-config', action='store', default=None)
     args = parser.parse_args()
 
     verbosity = logging.INFO - 10 * args.verbose
@@ -132,6 +132,12 @@ def parse_args(parser: argparse.ArgumentParser | None = None) -> argparse.Namesp
 
     if util.debug():
         verbosity = min(logging.DEBUG, verbosity)
+
+    if args.log_config:
+        with open(args.log_config) as conf:
+            args.log_config = yaml.safe_load(conf)
+    else:
+        args.log_config = __config__
 
     logging_setup.change(config=args.log_config, verbosity=verbosity)
 
