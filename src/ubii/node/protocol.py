@@ -1,7 +1,5 @@
 from __future__ import annotations
 
-import itertools
-
 import asyncio
 import contextlib
 import dataclasses
@@ -337,14 +335,13 @@ class LegacyProtocol(client.AbstractClientProtocol[States]):
         )
 
         async def on_subscribe_callback(
-                client_id: str, *topic_patterns: str, as_regex: bool = False, unsubscribe: bool = False
+                client_id: str, topic: topics.Topic, as_regex: bool = False, unsubscribe: bool = False
         ):
             message = {
                 'client_id': client_id,
                 f"{'un' if unsubscribe else ''}"
-                f"{'subscribe_topic_regexp' if as_regex else 'subscribe_topics'}": topic_patterns
+                f"{'subscribe_topic_regexp' if as_regex else 'subscribe_topics'}": [topic.pattern, ]
             }
-
             await context.service_map.topic_subscription(topic_subscription=message)
 
         class OnSubscribersChanged(topics.OnSubscribersChange):

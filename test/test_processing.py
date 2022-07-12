@@ -1,5 +1,6 @@
 import asyncio
 import logging
+import types
 
 import pytest
 import ubii.proto as ub
@@ -164,3 +165,121 @@ class TestJS(Processing):
         await client
         await start_session(session_spec)
         yield True
+
+
+class TestLateInitModules:
+    class TestModule(processing.ProcessingRoutine):
+        """
+        Test Module
+        """
+
+        def __init__(self, context, **kwargs):
+            super().__init__(**kwargs)
+            self.name = f'Test Module for {context.client.name}'
+            constants: ub.Constants = context.constants
+            self.tags = ['pytest']
+            self.description = 'Test Module'
+
+            self.inputs = [
+                {
+                    'internal_name': 'test',
+                    'message_format': constants.MSG_TYPES.DATASTRUCTURE_BOOL
+                },
+            ]
+
+            self.outputs = [
+                {
+                    'internal_name': 'test',
+                    'message_format': constants.MSG_TYPES.DATASTRUCTURE_BOOL
+                },
+            ]
+
+            self.processing_mode = {
+                'frequency': {
+                    'hertz': 20
+                }
+            }
+            self._context = context
+
+        def on_processing(self, context: types.SimpleNamespace) -> None:
+            input_value: ub.TopicDataRecord = context.inputs.test
+            if input_value:
+                context.outputs.test = ub.TopicDataRecord(bool=not input_value.bool)
+
+    client_spec = [
+        pytest.param((ub.Client(
+            is_dedicated_processing_node=True,
+        ),), id='processing_node')
+    ]
+
+    late_init_module_spec = [
+        pytest.param((TestModule,), id='test module')
+    ]
+
+    @pytest.fixture(scope='class')
+    async def base_session(self, client) -> ub.Session:
+        await client
+        module = client.processing_modules[0]
+        input_topic = f"{client.id}/test_input"
+        output_topic = f"{client.id}/test_output"
+        io_mappings = [
+            {
+                'processing_module_name': module.name,
+                'input_mappings': [
+                    {
+                        'input_name': module.inputs[0].internal_name,
+                        'topic': input_topic
+                    },
+                ],
+                'output_mappings': [
+                    {
+                        'output_name': module.outputs[0].internal_name,
+                        'topic': output_topic
+                    }
+                ]
+            },
+        ]
+
+        session = ub.Session(name="Example Session",
+                             processing_modules=[module],
+                             io_mappings=io_mappings)
+
+        type(session).output = property(lambda _: output_topic)
+        type(session).input = property(lambda _: input_topic)
+
+        return session
+
+    @pytest.fixture(scope='class', autouse=True)
+    async def startup(self, client, session_spec, start_session):
+        await client.implements(InitProcessingModules, RunProcessingModules)
+        await start_session(session_spec)
+
+        pm: processing.ProcessingRoutine = processing.ProcessingRoutine.registry[
+            session_spec.processing_modules[0].name]
+        async with pm.change_specs:
+            await pm.change_specs.wait_for(
+                lambda: pm.status == pm.Status.CREATED or pm.status == pm.Status.PROCESSING
+            )
+
+    @pytest.mark.parametrize('data', [False, True])
+    @pytest.mark.parametrize('timeout', [0.4])
+    @pytest.mark.parametrize('run_time', [4])
+    @pytest.mark.parametrize('allowed_relative_error', [0.9])
+    async def test_processing_module(self, client, data, base_session, timeout, run_time, allowed_relative_error):
+        received = []
+
+        await client[Publish].publish({'topic': base_session.input, 'bool': data})
+        await asyncio.sleep(0.2) # we wait until the broker processed the publishing
+        topics, tokens = await client[Subscriptions].subscribe_topic(base_session.output).with_callback(received.append)
+        # if you subscribe to the same topic as before, you will immediately get the last value, therefore
+        # we publish before we subscribe!
+
+        await asyncio.sleep(run_time)
+        await topics[0].unregister_callback(tokens[0], timeout=timeout)
+        await client[Subscriptions].unsubscribe_topic(base_session.output)
+
+        assert all('bool' in r and r.bool != data for r in received), received
+        tested_module: ub.ProcessingModule = base_session.processing_modules[0]
+
+        max_computations = tested_module.processing_mode.frequency.hertz * run_time
+        assert len(received) / max_computations >= allowed_relative_error

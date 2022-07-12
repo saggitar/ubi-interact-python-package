@@ -23,9 +23,10 @@ import typing as t
 
 import proto.message
 import pytest
+import ubii.proto as ub
 import yaml
 
-import ubii.proto as ub
+from ubii.framework import processing
 from ubii.framework.client import Devices, UbiiClient, Services, InitProcessingModules
 from ubii.framework.logging import logging_setup
 from ubii.node.protocol import DefaultProtocol
@@ -195,7 +196,7 @@ async def start_session(client_spec):
 
         assert client.implements(Services)
         response = await client[Services].service_map.session_runtime_start(session=session)
-        await asyncio.sleep(4)  # session needs to start up
+        await asyncio.sleep(3)  # session needs to start up
         _started.append(response.session)
         return response.session
 
@@ -221,6 +222,16 @@ _get_param = (lambda request: request.param if hasattr(request, 'param') else ()
 
 
 @pytest.fixture(scope='class')
+def late_init_module_spec(request):
+    """
+    Yield the list of module types specified as the request
+    """
+    module_types = _get_param(request)
+    assert all(map(lambda o: issubclass(o, processing.ProcessingRoutine), module_types))
+    yield module_types
+
+
+@pytest.fixture(scope='class')
 def module_spec(base_module, request):
     """
     Update the base module with all changes from the request
@@ -230,7 +241,7 @@ def module_spec(base_module, request):
 
 
 @pytest.fixture(scope='class')
-def client_spec(base_client, module_spec, request):
+def client_spec(base_client, module_spec, late_init_module_spec, request):
     """
     Update the base client with all changes from the request
     """
@@ -241,6 +252,10 @@ def client_spec(base_client, module_spec, request):
         by_name[module_spec.name] = module_spec
 
     base_client.processing_modules = list(by_name.values())
+    if late_init_module_spec:
+        assert base_client.implements(InitProcessingModules)
+        base_client[InitProcessingModules].module_types = late_init_module_spec
+
     yield base_client
 
 
@@ -250,7 +265,9 @@ def session_spec(base_session, module_spec, request):
     Update the base session with all changes from the request
     """
     _change_specs(base_session, *_get_param(request))
-    if module_spec not in base_session.processing_modules:
+    module_names = [pm.name for pm in base_session.processing_modules]
+
+    if module_spec.name and module_spec.name not in module_names:
         base_session.processing_modules += [module_spec]
     yield base_session
 
@@ -283,7 +300,7 @@ def pytest_generate_tests(metafunc):
         'client_spec',
         'module_spec',
         'session_spec',
-        'late_init_modules'
+        'late_init_module_spec'
     ]
 
     for spec in specs:

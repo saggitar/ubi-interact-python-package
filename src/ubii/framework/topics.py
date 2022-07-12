@@ -610,13 +610,13 @@ class StreamSplitRoutine(util.CoroutineWrapper[typing.Any, typing.Any, None]):
 
 
 class OnSubscribeCallback(Protocol):
-    async def __call__(self, client_id: str, *topic_patterns: str, as_regex: bool = ..., unsubscribe: bool = ...):
+    async def __call__(self, client_id: str, topic: Topic, as_regex: bool = ..., unsubscribe: bool = ...):
         """
         Callbacks for the :class:OnSubscribersChange` objects need to have this signature
 
         Args:
             client_id: id of client node
-            *topic_patterns: wildcard patterns or simple strings
+            topic: topic that was (un)subscribed
             as_regex: patterns need to be handled differently from simple strings
             unsubscribe: is this a subscription or a subscription cancellation?
         """
@@ -648,7 +648,7 @@ class OnSubscribersChange:
 
         Executes the :attr:`.callback` when the subscriber count increases to 1 or decreases to 0 -- with args
             *   client_id = :attr:`.client_id`
-            *   topic_patterns = (attr:`topic.pattern <Topic.pattern>`)
+            *   topic = reference to self
             *   as_regex = :attr:`.as_regex`
             *   unsubscribe = True if subscriber count decreased to 0, False if it was increased to 1
 
@@ -662,16 +662,18 @@ class OnSubscribersChange:
 
         if new == 0 and old > 0:
             task = topic.task_nursery.create_task(
-                self.callback(self.client_id, topic.pattern, as_regex=self.as_regex, unsubscribe=True)
+                self.callback(self.client_id, topic, as_regex=self.as_regex, unsubscribe=True)
             )
 
         if new == 1 and old < 1:
             task = topic.task_nursery.create_task(
-                self.callback(self.client_id, topic.pattern, as_regex=self.as_regex, unsubscribe=False)
+                self.callback(self.client_id, topic, as_regex=self.as_regex, unsubscribe=False)
             )
 
         if task:
             task.add_done_callback(lambda _: self.event.set())
+        else:
+            self.event.set()
 
         return task
 
