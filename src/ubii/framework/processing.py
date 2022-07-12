@@ -12,6 +12,7 @@ import types
 import typing
 
 import ubii.proto
+
 from . import (
     protocol,
     util,
@@ -113,6 +114,28 @@ class Scheduler(util.CoroutineWrapper):
     any or all of its inputs are available and then schedules its callback.
     """
 
+    class LoopTime:
+        """
+        Utility class to calculate execution times
+        """
+
+        def __init__(self, loop: asyncio.AbstractEventLoop):
+            self.value = None
+            self.loop = loop
+
+        def record(self) -> None:
+            """
+            Records current loop time
+            """
+            self.value = self.loop.time()
+
+        def delta(self) -> float:
+            """
+            Evaluate delta between current loop time and last recorded loop time.
+            Returns 0 if no time has been recorded yet
+            """
+            return self.loop.time() - self.value if self.value else 0.
+
     def __init__(self,
                  callback: typing.Callable[[], None],
                  inputs: typing.Iterable[AsyncGetter],
@@ -135,7 +158,6 @@ class Scheduler(util.CoroutineWrapper):
             :attr:`ubii.proto.ProcessingMode.mode` -- details on processing modes
         """
         self._loop = asyncio.get_running_loop()
-        self._callback = None
         self._perf_metric = perf_metric.__get__(self, type(self))
 
         self.inputs: typing.Iterable[AsyncGetter] = inputs
@@ -168,6 +190,10 @@ class Scheduler(util.CoroutineWrapper):
         self.task_clean_frequency = 10
         """
         After every n callback schedules, cancel old input awaitables
+        """
+        self.loop_time: Scheduler.LoopTime = self.LoopTime(self._loop)
+        """
+        Helps to calculate loop times for execution scheduling
         """
 
         self._stop_during_next_iteration = False
@@ -208,30 +234,6 @@ class Scheduler(util.CoroutineWrapper):
 
         return self._perf_metric()
 
-    @property
-    def callback(self) -> typing.Callable[[], typing.Awaitable] | None:
-        """
-        reference to callable that needs to be scheduled. If this attribute is set, a slightly altered version
-        of the supplied callable will be used instead.
-
-        The used callable is a :class:`~ubii.framework.util.function_chain` that appends the time passed
-        since the last call to :attr:`.delta_times` before executing the original callback.
-        """
-        return self._callback
-
-    @callback.setter
-    def callback(self, value):
-        log.debug(f"Changed callback in {self} from {self._callback} to {value}")
-        append_delta_time = util.compose(util.calc_delta(self._loop.time), self.delta_times.append)
-        self._callback = util.function_chain(append_delta_time, value)
-
-    @property
-    def delta_time(self) -> float:
-        """
-        Just a reference to the last value in :attr:`.delta_times`
-        """
-        return self.delta_times[-1]
-
     def halt(self) -> None:
         """
         Call this method to stop the internal scheduler loop after the next iteration, which will finish the
@@ -246,12 +248,18 @@ class Scheduler(util.CoroutineWrapper):
         Returns:
             awaitable that waits for inputs to become ready, depending on :attr:`.mode`
         """
+        if self.mode.frequency:
+            timeout = self.delay - self.loop_time.delta()
+            timeout = timeout if timeout > 0 else 0
+        else:
+            timeout = None
+
         awts = [
             self._loop.create_task(awt) if asyncio.iscoroutine(awt) else awt
             for awt
             in [get() for get in self.inputs]
         ]
-        timeout = (self.delay if self.mode.frequency else None)
+
         return_when = (
             asyncio.ALL_COMPLETED
             if self.mode.trigger_on_input and self.mode.trigger_on_input.all_inputs_need_update else
@@ -269,16 +277,24 @@ class Scheduler(util.CoroutineWrapper):
         :attr:`.inputs` are `ready` (this means that either `one` or `all` of the input awaitables finished,
         depending on the :attr:`.mode`) and / or the :attr:`.delay` has passed.
         """
+        self.loop_time.record()
+
         with self.executor as pool:
             while not self._stop_during_next_iteration:
-                start_time = self._loop.time()
+
                 self.done, self.pending = await self._wait()
-                end_time = self._loop.time()
-                remaining = self.delay - (end_time - start_time)
+                since_last_recorded_time = self.loop_time.delta()
+                remaining = self.delay - since_last_recorded_time
+
                 if remaining > 0:
                     await asyncio.sleep(remaining)
+                    self.delta_times.append(self.loop_time.delta())
+                else:
+                    self.delta_times.append(since_last_recorded_time)
 
-                await self._loop.run_in_executor(pool, self._callback)
+                await self._loop.run_in_executor(pool, self.callback)
+                self.loop_time.record()
+
                 self._scheduling_count += 1
                 self._old_input_tasks.extend(self.pending)
                 if self._scheduling_count % self.task_clean_frequency == 0:
@@ -481,12 +497,19 @@ class ProcessingRoutine(ubii.proto.ProcessingModule, metaclass=util.ProtoRegistr
                 if not muxer:
                     muxer = topics.TopicMuxer(mapping=mapping.topic_mux)
                     topic_map[muxer.topic_selector].register_callback(lambda record: muxer.records.set([record]))
-                return muxer.records.get
+
+                muxer_getter = (
+                    functools.partial(muxer.records.get, predicate=lambda: True)
+                    if self.processing_mode.frequency else
+                    muxer.records.get
+                )
+                return muxer_getter
+
             elif mapping.topic:
                 return functools.partial(
                     topic_map[mapping.topic].buffer.get,
                     predicate=functools.partial(check_datatype, io),
-                    wait_for_write=True
+                    wait_for_write=not self.processing_mode.frequency
                 )
             else:
                 raise ValueError(f"Invalid input mapping {mapping}")
@@ -829,7 +852,7 @@ class ProcessingProtocol(protocol.AbstractProtocol[PM_STAT]):
                 scheduler: The Scheduler scheduling the callback
                 ctx: The context that will be passed to the callback
             """
-            ctx.delta_time = scheduler.delta_time
+            ctx.delta_time = scheduler.delta_times[-1] if scheduler.delta_times else None
             inputs = vars(ctx.inputs)
 
             inputs.update(**{
@@ -982,10 +1005,6 @@ class ProcessingProtocol(protocol.AbstractProtocol[PM_STAT]):
         ]
         outputs = dataclasses.make_dataclass('outputs', fields, init=True)  # noqa
         context.outputs = outputs()
-
-        # wait until publishing behaviour is added to output getter
-        # async with self.pm.change_specs:
-        #    await self.pm.change_specs.wait_for(lambda: self.pm.get_output_topic.decorators)
 
         # wait until processing is triggered and change state to processing
         await context.trigger_processing.wait()

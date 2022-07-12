@@ -849,7 +849,7 @@ def __getattr__(name):
 
     if name == 'DefaultProtocol':
         warn(f"The default Protocol was updated, if you experience bugs with the new DefaultProtocol"
-             f" please use the ``LegacyProtocol`` instead and report the bug at {url}.", ImportWarning)
+             f" please use the ``LegacyProtocol`` instead and report the bug at {url}.", DeprecationWarning)
 
         return LatePMInitProtocol
 

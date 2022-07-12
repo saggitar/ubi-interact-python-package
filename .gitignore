@@ -130,3 +130,7 @@ dmypy.json
 
 # Pycharm Stuff
 .idea/
+
+test/data/*
+!test/data/*.yaml
+!test/data/*.ipynb

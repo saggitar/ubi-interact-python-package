@@ -1,18 +1,14 @@
 from __future__ import annotations
 
-from typing import Callable, Optional
-
-from dataclasses import dataclass
-
-import enum
-
 import asyncio
+import enum
 import logging
 import random
+from dataclasses import dataclass
+from typing import Callable
 
 import pytest
 
-import ubii.framework.client
 from ubii.framework.client import UbiiClient
 from ubii.framework.protocol import AbstractProtocol, RunProtocol
 from ubii.node.protocol import DefaultProtocol, States as UbiiStates
@@ -93,7 +89,7 @@ class TestProtocol(AbstractProtocol):
 
     async def on_start(self, context):
         print(f"starting with context:\n-> {context}")
-        await asyncio.sleep(2) # simulating some setup IO ...
+        await asyncio.sleep(2)  # simulating some setup IO ...
         await self.state.set(self.TestStates.RUNNING)
 
     async def on_run(self, context):
@@ -116,9 +112,11 @@ class TestProtocol(AbstractProtocol):
 class FooBehaviour:
     foo: Callable[[str], None] | None = None
 
+
 @dataclass(init=True, repr=True, eq=True)
 class BarBehaviour:
     bar: str | None = None
+
 
 class FakeClientProtocol(TestProtocol):
     TestStates = TestProtocol.TestStates

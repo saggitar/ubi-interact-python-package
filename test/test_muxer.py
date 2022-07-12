@@ -1,11 +1,11 @@
 import asyncio
 
 import pytest
+import ubii.proto
 
 import ubii.framework.client
 import ubii.framework.processing
 import ubii.framework.topics
-import ubii.proto
 
 
 @pytest.fixture
@@ -138,4 +138,3 @@ class TestMuxerProcessing:
         assert len(received) == 5
         assert all(record.topic == f"/demuxer/{client.id}" for record in received)
         assert all(value in [record.int32 for record in received] for value in [0, 2, 4, 6, 8])
-

@@ -1,8 +1,9 @@
 import asyncio
 import logging
-import pytest
 
+import pytest
 import ubii.proto as ub
+
 from ubii.framework import processing
 from ubii.framework.client import RunProcessingModules, InitProcessingModules, Subscriptions, Publish
 

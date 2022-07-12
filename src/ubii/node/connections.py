@@ -243,7 +243,7 @@ class AIOHttpWebsocketConnection(AIOHttpConnection, topics.DataConnection):
                 self.log_socket_in.debug(f"Received {message.data}")
             elif message.type == aiohttp.WSMsgType.BINARY:
                 data = ubii.proto.TopicData.deserialize(message.data)
-                self.log_socket_in.info(f"Received {data}")
+                self.log_socket_in.debug(f"Received {data}")
                 yield data
             else:
                 self.log_socket_in.warning(f"Unknown message Type for message: {message}")
@@ -329,7 +329,7 @@ class AIOHttpWebsocketConnection(AIOHttpConnection, topics.DataConnection):
         """
         await asyncio.wait_for(self.events.connected.wait(), timeout=timeout)
         assert self.ws is not None
-        self.log_socket_out.info(f"Sending {data}")
+        self.log_socket_out.debug(f"Sending {data}")
         await asyncio.wait_for(self.ws.send_bytes(ubii.proto.TopicData.serialize(data)), timeout=timeout)
 
 

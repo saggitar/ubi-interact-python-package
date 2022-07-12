@@ -1,7 +1,8 @@
 import asyncio
-import pytest
 
+import pytest
 import ubii.proto as ub
+
 from ubii.framework import debug
 
 pytestmark = pytest.mark.asyncio

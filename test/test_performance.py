@@ -1,12 +1,16 @@
+import asyncio
+import logging
 import uuid
 
-import logging
+import pytest
+import ubii.proto
 
 from test.test_processing import TestPy as _TestPy
-import ubii.proto
-import pytest
 from ubii.framework.client import RunProcessingModules, Publish, Subscriptions
-import asyncio
+
+WRITE_PERFORMANCE_DATA = True
+
+pytestmark = pytest.mark.asyncio
 
 
 class TestPerformance(_TestPy):
@@ -14,7 +18,7 @@ class TestPerformance(_TestPy):
         on_created_stringified='\n'.join((
             'def on_created(self, context):',
             '    context.frame_count = 0',
-            '    context.performance = []',
+            '    context.delta_times = []',
             '',
         )),
         on_processing_stringified='\n'.join((
@@ -22,7 +26,7 @@ class TestPerformance(_TestPy):
             '    context.frame_count += 1',
             '    if context.frame_count % 30 == 0:',
             '        context.frame_count = 0',
-            '        context.performance.append(context.scheduler.performance_rating)',
+            '        context.delta_times.extend(context.scheduler.delta_times)',
         )),
         language=ubii.proto.ProcessingModule.Language.PY,
     )
@@ -44,18 +48,34 @@ class TestPerformance(_TestPy):
     ]
 
     @pytest.fixture
-    def running_pm(self, client, base_module):
+    def running_pm(self, client, base_module, data_dir, request):
         assert client.implements(RunProcessingModules)
-        pm = {pm.name: pm for pm in client[RunProcessingModules].running_pms}.get(base_module.name)
-        pm._protocol.context.performance = []
+        pm: ubii.proto.ProcessingModule = {pm.name: pm for pm in client[RunProcessingModules].running_pms}.get(
+            base_module.name)
+        pm._protocol.context.delta_times = []
         yield pm
-        ratings = pm._protocol.context.performance[1:]
-        assert ratings
-        avg_rating = sum(ratings) / len(ratings)
-        assert all(r > 0 for r in ratings)
-        assert min(ratings) > 0.8
-        assert avg_rating > 0.94
-        print(f"Avg rating: {avg_rating} over {len(ratings)} ratings")
+        delta_times = pm._protocol.context.delta_times[1:]  # first value is time before processing was triggered
+        assert delta_times
+        assert all(r > 0 for r in delta_times)
+        assert pm.processing_mode.frequency
+
+        avg_delta = sum(delta_times) / len(delta_times)
+        max_delta = max(delta_times)
+
+        def relative_error(value):
+            delay = 1. / pm.processing_mode.frequency.hertz
+            return abs(delay - value) / delay
+
+        if WRITE_PERFORMANCE_DATA:
+            with (data_dir / request.node.name).open('w') as f:
+                f.write(f'delta_times\n')
+                f.write('\n'.join(map('{:.5f}'.format, delta_times)))
+
+        assert relative_error(avg_delta) < 0.05
+        max_error = relative_error(max_delta)
+
+        print(f"Avg delta time: {avg_delta} over {len(delta_times)} measurements "
+              f"for target delay of {1. / pm.processing_mode.frequency.hertz}s (max error: {max_error})")
 
     @pytest.mark.parametrize('data', [False, True])
     @pytest.mark.parametrize('delay', [0.0005])
@@ -86,6 +106,16 @@ class TestPerf60Hz(TestPerformance):
     )
     module_spec = [
         pytest.param((hertz_60,), id='60 hertz'),
+    ]
+
+
+class TestPerf120Hz(TestPerformance):
+    hertz_120 = ubii.proto.ProcessingModule(
+        **type(TestPerformance.test_module).to_dict(TestPerformance.test_module),
+        processing_mode={'frequency': {'hertz': 120}},
+    )
+    module_spec = [
+        pytest.param((hertz_120,), id='120 hertz'),
     ]
 
 
