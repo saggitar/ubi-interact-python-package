@@ -75,10 +75,11 @@ import abc
 import asyncio
 import contextlib
 import dataclasses
-import itertools
 import logging
 import typing
 import warnings
+
+import itertools
 
 import ubii.proto
 from . import (
@@ -406,6 +407,50 @@ class UbiiClient(ubii.proto.Client,
 
     __unique_key_attr__: str = 'id'
 
+    @util.dunder.repr('client')
+    class ClientInitTaskWrapper(typing.Awaitable['UbiiClient']):
+        """
+        This is a wrapper around a task that waits until the client implements the required behaviours,
+        and then returns the client. The wrapper can be `reset`, with :attr:`.reset` so that a new
+        task is created to be used inside the wrapper.
+        """
+
+        def __init__(self, client: UbiiClient):
+            self.client = client
+            self._task: asyncio.Task | None = None
+            self._set_task()
+
+        def _set_task(self):
+            self._task = self.client.task_nursery.create_task(self._wait_for_client_implementation())
+
+        def reset(self) -> UbiiClient.ClientInitTaskWrapper:
+            """
+            Use this method to reset the client behaviours and create a new wrapped task inside the wrapper.
+
+            Returns:
+                Reference to self, with new wrapped task
+
+            """
+            if self.client.protocol.state == self.client.protocol.end_state:
+                raise ValueError(
+                    f"Can't reset {self.client}, "
+                    f"protocol is not in end state {self.client.protocol.end_state!r}"
+                )
+
+            for behaviour in self.client._behaviours:
+                for field in dataclasses.fields(behaviour):
+                    setattr(self.client[behaviour], field.name, None)
+
+            self._set_task()
+            return self
+
+        async def _wait_for_client_implementation(self):
+            await self.client.implements(*self.client._required_behaviours)
+            return self.client
+
+        def __await__(self):
+            return self._task.__await__()
+
     def __init__(self: UbiiClient[T_Protocol],
                  mapping=None, *,
                  protocol: T_Protocol,
@@ -445,6 +490,9 @@ class UbiiClient(ubii.proto.Client,
         if not self.name:
             self.name = f"Python-Client-{self.__class__.__name__}"  # type: str
 
+        if not 'state' in self:
+            self.state = self.State.UNAVAILABLE
+
         self._change_specs = asyncio.Condition()
         self._notifier = None
         self._protocol = protocol
@@ -452,7 +500,8 @@ class UbiiClient(ubii.proto.Client,
         self._behaviours = {kls: self._patch_behaviour(kls)() for kls in behaviours}
 
         self._ctx: typing.AsyncContextManager = self._with_running_protocol()
-        self._init = self.protocol.task_nursery.create_task(self._initialize())
+        self._init = self.ClientInitTaskWrapper(self)
+        self._init_specs = type(self).to_dict(self)
 
     def _patch_behaviour(self, behaviour: typing.Type):
         """
@@ -579,10 +628,6 @@ class UbiiClient(ubii.proto.Client,
         """
         return [behaviour for behaviour in self._behaviours if self.implements(behaviour)]
 
-    async def _initialize(self):
-        await self.implements(*self._required_behaviours)
-        return self
-
     @contextlib.asynccontextmanager
     async def _with_running_protocol(self):
         async with self.protocol:
@@ -595,6 +640,10 @@ class UbiiClient(ubii.proto.Client,
         if self.protocol.state.value is None:
             self.protocol.start()
 
+        if self.protocol.state.value == self.protocol.end_state:
+            warnings.warn(f"{self} was stopped, you can "
+                          f"triggered protocol restart by resetting the client with client.reset()", UserWarning)
+
         return self._init.__await__()
 
     def __aenter__(self):
@@ -602,6 +651,28 @@ class UbiiClient(ubii.proto.Client,
 
     def __aexit__(self, *exc_info):
         return self._ctx.__aexit__(*exc_info)
+
+    def reset(self):
+        """
+        Use this method to reset the client behaviours and allow explicitly restarting the client protocol
+        if it is finished. Also resets the protobuf values to the initial values
+        """
+        if hasattr(self.task_nursery, 'sentinel_task') and not self.task_nursery.sentinel_task:
+            logging.debug(f"{self}'s task nursery needs seems to be dead."
+                          f" Creating new task nursery for {self}.")
+
+            stack = self.task_nursery.pop_all()
+            self.protocol.task_nursery = type(self.task_nursery)(
+                name=self.task_nursery.name,
+                loop=self.task_nursery.loop
+            )
+            self.task_nursery.enter_async_context(stack)
+
+        self._init.reset()
+
+        for name, value in self._init_specs.items():
+            setattr(self, name, value)
+        logging.info(f"{self} was reset successfully and can be used again.")
 
     @property
     def protocol(self: UbiiClient[T_Protocol]) -> T_Protocol:
@@ -647,10 +718,10 @@ class AbstractClientProtocol(protocol.AbstractProtocol[T_EnumFlag], util.Registr
         During initialisation of the client the key is the default value (~ __module__.__qualname__.#id)
         """
         default = type(self).__default_key_value__
-        if not hasattr(self, 'client') or not self.client or not self.client.id:
+        if not hasattr(self.context, 'client') or not self.context.client or not self.context.client.id:
             return default
 
-        return self.client.id
+        return self.context.client.id
 
     def __init__(self, config: constants.UbiiConfig = constants.GLOBAL_CONFIG, log: logging.Logger | None = None):
         self.log = log or logging.getLogger(__name__)
@@ -658,7 +729,6 @@ class AbstractClientProtocol(protocol.AbstractProtocol[T_EnumFlag], util.Registr
         """
         Config used -- contains e.g. default topic for initial `server configuration` service call
         """
-        self._client: UbiiClient | None = None
         super().__init__()
 
     @abc.abstractmethod
@@ -797,6 +867,8 @@ class AbstractClientProtocol(protocol.AbstractProtocol[T_EnumFlag], util.Registr
             context.client = await asyncio.wait_for(context.client, timeout=5)
         except asyncio.TimeoutError as e:
             raise RuntimeError(f"Client is not implemented") from e
+
+        self.client.state = self.client.State.ACTIVE
 
     @hook_function
     @document_decorator('.hook_function')

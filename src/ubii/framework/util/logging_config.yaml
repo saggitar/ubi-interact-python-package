@@ -42,7 +42,7 @@ loggers:
   ubii.framework:
     propagate: yes
   ubii.framework.topics:
-    propagate: no
+    propagate: yes
   aiohttp.client:
     propagate: no
     handlers: [services]

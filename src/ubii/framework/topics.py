@@ -33,24 +33,19 @@ See Also:
 
 from __future__ import annotations
 
-import itertools
-
 import abc
 import asyncio
 import contextlib
 import fnmatch
 import functools
 import logging
-import proto
 import re
 import typing
 import warnings
 import weakref
 
-try:
-    from functools import cached_property
-except ImportError:
-    from backports.cached_property import cached_property
+import proto
+
 
 import ubii.proto
 from . import util
@@ -111,6 +106,7 @@ class TopicCoroutine(util.CoroutineWrapper[typing.Any, typing.Any, None], typing
 
     async def _run(self):
         async for value in self.topic:
+            log.debug(f"Running {self.callback} on {value}")
             await self.callback(value)
 
 
@@ -250,7 +246,7 @@ class Topic(typing.AsyncIterator[T_Buffer], TopicDataBufferManager[T_Buffer], ty
         async with self._wait_for_event():
             self.subscriber_count -= 1
 
-    @cached_property
+    @util.cached_property
     def registered_callbacks(self) -> typing.Container[typing.Callable]:
         """
         Use this property to check if a callback is registered in this topic
@@ -394,7 +390,7 @@ class BasicTopic(Topic[ubii.proto.TopicDataRecord, int]):
     def _get_buffer(self):
         return self._buffer_value
 
-    @cached_property
+    @util.cached_property
     def buffer(self) -> util.accessor[ubii.proto.TopicDataRecord]:
         """
         You can use the :meth:`~codestare.async_utils.descriptor.accessor.get` and
@@ -448,7 +444,7 @@ class MatchMapping(typing.Mapping[str, T_co], abc.ABC):
 Topic_co = typing.TypeVar('Topic_co', bound=Topic, covariant=True)
 
 
-class TopicStore(MatchMapping[Topic_co]):
+class TopicStore(MatchMapping[Topic_co], typing.Mapping[str, Topic_co]):
     """
     A TopicStore acts like a :class:`~collections.defaultdict` mapping of :math:`pattern \\rightarrow Topic`, but allows for
     complex matching of keys using :meth:`.match_pattern` and :meth:`.match_name`

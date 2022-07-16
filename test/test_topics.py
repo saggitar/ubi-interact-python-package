@@ -105,25 +105,32 @@ async def test_task_manager(make_connection, container, items):
             StreamSplitRoutine(container=container, stream=make_connection(max_items_send=items))
         )
 
-    assert not a.callback_tasks  # should be cancelled
-    assert b.callback_tasks  # should not be cancelled
+    assert all(t.cancelled() for t in a.callback_tasks.values())  # should be cancelled
+    assert not any(t.cancelled() for t in b.callback_tasks.values())  # should not be cancelled
 
     # check results to see if tasks ran correctly and were not cancelled prematurely
     assert [record.bool for record in a_received] == list(map(lambda i: i % 3 != 0, range(len(a_received))))
     assert [record.int32 for record in b_received] == list(filter(lambda x: x % 2, range(items)))
 
+    # reset the topic to be reused for further testing
+    a.callback_tasks.clear()
+    a.task_nursery = type(a.task_nursery)(name=a.task_nursery.name, loop=a.task_nursery.loop)
+
     # register again ...
     async with a.task_nursery:
         a.register_callback(a_received.append)
         # ... but change task_manager
-        a.task_manager = b.task_nursery
+        # previously this was a feature of a topic, now we do it explicitly
+        b.task_nursery.push_async_exit(a.task_nursery.pop_all())
 
-    assert b.callback_tasks  # should not be cancelled
-    assert a.callback_tasks  # should not be cancelled since task_manager was changed before block was closed
+    assert not any(t.cancelled() for t in b.callback_tasks.values())  # should not be cancelled
+    assert not any(
+        t.cancelled() for t in a.callback_tasks.values()
+    )  # should not be cancelled since task_manager was changed before block was closed
 
     await b.task_nursery.aclose()  # should cancel all tasks (also for topic 'a')
-    assert not a.callback_tasks
-    assert not b.callback_tasks
+    assert all(t.cancelled() for t in b.callback_tasks.values())
+    assert all(t.cancelled() for t in a.callback_tasks.values())
 
 
 @pytest.mark.parametrize('items', [15])

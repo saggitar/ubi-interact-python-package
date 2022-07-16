@@ -7,7 +7,8 @@ from .constants import (
     GLOBAL_CONFIG
 )
 from .errors import (
-    UbiiError
+    UbiiError,
+    SessionRuntimeStopServiceError
 )
 from .logging import (
     logging_setup,

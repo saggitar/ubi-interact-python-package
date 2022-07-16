@@ -11,6 +11,7 @@ from codestare.async_utils import (
     RegistryMeta,
     Registry,
 )
+
 from .collections import merge_dicts
 from .enum import EnumMatcher
 from .functools import (
@@ -30,6 +31,11 @@ from .functools import (
     document_decorator,
     dunder
 )
+
+try:
+    from functools import cached_property
+except ImportError:
+    from backports.cached_property import cached_property  # noqa
 
 __DEBUG__ = False
 

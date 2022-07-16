@@ -7,13 +7,8 @@ import enum
 import functools
 import logging
 import typing
+import warnings
 import weakref
-
-try:
-    from functools import cached_property
-except ImportError:
-    from backports.cached_property import cached_property
-from warnings import warn
 
 import aiohttp
 
@@ -24,9 +19,8 @@ from ubii.framework import (
     client,
     constants,
     util,
-    processing,
+    processing, debug,
 )
-
 from . import connections
 
 log = logging.getLogger(__name__)
@@ -77,7 +71,7 @@ class LegacyProtocol(client.AbstractClientProtocol[States]):
         """
         The constants used by the `master node` (default topics, data types etc.)
         """
-        client: 'client.UbiiClient' = None
+        client: client.UbiiClient | None = None
         """
         The client that owns the protocol
         """
@@ -113,13 +107,28 @@ class LegacyProtocol(client.AbstractClientProtocol[States]):
                  log: logging.Logger | None = None):
 
         super().__init__(config, log)
-        self.aiohttp_session = connections.aiohttp_session()
+        self.client: client.UbiiClient | None = None
+        """
+        Explicitly assign the client to this attribute after initialization, otherwise
+        a dedicated client will be created during protocol execution
+        """
+        self._aiohttp_session: aiohttp.ClientSession = connections.aiohttp_session()
+        self.task_nursery.push_async_exit(self._aiohttp_session)
+
+    def _reinit_aiohttp_session(self):
+        assert self._aiohttp_session.closed
+        self._aiohttp_session: aiohttp.ClientSession = connections.aiohttp_session()
+        self.task_nursery.push_async_exit(self._aiohttp_session)
+        assert not self._aiohttp_session.closed
+
+    @property
+    def aiohttp_session(self):
         """
         shared session for `aiohttp` connections
         """
-        self.task_nursery.push_async_exit(self.aiohttp_session)
+        return self._aiohttp_session
 
-    @cached_property
+    @util.cached_property
     def context(self) -> LegacyProtocol.Context:
         """
         Returning context object for better typing
@@ -128,8 +137,15 @@ class LegacyProtocol(client.AbstractClientProtocol[States]):
 
     @client.AbstractClientProtocol.state.setter
     def state(self, new_state: States):
-        maybe_suppress = contextlib.suppress(
-            ValueError) if self.state.value == self.end_state else contextlib.nullcontext()
+        """
+        Supress Value Errors when in end state, maybe there are still some tasks trying to change states
+        after the protocol finished.
+        """
+        maybe_suppress = (
+            contextlib.suppress(ValueError)
+            if self.state.value == self.end_state and not debug()
+            else contextlib.nullcontext()
+        )
         with maybe_suppress:
             client.AbstractClientProtocol.state.fset(self, new_state)
 
@@ -168,7 +184,8 @@ class LegacyProtocol(client.AbstractClientProtocol[States]):
             # add exception handling to new class to not change the default behaviour
             services.ServiceCall.register_decorator(
                 util.exc_handler_decorator(self._set_exc_info),
-                instance=service_call)
+                instance=service_call
+            )
             return service_call
 
         context.service_map = services.DefaultServiceMap(
@@ -191,8 +208,10 @@ class LegacyProtocol(client.AbstractClientProtocol[States]):
         service_call = context.service_map[context.constants.DEFAULT_TOPICS.SERVICES.SERVER_CONFIG]
         response = await service_call()
         ubii.proto.Server.copy_from(context.server, response.server)
-        ubii.proto.Constants.copy_from(context.constants,
-                                       ubii.proto.Constants.from_json(response.server.constants_json))
+        ubii.proto.Constants.copy_from(
+            context.constants,
+            ubii.proto.Constants.from_json(response.server.constants_json)
+        )
 
         assert context.service_connection is not None
         # update service connection url for consistency with topic connection:
@@ -235,10 +254,11 @@ class LegacyProtocol(client.AbstractClientProtocol[States]):
 
         context.client = self.client or client.UbiiClient(protocol=self)
         if not self.client:
-            warn(
-                f"Not setting the protocol client is deprecated. Created default client {context.client}",
-                DeprecationWarning
+            warnings.warn(
+                f"Not setting the protocol client can lead to unexpected behaviour. Created default client {context.client}",
+                RuntimeWarning
             )
+
         self.client = context.client
         assert context.client.protocol == self, (f"{context.client} uses a different protocol "
                                                  f"({context.client.protocol}) instead of {self}")
@@ -334,6 +354,11 @@ class LegacyProtocol(client.AbstractClientProtocol[States]):
             default_factory=functools.partial(topics.BasicTopic, task_nursery=self.task_nursery)
         )
 
+        async def unsubscribe_all(topic_store: topics.TopicStore):
+            await asyncio.gather(*[topic.remove_all_subscribers() for topic in topic_store.values()])
+
+        self.task_nursery.push_async_callback(unsubscribe_all, context.topic_store)
+
         async def on_subscribe_callback(
                 client_id: str, topic: topics.Topic, as_regex: bool = False, unsubscribe: bool = False
         ):
@@ -342,6 +367,7 @@ class LegacyProtocol(client.AbstractClientProtocol[States]):
                 f"{'un' if unsubscribe else ''}"
                 f"{'subscribe_topic_regexp' if as_regex else 'subscribe_topics'}": [topic.pattern, ]
             }
+
             await context.service_map.topic_subscription(topic_subscription=message)
 
         class OnSubscribersChanged(topics.OnSubscribersChange):
@@ -603,7 +629,7 @@ class LegacyProtocol(client.AbstractClientProtocol[States]):
         Implement :class:`ubii.node.RunProcessingModules` behaviour of :attr:`context.client <.Context.client>`
         """
         pm_subscriptions: weakref.WeakValueDictionary[int, topics.Topic] = weakref.WeakValueDictionary()
-        running_pms = []
+        running_pms: typing.List[processing.ProcessingRoutine] = []
 
         async def on_start_session(record):
             """
@@ -615,14 +641,17 @@ class LegacyProtocol(client.AbstractClientProtocol[States]):
                 if specs.node_id != context.client.id:
                     continue
 
-                pm: processing.ProcessingRoutine = processing.ProcessingRoutine.registry.get(specs.name, None)
-                if pm is None:
+                if specs.name not in {pm.name for pm in context.client.processing_modules}:
+                    continue
+
+                module = processing.ProcessingRoutine.registry.get(specs.name, None)
+                if module is None:
                     raise ValueError(f"No processing module routine with name {specs.name} found")
 
                 # start processing
-                running_pms.append(await processing.ProcessingRoutine.start(pm))
+                running_pms.append(await processing.ProcessingRoutine.start(module))
 
-                async with pm.change_specs:
+                async with module.change_specs:
                     # MergeFrom appends outputs and inputs, CopyFrom overwrites stuff, so we first need to "merge"
                     # with custom logic (overwriting all non-falsy values)
                     changes = {
@@ -631,13 +660,12 @@ class LegacyProtocol(client.AbstractClientProtocol[States]):
                     }
 
                     # then overwrite specs
-                    ubii.proto.ProcessingModule.copy_from(pm, changes)
-                    pm.change_specs.notify_all()
+                    ubii.proto.ProcessingModule.copy_from(module, changes)
+                    module.change_specs.notify_all()
 
                 assert specs.name in processing.ProcessingRoutine.registry
 
             # apply io mappings
-            io_mapping: ubii.proto.IOMapping
             for io_mapping in session.io_mappings:
                 if io_mapping.processing_module_name not in processing.ProcessingRoutine.registry:
                     continue
@@ -648,9 +676,10 @@ class LegacyProtocol(client.AbstractClientProtocol[States]):
                 instance: processing.ProcessingRoutine = (
                     processing.ProcessingRoutine.registry[io_mapping.processing_module_name]
                 )
+                if instance.node_id != context.client.id:
+                    continue
 
                 assert context.topic_store is not None
-
                 await instance.apply_io_mapping(
                     io_mapping,
                     remote_topic_map=context.topic_store
@@ -689,24 +718,33 @@ class LegacyProtocol(client.AbstractClientProtocol[States]):
                 async with instance.change_specs:
                     instance.change_specs.notify_all()
 
-            pm_runtime_add = context.client[client.Services].service_map.pm_runtime_add
-            pms = [pm for pm in processing.ProcessingRoutine.registry.values() if pm.id]
-            await pm_runtime_add(processing_module_list={'elements': pms})
+            if running_pms:
+                await context.client.implements(client.Services)
+                pm_runtime_add = context.client[client.Services].service_map.pm_runtime_add
+                await pm_runtime_add(
+                    processing_module_list={
+                        'elements': [module for module in running_pms if module.session_id == session.id]
+                    }
+                )
 
         async def on_stop_session(record):
             """
-            Stop processing modules for session
+            Stop processing modules for session.
+
+            Warning:
+
+                When a client subscribes to the stop session topic, it will get sent the last stop request,
+                without having started any modules first, we need to handle that.
+
             """
             session: ubii.proto.Session = record.session
             halted = []
 
-            module: processing.ProcessingRoutine
-
-            for name, module in processing.ProcessingRoutine.registry.items():
+            for module in running_pms:
                 if module.session_id != session.id:
                     continue
                 halted += [await processing.ProcessingRoutine.halt(module)]
-                log.debug(f"Stopping processing module {name}")
+                log.debug(f"Stopping processing module {module.name}")
 
                 async with module.change_specs:
                     await module.change_specs.wait_for(
@@ -716,14 +754,18 @@ class LegacyProtocol(client.AbstractClientProtocol[States]):
                 if input_topic_source:
                     await input_topic_source.remove_subscriber()
 
+            for module in halted:
                 running_pms.remove(module)
 
-            stopped = await asyncio.gather(*map(processing.ProcessingRoutine.stop, halted))
-            remove_service = context.client[client.Services].service_map.pm_runtime_remove
-            await remove_service(processing_module_list={'elements': stopped})
+            if halted:
+                stopped = await asyncio.gather(*map(processing.ProcessingRoutine.stop, halted))
+                await context.client.implements(client.Services)
+                remove_service = context.client[client.Services].service_map.pm_runtime_remove
+                await remove_service(processing_module_list={'elements': stopped})
 
         assert context.client is not None
         assert context.constants is not None
+        await context.client.implements(client.Subscriptions)
         subscribe_topic = context.client[client.Subscriptions].subscribe_topic
         assert subscribe_topic is not None
 
@@ -746,13 +788,15 @@ class LegacyProtocol(client.AbstractClientProtocol[States]):
         Currently, this callback checks for connection problems (e.g. unavailable `master node`) and
         restarts the protocol if they are fixed.
         """
-        assert context.service_map is not None
-
-        missing_attrs = [field.name for field in dataclasses.fields(context)]
         log.info(f"Halted {self}")
+        missing_attrs = [field.name for field in dataclasses.fields(context)]
         log.debug(f"attribute[s] {', '.join(missing_attrs)} not set in context when {self} halted")
 
+        if context.service_map is None:
+            return False
+
         connection_problems = (lambda: not context.server or len(context.service_map.elements) == 1)
+        fixed_problem = False
 
         if connection_problems():
             while connection_problems():
@@ -764,32 +808,29 @@ class LegacyProtocol(client.AbstractClientProtocol[States]):
                     await asyncio.sleep(2)
 
             await self.state.set(self.starting_state)
-        return not connection_problems()
+            fixed_problem = not connection_problems()
 
-    async def on_stop(self, context: LegacyProtocol.Context):
-        """
-        When the protocol is in :attr:`States.STOPPED` state, unsubscribe all topics and stop all running tasks
-        """
+        return fixed_problem
 
-        assert context.topic_store is not None
+    async def on_start(self, context: typing.Any) -> None:
+        for field in dataclasses.fields(context):
+            setattr(context, field.name, None)
 
-        for topic in context.topic_store.values():
-            if topic.task_nursery is not self.task_nursery:
-                await topic.task_nursery.aclose()
+        if self._aiohttp_session.closed:
+            self._reinit_aiohttp_session()
 
-            await topic.remove_all_subscribers()
-
-        await self.task_nursery.aclose()
+        await super().on_start(context)
 
     # changed callbacks means state changes have to be adjusted
     state_changes = {
-        (None, starting_state): client.AbstractClientProtocol.on_start,
+        (None, starting_state): on_start,
         (starting_state, States.CREATED): client.AbstractClientProtocol.on_create,
         (States.CREATED, States.REGISTERED): on_registration,
         (States.REGISTERED, States.CONNECTED): client.AbstractClientProtocol.on_connect,
         (States.ANY, States.HALTED): on_halted,
-        (States.HALTED, starting_state): client.AbstractClientProtocol.on_start,
+        (States.HALTED, starting_state): on_start,
         (States.ANY, end_state): client.AbstractClientProtocol.on_stop,
+        (end_state, starting_state): on_start,
     }
     """
     Callbacks for state changes
@@ -845,8 +886,8 @@ def __getattr__(name):
     url = metadata['Home-Page']
 
     if name == 'DefaultProtocol':
-        warn(f"The default Protocol was updated, if you experience bugs with the new DefaultProtocol"
-             f" please use the ``LegacyProtocol`` instead and report the bug at {url}.", DeprecationWarning)
+        warnings.warn(f"The default Protocol was updated, if you experience bugs with the new DefaultProtocol"
+                      f" please use the ``LegacyProtocol`` instead and report the bug at {url}.", DeprecationWarning)
 
         return LatePMInitProtocol
 

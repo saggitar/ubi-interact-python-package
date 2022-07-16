@@ -12,7 +12,6 @@ import types
 import typing
 
 import ubii.proto
-
 from . import (
     protocol,
     util,
@@ -671,7 +670,11 @@ class ProcessingRoutine(ubii.proto.ProcessingModule, metaclass=util.ProtoRegistr
             routine passed as ``pm``
         """
         assert pm.name in cls.registry
-        pm._protocol.start()
+        try:
+            pm._protocol.start()
+        except RuntimeError as e:
+            raise e
+
         return pm
 
     @classmethod

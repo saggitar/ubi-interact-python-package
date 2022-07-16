@@ -17,19 +17,22 @@ Example :
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import logging
 import pathlib
 import typing as t
 
 import proto.message
 import pytest
-import ubii.proto as ub
 import yaml
 
+import ubii.proto as ub
 from ubii.framework import processing
 from ubii.framework.client import Devices, UbiiClient, Services, InitProcessingModules
 from ubii.framework.logging import logging_setup
 from ubii.node.protocol import DefaultProtocol
+
+log = logging.getLogger(__name__)
 
 __verbosity__: int | None = None
 ALWAYS_VERBOSE = True
@@ -122,12 +125,12 @@ def enable_debug():
     debug(enabled=previous)
 
 
-@pytest.fixture(scope='session', autouse=True)
-def event_loop():
+@pytest.fixture(scope='session')
+def event_loop() -> asyncio.AbstractEventLoop:
     """
-    Used for old versions of pytest.asyncio
+    Used for pytest.asyncio
     """
-    loop = asyncio.get_event_loop()
+    loop = asyncio.get_event_loop_policy().new_event_loop()
     asyncio.set_event_loop(loop)
     yield loop
     loop.close()
@@ -140,12 +143,13 @@ async def base_client() -> UbiiClient:
     """
     protocol = DefaultProtocol()
     client = UbiiClient(protocol=protocol)
-
     protocol.client = client
 
     yield client
-    client = await client
-    await client.protocol.stop()
+    if client.protocol.state.value != client.protocol.end_state:
+        await client
+        await client.protocol.stop()
+
 
 
 @pytest.fixture(scope='session')
@@ -179,32 +183,31 @@ def register_device(client):
 
 
 @pytest.fixture(scope='class')
-async def start_session(client_spec):
+def start_session(client_spec):
     """
     Get callable to start a session.
     Session will be stopped automatically if test suite finishes
     """
-    _started = []
-    client: UbiiClient | None = None
 
-    async def _start(session):
-        nonlocal _started, client
-        client = await client_spec
-
+    @contextlib.asynccontextmanager
+    async def start_stop_session(session, client: UbiiClient):
         if session.id:
             raise ValueError(f"Session {session} already started.")
 
         assert client.implements(Services)
         response = await client[Services].service_map.session_runtime_start(session=session)
-        await asyncio.sleep(3)  # session needs to start up
-        _started.append(response.session)
-        return response.session
-
-    yield _start
-
-    for session in _started:
+        await asyncio.sleep(2)  # session needs to start up
+        yield response.session
         assert client is not None
-        await client[Services].service_map.session_runtime_stop(session=session)
+        await client[Services].service_map.session_runtime_stop(session=response.session)
+        await asyncio.sleep(3)  # session removal takes some time
+
+    async def start(session):
+        client = await client_spec
+        session = await client.protocol.task_nursery.enter_async_context(start_stop_session(session, client))
+        return session
+
+    return start
 
 
 P = t.TypeVar('P', bound=proto.message.Message)
@@ -241,10 +244,18 @@ def module_spec(base_module, request):
 
 
 @pytest.fixture(scope='class')
-def client_spec(base_client, module_spec, late_init_module_spec, request):
+def client_spec(base_client, module_spec, late_init_module_spec, event_loop: asyncio.AbstractEventLoop, request):
     """
     Update the base client with all changes from the request
     """
+    if base_client.protocol.state.value == base_client.protocol.end_state:
+        log.debug(f"{base_client} needs to be reset")
+        module_types = base_client[InitProcessingModules].module_types
+        base_client.reset()
+        base_client[InitProcessingModules] = InitProcessingModules(
+            module_types=module_types, initialized=[]
+        )
+
     _change_specs(base_client, *_get_param(request))
 
     by_name = {pm.name: pm for pm in base_client.processing_modules}
@@ -277,7 +288,7 @@ def client(client_spec):
     """
     Convenience fixture with different name, just returns :func:`client_spec` result
     """
-    return client_spec
+    yield client_spec
 
 
 @pytest.fixture(scope='session')

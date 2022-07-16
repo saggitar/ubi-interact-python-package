@@ -16,11 +16,6 @@ from typing import (
     Tuple,
 )
 
-try:
-    from functools import cached_property
-except ImportError:
-    from backports.cached_property import cached_property
-
 from . import util
 from .util.typing import (
     T_EnumFlag,
@@ -53,7 +48,7 @@ class AbstractProtocol(Generic[T_EnumFlag], abc.ABC):
     Assign a state to this attribute as the protocols end state when implementing a concrete protocol
     """
 
-    @cached_property
+    @util.cached_property
     def context(self) -> types.SimpleNamespace:
         """
         It's encouraged to overwrite this and return a dataclass or something that is better type-able  in your
@@ -97,7 +92,7 @@ class AbstractProtocol(Generic[T_EnumFlag], abc.ABC):
 
     # declaring the property this way helps pycharm to infer types correctly see
     # https://youtrack.jetbrains.com/issue/PY-15176 and related issues.
-    state: util.condition_property = util.condition_property(fget=_get_state, fset=_set_state)
+    state: util.condition_property = util.condition_property(fget=_get_state, fset=_set_state, )
     """
     Makes shared access to the protocol state easy
     """
@@ -122,15 +117,15 @@ class AbstractProtocol(Generic[T_EnumFlag], abc.ABC):
             :attr:`.task_nursery` -- the object that handles cancellation / stopping of the task when
             necessary
         """
-        if not self._run:
-            self._run = self.task_nursery.create_task(RunProtocol(self))
-        else:
+        if self._run:
             warnings.warn(f"{self} already running.")
+            return self
 
         async def stop_if_running(protocol: AbstractProtocol):
             if protocol._run:
                 await protocol.stop()
 
+        self._run = self.task_nursery.create_task(RunProtocol(self))
         self.task_nursery.push_async_callback(lambda: stop_if_running(self))
         return self
 
@@ -146,6 +141,7 @@ class AbstractProtocol(Generic[T_EnumFlag], abc.ABC):
         assert self._run, "Protocol not running, `start()` first"
         await self.state.set(self.end_state)
         await self._run
+        await self.task_nursery.aclose()
         self._run = None
 
     async def __aenter__(self):
