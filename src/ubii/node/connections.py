@@ -23,7 +23,8 @@ import ubii.proto
 from ubii.framework import (
     services,
     topics,
-    util
+    util,
+    debug
 )
 
 local_ip = socket.gethostbyname(socket.gethostname())
@@ -235,6 +236,9 @@ class AIOHttpWebsocketConnection(AIOHttpConnection, topics.DataConnection):
         async for message in self.ws:
             if message.type == aiohttp.WSMsgType.ERROR:
                 self.log_socket_in.error(message.data)
+                if debug():
+                    raise message.data
+
             elif message.type == aiohttp.WSMsgType.TEXT:
                 if message.data == "PING":
                     await self.ws.send_str('PONG')

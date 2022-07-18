@@ -20,14 +20,20 @@ import asyncio
 import contextlib
 import logging
 import pathlib
+import typing
 import typing as t
+import warnings
 
 import proto.message
 import pytest
 import yaml
 
+try:
+    from importlib import metadata
+except ImportError:  # for Python<3.8
+    import importlib_metadata as metadata
+
 import ubii.proto as ub
-from ubii.framework import processing
 from ubii.framework.client import Devices, UbiiClient, Services, InitProcessingModules
 from ubii.framework.logging import logging_setup
 from ubii.node.protocol import DefaultProtocol
@@ -35,10 +41,7 @@ from ubii.node.protocol import DefaultProtocol
 log = logging.getLogger(__name__)
 
 __verbosity__: int | None = None
-ALWAYS_VERBOSE = True
-"""
-If this is true, verbosity will be increased to debug level automatically
-"""
+_error_marker = 'closes_loop'
 
 
 def pytest_addoption(parser):
@@ -53,6 +56,10 @@ def pytest_addoption(parser):
         'data_dir',
         default='./data', help='Relative path to directory with test data.'
     )
+    parser.addini(
+        'cli_entry_point',
+        default='ubii-client', help='Entry point for CLI'
+    )
 
 
 def pytest_configure(config):
@@ -60,19 +67,30 @@ def pytest_configure(config):
     Sets verbosity and checks if the protobuf package is installed correctly
     """
     global __verbosity__
-    global ALWAYS_VERBOSE
-    __verbosity__ = (
-        logging.INFO - 10 * config.getoption('verbose')
-        if not ALWAYS_VERBOSE else
-        logging.DEBUG
-    )
+    __verbosity__ = logging.INFO - 10 * config.getoption('verbose')
 
     import ubii.proto
     assert ubii.proto.__proto_package__ is not None, "No proto package set, aborting test setup."
 
+    # register an additional marker
+    config.addinivalue_line(
+        "markers",
+        f"{_error_marker}: mark test which close the event loop"
+    )
+
+@pytest.hookimpl(hookwrapper=True)
+def pytest_runtest_setup(item: pytest.Item):
+    outcome = yield
+    marker = item.get_closest_marker(_error_marker)
+    loop_scope = {n: v for n,v in item.user_properties}.get('event_loop_scope', None)
+    if marker and loop_scope != 'function':
+        raise pytest.UsageError(f"{item} is marked as closing the event loop, it needs to request"
+                                f" a function scoped event_loop fixture to create a new loop for each call")
+
+
 
 @pytest.fixture(autouse=True, scope='session')
-async def configure_logging(request):
+def configure_logging(request):
     """
     Change log config if fixture is requested
 
@@ -95,7 +113,8 @@ async def configure_logging(request):
     with logging_setup.change(config=custom, verbosity=__verbosity__):
         yield
         # closing the context manager closes the files, so wait a little bit for remaining messages to be written
-        await asyncio.sleep(1)
+        import time
+        time.sleep(1)
 
 
 @pytest.fixture(scope='session', autouse=True)
@@ -114,7 +133,7 @@ def service_url_env(request):
 
 
 @pytest.fixture(autouse=True, scope='session')
-def enable_debug():
+def debug_settings():
     """
     Enables debug mode, automatically
     """
@@ -126,10 +145,11 @@ def enable_debug():
 
 
 @pytest.fixture(scope='session')
-def event_loop() -> asyncio.AbstractEventLoop:
+def event_loop(request, record_property) -> asyncio.AbstractEventLoop:
     """
     Used for pytest.asyncio
     """
+    record_property('event_loop_scope', request.scope)
     loop = asyncio.get_event_loop_policy().new_event_loop()
     asyncio.set_event_loop(loop)
     yield loop
@@ -151,7 +171,6 @@ async def base_client() -> UbiiClient:
         await client.protocol.stop()
 
 
-
 @pytest.fixture(scope='session')
 def base_module():
     """
@@ -168,7 +187,7 @@ def base_session():
     yield ub.Session()
 
 
-@pytest.fixture
+@pytest.fixture(scope='class')
 def register_device(client):
     """
     Get callable to register devices
@@ -180,6 +199,31 @@ def register_device(client):
         _client[Devices].register_device(*args, **kwargs)
 
     yield _register
+
+
+@pytest.fixture(scope='session')
+def start_client(reset_client):
+    async def start(client: UbiiClient):
+        try:
+            await client
+        except UserWarning as w:
+            log.info(w)
+            reset_client(client)
+            client.protocol.start()
+
+            with warnings.catch_warnings():
+                warnings.filterwarnings('ignore', category=UserWarning, module='ubii.framework.client')
+                await client
+
+    return start
+
+
+@pytest.fixture(scope='session')
+def stop_client():
+    async def stop(client: UbiiClient):
+        await client.protocol.stop()
+
+    return stop
 
 
 @pytest.fixture(scope='class')
@@ -230,7 +274,6 @@ def late_init_module_spec(request):
     Yield the list of module types specified as the request
     """
     module_types = _get_param(request)
-    assert all(map(lambda o: issubclass(o, processing.ProcessingRoutine), module_types))
     yield module_types
 
 
@@ -243,20 +286,40 @@ def module_spec(base_module, request):
     yield base_module
 
 
+@pytest.fixture(scope='session')
+def reset_client():
+    """
+    Reset the client if necessary
+    """
+
+    def reset(client: UbiiClient):
+        if client.protocol.state.value == client.protocol.end_state:
+            log.debug(f"{client} needs to be reset")
+            module_types = client[InitProcessingModules].module_types
+            client.reset()
+            client[InitProcessingModules] = InitProcessingModules(
+                module_types=module_types, initialized=[]
+            )
+
+    yield reset
+
+
 @pytest.fixture(scope='class')
-def client_spec(base_client, module_spec, late_init_module_spec, event_loop: asyncio.AbstractEventLoop, request):
+def client_spec(
+        base_client,
+        reset_client,
+        module_spec,
+        late_init_module_spec,
+        event_loop: asyncio.AbstractEventLoop,
+        request
+):
     """
     Update the base client with all changes from the request
     """
-    if base_client.protocol.state.value == base_client.protocol.end_state:
-        log.debug(f"{base_client} needs to be reset")
-        module_types = base_client[InitProcessingModules].module_types
-        base_client.reset()
-        base_client[InitProcessingModules] = InitProcessingModules(
-            module_types=module_types, initialized=[]
-        )
+    reset_client(base_client)
 
     _change_specs(base_client, *_get_param(request))
+    base_client.initial_specs.update(type(base_client).to_dict(base_client))
 
     by_name = {pm.name: pm for pm in base_client.processing_modules}
     if module_spec.name in by_name:
@@ -300,6 +363,27 @@ def data_dir(pytestconfig) -> pathlib.Path:
     data_dir = pytestconfig.rootpath / data_dir_config_value
     assert data_dir.exists(), f"Wrong data dir: {data_dir.resolve()} does not exist."
     yield data_dir
+
+
+@pytest.fixture(scope='session')
+def cli_entry_point(pytestconfig) -> typing.Callable:
+    """
+    Load entry point for CLI, according to pytest config
+    """
+    entry_point = pytestconfig.getini('cli_entry_point')
+
+    with warnings.catch_warnings():
+        # this deprecation is discussed a lot
+        warnings.simplefilter("ignore")
+        loaded = [
+            entry.load()
+            for entry in metadata.entry_points().get('console_scripts', ())
+            if entry.name == entry_point
+        ]
+    assert len(loaded) == 1, (f"{len(loaded)} entry point[s] for specification {entry_point} found in python path. "
+                              f"Did you correctly install the [cli] extra?")
+    assert callable(loaded[0]), f"Entry point {loaded[0]} is not callable."
+    yield loaded[0]
 
 
 def pytest_generate_tests(metafunc):

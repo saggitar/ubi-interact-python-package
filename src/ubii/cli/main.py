@@ -1,11 +1,15 @@
+import argparse
+import ast
 import asyncio
+import functools
 import logging
 import typing
 import warnings
 from pathlib import Path
 
+import itertools
+
 from ubii.framework.client import UbiiClient
-from ubii.framework.protocol import AbstractProtocol
 
 try:
     from importlib import metadata
@@ -58,9 +62,10 @@ def log_to_folder(log_config, folder='logs/'):
             continue
 
         if not log_file.startswith(folder):
-            log_file = Path(f"{folder}{log_file}")
-            config['filename'] = str(log_file)
+            log_file = f"{folder}{log_file}"
 
+        log_file = Path(log_file)
+        config['filename'] = str(log_file)
         log_file.parent.mkdir(parents=True, exist_ok=True)
 
     return log_config
@@ -79,45 +84,110 @@ def load_pm_entry_points() -> typing.List[typing.Any]:
         return [entry.load() for entry in metadata.entry_points().get(SETUPTOOLS_PM_ENTRYPOINT_KEY, ())]
 
 
+def parse_args():
+    """
+    Enhanced argument parsing which allows to also load installed processing
+    modules and pass arguments to them when they are loaded by the client
+    """
+    import argparse
+    import re
+    from ubii.framework.logging import parse_args
+
+    def pm_type(arg_value, pat=r'(?:(.*):)?(.*)'):
+        matched = re.match(pat, arg_value)
+        if not matched:
+            raise argparse.ArgumentTypeError(f"{arg_value} has wrong format, allowed: {pat}")
+
+        return matched.groups()
+
+    kv = r'(?:.*)=(?:.*)'  # a key value pair regex, only capturing the pair
+
+    def mod_arg_type(arg_value, pat=r'(?:(.*):)?({kv}(?:,{kv})*)'.format(kv=kv)):
+        matched = re.match(pat, arg_value)
+        if not matched:
+            raise argparse.ArgumentTypeError(f"{arg_value} has wrong format, allowed: {pat}")
+
+        name, args = matched.groups()
+        argdict = {}
+        for a in args.split(','):
+            key, value = a.rsplit('=', maxsplit=1)
+            argdict[key] = ast.literal_eval(value)
+
+        return name, argdict
+
+    parser = argparse.ArgumentParser()
+    parser.add_argument(
+        '--processing-modules', action='append', default=[],
+        type=pm_type,
+        help='Import processing modules to load. '
+             'You can also use the format {name}:{type} to load them with specific names.'
+    )
+    parser.add_argument(
+        '--no-discover', action='store_true', default=False,
+        help="Don't use the automatic processing module discovery mechanism"
+    )
+    parser.add_argument(
+        '--module-args', action='append', default=[],
+        type=mod_arg_type,
+        help="Format {name}:{key}={value}(,{key}={value})*, e.g. my-module:tags=['custom'],description='Wow!'"
+    )
+
+    return parse_args(parser=parser)
+
+
+def create_pm_factories(args: argparse.Namespace):
+    pms = {}
+    if not args.no_discover:
+        pms.update({None: load_pm_entry_points()})
+    if args.processing_modules:
+        for name, value in args.processing_modules:
+            pms.setdefault(name, []).append(import_name(value))
+
+    for name, argdict in args.module_args:
+        if name not in pms:
+            warnings.warn(f"Arguments for module {name} specified but no module with that name was loaded")
+            continue
+
+        # update arguments
+        pms[name] = [functools.partial(pm, **argdict) for pm in pms[name]]
+
+    if pms:
+        pms = list(itertools.chain.from_iterable(pms.values()))
+        print(f"Using module factories {', '.join(map(repr, pms))}")
+    else:
+        warnings.warn(f"No processing modules imported")
+
+    return pms
+
+
 def main():
     """
     Entry point for cli script see :ref:`CLI` in the documentation
     """
-    import argparse
     from ubii.node import connect_client
-    from ubii.framework.logging import parse_args, logging_setup
     from ubii.framework.client import InitProcessingModules
     from codestare.async_utils.nursery import TaskNursery
+    from ubii.framework import logging_setup
 
-    parser = argparse.ArgumentParser()
-    parser.add_argument('--processing-modules', action='append', default=[])
-    parser.add_argument('--no-discover', action='store_true', default=False)
+    pms = create_pm_factories(parse_args())
 
-    args = parse_args(parser=parser)
     log_config = logging_setup.change(
         config=log_to_folder(logging_setup.effective_config.config)
     )
 
-    pms = set()
-    if not args.no_discover:
-        pms.update(load_pm_entry_points())
-    if args.processing_modules:
-        pms.update(import_name(name) for name in args.processing_modules)
-
-    if pms:
-        print(f"Imported {', '.join(map(repr, pms))}")
-    else:
-        warnings.warn(f"No processing modules imported")
-
     async def run():
         with connect_client() as client:
-            client.is_dedicated_processing_node = True
-            client[InitProcessingModules] = InitProcessingModules(module_types=pms, initialized=[])
-            assert client.implements(InitProcessingModules)
-            await client
-
-            while client.state != client.State.UNAVAILABLE:
-                await asyncio.sleep(1)
+            try:
+                client.is_dedicated_processing_node = True
+                client[InitProcessingModules] = InitProcessingModules(
+                    module_types=pms, initialized=[]
+                )
+                assert client.implements(InitProcessingModules)
+                await client
+                while client.state != client.State.UNAVAILABLE:
+                    await asyncio.sleep(1)
+            except asyncio.CancelledError:
+                pass
 
         loop.stop()
 

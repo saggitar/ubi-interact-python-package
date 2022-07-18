@@ -854,10 +854,15 @@ class LatePMInitProtocol(LegacyProtocol):
 
         assert context.client.implements(client.InitProcessingModules)
         for pm in context.client[client.InitProcessingModules].module_types:
-            if not isinstance(pm, type) or not issubclass(pm, processing.ProcessingRoutine):
+            if not callable(pm):
+                warnings.warn(f"{pm} is not callable!")
                 continue
-
             instance: processing.ProcessingRoutine = pm(context)
+            if not isinstance(instance, processing.ProcessingRoutine):
+                warnings.warn(f"Calling {pm} did not return a "
+                              f"{processing.ProcessingRoutine.__module__}.{processing.ProcessingRoutine.__qualname__} "
+                              f"instance")
+                continue
             assert instance.name in processing.ProcessingRoutine.registry
             late_initialized.append(instance)
 

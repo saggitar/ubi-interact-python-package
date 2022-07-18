@@ -431,10 +431,11 @@ class UbiiClient(ubii.proto.Client,
                 Reference to self, with new wrapped task
 
             """
-            if self.client.protocol.state == self.client.protocol.end_state:
+            if self.client.protocol.state.value != self.client.protocol.end_state:
                 raise ValueError(
-                    f"Can't reset {self.client}, "
-                    f"protocol is not in end state {self.client.protocol.end_state!r}"
+                    f"Can't reset client protocol {self.client}, "
+                    f"protocol is not in end state {self.client.protocol.end_state!r}, is in "
+                    f"{self.client.protocol.state.value!r} instead."
                 )
 
             for behaviour in self.client._behaviours:
@@ -501,7 +502,20 @@ class UbiiClient(ubii.proto.Client,
 
         self._ctx: typing.AsyncContextManager = self._with_running_protocol()
         self._init = self.ClientInitTaskWrapper(self)
-        self._init_specs = type(self).to_dict(self)
+        self._init_specs: typing.Dict = type(self).to_dict(self)
+
+    @property
+    def initial_specs(self) -> dict:
+        """
+        Since clients can be reset, the clients current representation needs to be
+        separated from the initial protobuf specifications. When the client is :func:`.reset`,
+        it's specifications will be set to it's current :attr:`.initial_specs`.
+
+        The initial specs can be adapted during the client's lifetime by
+        explicitly assigning to values of this dictionary, otherwise it contains the specifications
+        that were used when the object was initialized.
+        """
+        return self._init_specs
 
     def _patch_behaviour(self, behaviour: typing.Type):
         """
@@ -655,7 +669,7 @@ class UbiiClient(ubii.proto.Client,
     def reset(self):
         """
         Use this method to reset the client behaviours and allow explicitly restarting the client protocol
-        if it is finished. Also resets the protobuf values to the initial values
+        if it is finished. Also resets the protobuf values to the contents of :attr:`.initial_values`
         """
         if hasattr(self.task_nursery, 'sentinel_task') and not self.task_nursery.sentinel_task:
             logging.debug(f"{self}'s task nursery needs seems to be dead."
