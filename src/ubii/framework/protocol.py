@@ -48,6 +48,13 @@ class AbstractProtocol(Generic[T_EnumFlag], abc.ABC):
     Assign a state to this attribute as the protocols end state when implementing a concrete protocol
     """
 
+    @property
+    def finished(self) -> bool:
+        """
+        Convenience property that simply returns whether the protocols state is its end state.
+        """
+        return self.state.value == self.end_state
+
     @util.cached_property
     def context(self) -> types.SimpleNamespace:
         """

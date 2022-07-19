@@ -11,6 +11,7 @@ import logging
 import types
 import typing
 
+import codestare.async_utils
 import ubii.proto
 from . import (
     protocol,
@@ -156,7 +157,8 @@ class Scheduler(util.CoroutineWrapper):
         See Also:
             :attr:`ubii.proto.ProcessingMode.mode` -- details on processing modes
         """
-        self._loop = asyncio.get_running_loop()
+        self._nursery = codestare.async_utils.TaskNursery(name=f'Nursery for {self}', loop=asyncio.get_running_loop())
+
         self._perf_metric = perf_metric.__get__(self, type(self))
 
         self.inputs: typing.Iterable[AsyncGetter] = inputs
@@ -190,7 +192,7 @@ class Scheduler(util.CoroutineWrapper):
         """
         After every n callback schedules, cancel old input awaitables
         """
-        self.loop_time: Scheduler.LoopTime = self.LoopTime(self._loop)
+        self.loop_time: Scheduler.LoopTime = self.LoopTime(self._nursery.loop)
         """
         Helps to calculate loop times for execution scheduling
         """
@@ -254,7 +256,7 @@ class Scheduler(util.CoroutineWrapper):
             timeout = None
 
         awts = [
-            self._loop.create_task(awt) if asyncio.iscoroutine(awt) else awt
+            self._nursery.create_task(awt) if asyncio.iscoroutine(awt) else awt
             for awt
             in [get() for get in self.inputs]
         ]
@@ -291,7 +293,7 @@ class Scheduler(util.CoroutineWrapper):
                 else:
                     self.delta_times.append(since_last_recorded_time)
 
-                await self._loop.run_in_executor(pool, self.callback)
+                await self._nursery.loop.run_in_executor(pool, self.callback)
                 self.loop_time.record()
 
                 self._scheduling_count += 1

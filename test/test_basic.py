@@ -10,7 +10,7 @@ __protobuf__ = ub.__protobuf__
 
 
 class TestBasic:
-    async def test_debug_settings(self, enable_debug):
+    async def test_debug_settings(self, debug_settings):
         assert debug()
 
 

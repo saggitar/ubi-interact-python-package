@@ -76,13 +76,14 @@ class _logging_setup:
         return self
 
     def __exit__(self, *exc_info):
+        config = self._configs.pop()
         if any(exc_info):
             self._configs.clear()
-        else:
-            _ = self._configs.pop()
 
         if self._configs:
             self._apply()
+        else:
+            self._configs[:] = [config]
 
 
 logging_setup = _logging_setup(base_config=__config__, log_level=logging.INFO, warning_filter='default')

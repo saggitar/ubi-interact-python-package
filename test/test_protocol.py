@@ -4,6 +4,7 @@ import asyncio
 import enum
 import logging
 import random
+import warnings
 from dataclasses import dataclass
 from typing import Callable
 
@@ -59,13 +60,28 @@ async def protocol(request):
     protocol: AbstractProtocol = request.param()
     running = protocol.start()
     yield running
-    await running.stop()
+    if not running.finished:
+        await running.stop()
+
+
+@pytest.fixture(autouse=True)
+def warning_filter():
+    with warnings.catch_warnings():
+        warnings.filterwarnings(
+            'ignore',
+            category=RuntimeWarning,
+            module='ubii.node.protocol',
+            message="Not setting the protocol client can lead to unexpected behaviour."
+        )
+        yield
 
 
 @pytest.mark.parametrize('protocol', [DefaultProtocol], indirect=True)
 async def test_default_protocol(protocol: DefaultProtocol):
-    await asyncio.wait_for(protocol.state.get(predicate=lambda state: state == UbiiStates.CONNECTED),
-                           timeout=5)
+    await asyncio.wait_for(
+        protocol.state.get(predicate=lambda state: state == UbiiStates.CONNECTED),
+        timeout=6
+    )
     client = protocol.client
     assert client.id
 

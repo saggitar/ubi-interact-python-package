@@ -1,8 +1,5 @@
 from __future__ import annotations
 
-import types
-from collections import namedtuple
-
 import asyncio
 import difflib
 import functools
@@ -10,11 +7,15 @@ import inspect
 import logging
 import pickle
 import re
-import sys
+import types
 import typing
 import warnings
 import weakref
+from collections import namedtuple
 
+import sys
+
+import codestare.async_utils
 import ubii.proto as ub
 from . import RegistryMeta
 from .typing import S, T, ExcInfo
@@ -683,18 +684,27 @@ class async_compose:
 
     """
 
+    class composed:
+        def __init__(self,
+                     f: typing.Callable[..., typing.Awaitable],
+                     g: typing.Callable[..., typing.Awaitable]):
+            self.f = f
+            self.g = g
+
+        async def __call__(self, *args):
+            return await(self.g(await self.f(*args)))
+
+        def __repr__(self):
+            return f"{self.g!r}({self.f!r})(...)"
+
     def __init__(self, *fns):
-        def __compose(f: typing.Callable[[typing.Any], typing.Coroutine],
-                      g: typing.Callable[[typing.Any], typing.Coroutine]):
-            async def composed(*args):
-                return await(g(await f(*args)))
-
-            return composed
-
-        self._reduced = functools.reduce(__compose, fns)
+        self._reduced = functools.reduce(self.composed, fns)
 
     def __call__(self, *args):
         return self._reduced(*args)
+
+    def __repr__(self):
+        return repr(self._reduced)
 
 
 class enrich(typing.Callable[..., 'enrich.result']):

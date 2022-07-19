@@ -28,6 +28,8 @@ import proto.message
 import pytest
 import yaml
 
+import codestare.async_utils
+
 try:
     from importlib import metadata
 except ImportError:  # for Python<3.8
@@ -78,25 +80,25 @@ def pytest_configure(config):
         f"{_error_marker}: mark test which close the event loop"
     )
 
+
 @pytest.hookimpl(hookwrapper=True)
 def pytest_runtest_setup(item: pytest.Item):
-    outcome = yield
+    yield
     marker = item.get_closest_marker(_error_marker)
-    loop_scope = {n: v for n,v in item.user_properties}.get('event_loop_scope', None)
+    loop_scope = {n: v for n, v in item.user_properties}.get('event_loop_scope', None)
     if marker and loop_scope != 'function':
         raise pytest.UsageError(f"{item} is marked as closing the event loop, it needs to request"
                                 f" a function scoped event_loop fixture to create a new loop for each call")
 
 
-
-@pytest.fixture(autouse=True, scope='session')
+@pytest.fixture(scope='session')
 def configure_logging(request):
     """
     Change log config if fixture is requested
 
     Args:
-        request: will be passed if fixture is parametrized indirectly, `request.param` should
-            contain the logging config as dictionary
+        request: will be passed if fixture is parametrized indirectly,
+            `request.param` should contain the logging config as dictionary
 
     """
     log_config = logging_setup.change(verbosity=__verbosity__)
@@ -112,9 +114,6 @@ def configure_logging(request):
 
     with logging_setup.change(config=custom, verbosity=__verbosity__):
         yield
-        # closing the context manager closes the files, so wait a little bit for remaining messages to be written
-        import time
-        time.sleep(1)
 
 
 @pytest.fixture(scope='session', autouse=True)
@@ -145,14 +144,27 @@ def debug_settings():
 
 
 @pytest.fixture(scope='session')
-def event_loop(request, record_property) -> asyncio.AbstractEventLoop:
+def event_loop(request) -> asyncio.AbstractEventLoop:
     """
-    Used for pytest.asyncio
+    We need better control over the asyn processing
     """
-    record_property('event_loop_scope', request.scope)
+
     loop = asyncio.get_event_loop_policy().new_event_loop()
     asyncio.set_event_loop(loop)
     yield loop
+
+    tasks = asyncio.all_tasks(loop=loop)
+    if tasks:
+        for nursery in codestare.async_utils.TaskNursery.registry.values():
+            if any(t in nursery.tasks for t in tasks):
+                loop.run_until_complete(nursery.__aexit__(None, None, None))
+
+        tasks = asyncio.all_tasks(loop=loop)
+        for task in tasks:
+            task.cancel()
+            with contextlib.suppress(asyncio.CancelledError):
+                loop.run_until_complete(task)
+
     loop.close()
 
 
@@ -166,7 +178,7 @@ async def base_client() -> UbiiClient:
     protocol.client = client
 
     yield client
-    if client.protocol.state.value != client.protocol.end_state:
+    if not client.protocol.finished:
         await client
         await client.protocol.stop()
 
@@ -208,7 +220,7 @@ def start_client(reset_client):
             await client
         except UserWarning as w:
             log.info(w)
-            reset_client(client)
+            await reset_client(client)
             client.protocol.start()
 
             with warnings.catch_warnings():
@@ -292,11 +304,11 @@ def reset_client():
     Reset the client if necessary
     """
 
-    def reset(client: UbiiClient):
-        if client.protocol.state.value == client.protocol.end_state:
+    async def reset(client: UbiiClient):
+        if client.protocol.finished:
             log.debug(f"{client} needs to be reset")
             module_types = client[InitProcessingModules].module_types
-            client.reset()
+            await client.reset()
             client[InitProcessingModules] = InitProcessingModules(
                 module_types=module_types, initialized=[]
             )
@@ -305,7 +317,7 @@ def reset_client():
 
 
 @pytest.fixture(scope='class')
-def client_spec(
+async def client_spec(
         base_client,
         reset_client,
         module_spec,
@@ -316,7 +328,7 @@ def client_spec(
     """
     Update the base client with all changes from the request
     """
-    reset_client(base_client)
+    await reset_client(base_client)
 
     _change_specs(base_client, *_get_param(request))
     base_client.initial_specs.update(type(base_client).to_dict(base_client))

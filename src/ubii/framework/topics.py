@@ -46,9 +46,9 @@ import weakref
 
 import proto
 
-
 import ubii.proto
 from . import util
+from .util import dunder
 from .util.typing import (
     T_co,
     T_contra,
@@ -86,6 +86,7 @@ class DataConnection(typing.AsyncIterator[ubii.proto.TopicData]):
     async def send(self, data: ubii.proto.TopicData): ...
 
 
+@dunder.repr('topic', 'callback')
 class TopicCoroutine(util.CoroutineWrapper[typing.Any, typing.Any, None], typing.Generic[T_Buffer]):
     """
     A topic coroutine waits until a value is written to the topic and then runs its callback.

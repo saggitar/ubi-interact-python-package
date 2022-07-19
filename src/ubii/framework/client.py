@@ -423,7 +423,7 @@ class UbiiClient(ubii.proto.Client,
         def _set_task(self):
             self._task = self.client.task_nursery.create_task(self._wait_for_client_implementation())
 
-        def reset(self) -> UbiiClient.ClientInitTaskWrapper:
+        def reset(self) -> None:
             """
             Use this method to reset the client behaviours and create a new wrapped task inside the wrapper.
 
@@ -431,7 +431,7 @@ class UbiiClient(ubii.proto.Client,
                 Reference to self, with new wrapped task
 
             """
-            if self.client.protocol.state.value != self.client.protocol.end_state:
+            if not self.client.protocol.finished:
                 raise ValueError(
                     f"Can't reset client protocol {self.client}, "
                     f"protocol is not in end state {self.client.protocol.end_state!r}, is in "
@@ -443,7 +443,6 @@ class UbiiClient(ubii.proto.Client,
                     setattr(self.client[behaviour], field.name, None)
 
             self._set_task()
-            return self
 
         async def _wait_for_client_implementation(self):
             await self.client.implements(*self.client._required_behaviours)
@@ -666,11 +665,12 @@ class UbiiClient(ubii.proto.Client,
     def __aexit__(self, *exc_info):
         return self._ctx.__aexit__(*exc_info)
 
-    def reset(self):
+    async def reset(self):
         """
         Use this method to reset the client behaviours and allow explicitly restarting the client protocol
         if it is finished. Also resets the protobuf values to the contents of :attr:`.initial_values`
         """
+        old_id = self.id
         if hasattr(self.task_nursery, 'sentinel_task') and not self.task_nursery.sentinel_task:
             logging.debug(f"{self}'s task nursery needs seems to be dead."
                           f" Creating new task nursery for {self}.")
@@ -680,13 +680,14 @@ class UbiiClient(ubii.proto.Client,
                 name=self.task_nursery.name,
                 loop=self.task_nursery.loop
             )
-            self.task_nursery.enter_async_context(stack)
+            await self.task_nursery.enter_async_context(stack)
 
         self._init.reset()
 
         for name, value in self._init_specs.items():
             setattr(self, name, value)
-        logging.info(f"{self} was reset successfully and can be used again.")
+
+        logging.debug(f"{self} (with old id {old_id!r}) was reset successfully and can be used again.")
 
     @property
     def protocol(self: UbiiClient[T_Protocol]) -> T_Protocol:

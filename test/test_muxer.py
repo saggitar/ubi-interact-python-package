@@ -1,4 +1,6 @@
 import asyncio
+import functools
+import uuid
 
 import pytest
 import ubii.proto
@@ -9,23 +11,26 @@ import ubii.framework.topics
 
 
 @pytest.fixture
-def test_data(request):
+def topic_data(request):
     return [ubii.proto.TopicData(topic_data_record=value) for value in request.param]
 
 
+FakeMuxer = functools.partial(ubii.framework.topics.TopicMuxer, id=str(uuid.uuid4()))
+
+
 class TestMuxer:
-    @pytest.mark.parametrize('test_data', [
+    @pytest.mark.parametrize('topic_data', [
         [{'topic': 'test/foo', 'bool': n % 2 == 0} for n in range(10)]
     ], indirect=True)
-    async def test_muxer_basics(self, test_data):
-        topic_muxer = ubii.framework.topics.TopicMuxer()
-        for data in test_data:
+    async def test_muxer_basics(self, topic_data):
+        topic_muxer = FakeMuxer(data_type='bool')
+        for data in topic_data:
             await topic_muxer.records.set([data.topic_data_record])
 
         assert len(topic_muxer.records.value) == 1
-        assert topic_muxer.records.value[0] == test_data[0].topic_data_record
+        assert topic_muxer.records.value[0] == topic_data[-1].topic_data_record
 
-    @pytest.mark.parametrize('test_data', [
+    @pytest.mark.parametrize('topic_data', [
         pytest.param([{'bool': n % 2 == 0} for n in range(10)], id='alternating_bools')
     ], indirect=True)
     @pytest.mark.parametrize(
@@ -36,15 +41,15 @@ class TestMuxer:
             ('test/foo-1234', r'\d+', '1234')
         ]
     )
-    async def test_identity_match(self, test_data, topic, identity_match_pattern, identity):
-        topic_muxer = ubii.framework.topics.TopicMuxer(identity_match_pattern=identity_match_pattern)
-        for data in test_data:
+    async def test_identity_match(self, topic_data, topic, identity_match_pattern, identity):
+        topic_muxer = FakeMuxer(data_type='bool', identity_match_pattern=identity_match_pattern)
+        for data in topic_data:
             data.topic_data_record.topic = topic
             await topic_muxer.records.set([data.topic_data_record])
 
         assert len(topic_muxer.records.value) == 1
         record = topic_muxer.records.value[0]
-        assert topic_muxer.identity(record) == identity
+        assert record.metadata()['identity'] == identity
 
 
 class TestMuxerProcessing:
@@ -119,10 +124,10 @@ class TestMuxerProcessing:
     module_spec = [(processing_module,)]
     client_spec = [(client,)]
 
-    @pytest.mark.parametrize('test_data', [
+    @pytest.mark.parametrize('topic_data', [
         [{'int32': n} for n in range(10)]
     ], indirect=True)
-    async def test_muxer_processing(self, client_spec, session_spec, module_spec, start_session, test_data):
+    async def test_muxer_processing(self, client_spec, session_spec, module_spec, start_session, topic_data):
         client = await client_spec
         await start_session(session_spec)
 
@@ -130,7 +135,7 @@ class TestMuxerProcessing:
         received = []
         topic.register_callback(received.append)
 
-        for data in test_data:
+        for data in topic_data:
             data.topic_data_record.topic = f"/muxer/{client.id}"
             await client[ubii.framework.client.Publish].publish(data.topic_data_record)
             await asyncio.sleep(0.02)  # stagger inputs
