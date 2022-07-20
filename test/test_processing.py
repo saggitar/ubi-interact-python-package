@@ -75,8 +75,8 @@ class Processing:
         return processing_module
 
     @pytest.fixture(scope='class')
-    async def base_session(self, client, base_module):
-        await client
+    async def base_session(self, client, base_module, start_client):
+        await start_client(client)
         client_bool_topic = f"{client.id}/input_bool"
         server_bool_topic = f"{client.id}/output_bool"
         io_mappings = [
@@ -111,7 +111,7 @@ class Processing:
         pass
 
     @pytest.fixture(scope='class')
-    async def test_value(self, startup, client, base_session, start_session):
+    async def test_value(self, startup, client, base_session):
         topic, = await client[Subscriptions].subscribe_topic(base_session.server_bool)
         yield topic.buffer
 
@@ -269,7 +269,7 @@ class TestLateInitModules:
         received = []
 
         await client[Publish].publish({'topic': base_session.input, 'bool': data})
-        await asyncio.sleep(0.2) # we wait until the broker processed the publishing
+        await asyncio.sleep(0.2)  # we wait until the broker processed the publishing
         topics, tokens = await client[Subscriptions].subscribe_topic(base_session.output).with_callback(received.append)
         # if you subscribe to the same topic as before, you will immediately get the last value, therefore
         # we publish before we subscribe!

@@ -36,7 +36,7 @@ except ImportError:  # for Python<3.8
     import importlib_metadata as metadata
 
 import ubii.proto as ub
-from ubii.framework.client import Devices, UbiiClient, Services, InitProcessingModules
+from ubii.framework.client import Devices, UbiiClient, InitProcessingModules, Sessions
 from ubii.framework.logging import logging_setup
 from ubii.node.protocol import DefaultProtocol
 
@@ -91,7 +91,7 @@ def pytest_runtest_setup(item: pytest.Item):
                                 f" a function scoped event_loop fixture to create a new loop for each call")
 
 
-@pytest.fixture(scope='session')
+@pytest.fixture(scope='session', autouse=True)
 def configure_logging(request):
     """
     Change log config if fixture is requested
@@ -101,19 +101,18 @@ def configure_logging(request):
             `request.param` should contain the logging config as dictionary
 
     """
-    log_config = logging_setup.change(verbosity=__verbosity__)
-
     from pathlib import Path
     log_config_path = Path(request.config.getoption('--log-config'))
     if log_config_path.exists():
         with log_config_path.open() as f:
             test_logging_config = yaml.safe_load(f)
-            log_config.change(config=test_logging_config)
+            logging_setup.change(config=test_logging_config)
 
     custom = getattr(request, 'param', None)
+    logging_setup.change(config=custom, verbosity=__verbosity__)
 
-    with logging_setup.change(config=custom, verbosity=__verbosity__):
-        yield
+    with logging_setup:
+        yield logging_setup
 
 
 @pytest.fixture(scope='session', autouse=True)
@@ -217,7 +216,7 @@ def register_device(client):
 def start_client(reset_client):
     async def start(client: UbiiClient):
         try:
-            await client
+            return await client
         except UserWarning as w:
             log.info(w)
             await reset_client(client)
@@ -225,7 +224,7 @@ def start_client(reset_client):
 
             with warnings.catch_warnings():
                 warnings.filterwarnings('ignore', category=UserWarning, module='ubii.framework.client')
-                await client
+                return await client
 
     return start
 
@@ -239,31 +238,16 @@ def stop_client():
 
 
 @pytest.fixture(scope='class')
-def start_session(client_spec):
+async def start_session(client_spec):
     """
     Get callable to start a session.
     Session will be stopped automatically if test suite finishes
     """
-
-    @contextlib.asynccontextmanager
-    async def start_stop_session(session, client: UbiiClient):
-        if session.id:
-            raise ValueError(f"Session {session} already started.")
-
-        assert client.implements(Services)
-        response = await client[Services].service_map.session_runtime_start(session=session)
-        await asyncio.sleep(2)  # session needs to start up
-        yield response.session
-        assert client is not None
-        await client[Services].service_map.session_runtime_stop(session=response.session)
-        await asyncio.sleep(3)  # session removal takes some time
-
-    async def start(session):
-        client = await client_spec
-        session = await client.protocol.task_nursery.enter_async_context(start_stop_session(session, client))
-        return session
-
-    return start
+    await client_spec.implements(Sessions)
+    yield client_spec[Sessions].start_session
+    to_stop = [session for session in client_spec[Sessions].sessions.values()]
+    for session in to_stop:
+        await client_spec[Sessions].stop_session(session)
 
 
 P = t.TypeVar('P', bound=proto.message.Message)
@@ -312,6 +296,8 @@ def reset_client():
             client[InitProcessingModules] = InitProcessingModules(
                 module_types=module_types, initialized=[]
             )
+        else:
+            log.warning(f"{client} not reset, protocol is not finished")
 
     yield reset
 
@@ -320,6 +306,7 @@ def reset_client():
 async def client_spec(
         base_client,
         reset_client,
+        stop_client,
         module_spec,
         late_init_module_spec,
         event_loop: asyncio.AbstractEventLoop,
@@ -328,8 +315,6 @@ async def client_spec(
     """
     Update the base client with all changes from the request
     """
-    await reset_client(base_client)
-
     _change_specs(base_client, *_get_param(request))
     base_client.initial_specs.update(type(base_client).to_dict(base_client))
 
@@ -343,6 +328,8 @@ async def client_spec(
         base_client[InitProcessingModules].module_types = late_init_module_spec
 
     yield base_client
+    await stop_client(base_client)
+    await reset_client(base_client)
 
 
 @pytest.fixture(scope='class')
@@ -361,7 +348,7 @@ def session_spec(base_session, module_spec, request):
 @pytest.fixture(scope='class')
 def client(client_spec):
     """
-    Convenience fixture with different name, just returns :func:`client_spec` result
+    Convenience fixture with different name, always starts the client :func:`client_spec` result
     """
     yield client_spec
 

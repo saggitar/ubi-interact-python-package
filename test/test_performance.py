@@ -3,7 +3,7 @@ import logging
 import uuid
 
 import pytest
-import ubii.proto
+import ubii.proto as ub
 
 from test.test_processing import TestPy as _TestPy
 from ubii.framework.client import RunProcessingModules, Publish, Subscriptions
@@ -12,48 +12,50 @@ WRITE_PERFORMANCE_DATA = True
 
 pytestmark = pytest.mark.asyncio
 
+test_module = ub.ProcessingModule(
+    on_created_stringified='\n'.join((
+        'def on_created(self, context):',
+        '    context.frame_count = 0',
+        '    context.delta_times = []',
+        '',
+    )),
+    on_processing_stringified='\n'.join((
+        'def on_processing(self, context):',
+        '    context.frame_count += 1',
+        '    if context.frame_count % 30 == 0:',
+        '        context.frame_count = 0',
+        '        context.delta_times.extend(context.scheduler.delta_times)',
+    )),
+    language=ub.ProcessingModule.Language.PY,
+)
+
+
+def module(hertz):
+    modified = ub.ProcessingModule(
+        **type(test_module).to_dict(test_module),
+        processing_mode={'frequency': {'hertz': hertz}},
+    )
+    return pytest.param((modified,), id=f'{hertz}hz')
+
 
 class TestPerformance(_TestPy):
-    test_module = ubii.proto.ProcessingModule(
-        on_created_stringified='\n'.join((
-            'def on_created(self, context):',
-            '    context.frame_count = 0',
-            '    context.delta_times = []',
-            '',
-        )),
-        on_processing_stringified='\n'.join((
-            'def on_processing(self, context):',
-            '    context.frame_count += 1',
-            '    if context.frame_count % 30 == 0:',
-            '        context.frame_count = 0',
-            '        context.delta_times.extend(context.scheduler.delta_times)',
-        )),
-        language=ubii.proto.ProcessingModule.Language.PY,
-    )
+    module_spec = [module(h) for h in [10, 60, 120]]
 
-    hertz_10 = ubii.proto.ProcessingModule(
-        **type(test_module).to_dict(test_module),
-        processing_mode={'frequency': {'hertz': 10}},
-    )
+    old_session = _TestPy.base_session
 
-    module_spec = [
-        pytest.param((hertz_10,), id='10 hertz'),
-    ]
-
-    client_spec = [
-        pytest.param((ubii.proto.Client(
-            is_dedicated_processing_node=True,
-            processing_modules=[ubii.proto.ProcessingModule(name='example-processing-module')]
-        ),), id='processing_node')
-    ]
+    @pytest.fixture(scope='class')
+    async def base_session(self, client, old_session):
+        old_session.name = old_session.name + f"-{client.id}"
+        yield old_session
 
     @pytest.fixture
     def running_pm(self, client, base_module, data_dir, request):
         assert client.implements(RunProcessingModules)
-        pm: ubii.proto.ProcessingModule = {pm.name: pm for pm in client[RunProcessingModules].running_pms}.get(
+        pm: ub.ProcessingModule = {pm.name: pm for pm in client[RunProcessingModules].running_pms}.get(
             base_module.name)
         pm._protocol.context.delta_times = []
         yield pm
+
         delta_times = pm._protocol.context.delta_times[1:]  # first value is time before processing was triggered
         assert delta_times
         assert all(r > 0 for r in delta_times)
@@ -71,52 +73,18 @@ class TestPerformance(_TestPy):
                 f.write(f'delta_times\n')
                 f.write('\n'.join(map('{:.5f}'.format, delta_times)))
 
-        assert relative_error(avg_delta) < 0.05
+        allowed_error = 0.05 * pm.processing_mode.frequency.hertz / 30
+        assert relative_error(avg_delta) < allowed_error
         max_error = relative_error(max_delta)
 
         print(f"Avg delta time: {avg_delta} over {len(delta_times)} measurements "
               f"for target delay of {1. / pm.processing_mode.frequency.hertz}s (max error: {max_error})")
 
-    @pytest.mark.parametrize('data', [False, True])
-    @pytest.mark.parametrize('delay', [0.0005])
     @pytest.mark.parametrize('duration', [10])
-    async def test_processing_module(self, client, base_session, running_pm, data, delay, duration):
-        published_count = int(duration / delay)
-        for _ in range(published_count):
-            await asyncio.sleep(delay)
-            await client[Publish].publish({'topic': base_session.client_bool, 'bool': data})
-
-        print(f"Published {published_count} times {data}")
-
-
-class TestPerf30Hz(TestPerformance):
-    hertz_30 = ubii.proto.ProcessingModule(
-        **type(TestPerformance.test_module).to_dict(TestPerformance.test_module),
-        processing_mode={'frequency': {'hertz': 30}},
-    )
-    module_spec = [
-        pytest.param((hertz_30,), id='30 hertz'),
-    ]
-
-
-class TestPerf60Hz(TestPerformance):
-    hertz_60 = ubii.proto.ProcessingModule(
-        **type(TestPerformance.test_module).to_dict(TestPerformance.test_module),
-        processing_mode={'frequency': {'hertz': 60}},
-    )
-    module_spec = [
-        pytest.param((hertz_60,), id='60 hertz'),
-    ]
-
-
-class TestPerf120Hz(TestPerformance):
-    hertz_120 = ubii.proto.ProcessingModule(
-        **type(TestPerformance.test_module).to_dict(TestPerformance.test_module),
-        processing_mode={'frequency': {'hertz': 120}},
-    )
-    module_spec = [
-        pytest.param((hertz_120,), id='120 hertz'),
-    ]
+    async def test_processing_module(self, client, base_session, running_pm, duration):
+        await asyncio.sleep(0.5)
+        await client[Publish].publish({'topic': base_session.client_bool, 'bool': True})
+        await asyncio.sleep(duration)
 
 
 class TestPublishReceivePerformance:

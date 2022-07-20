@@ -75,13 +75,13 @@ import abc
 import asyncio
 import contextlib
 import dataclasses
+import itertools
 import logging
 import typing
 import warnings
 
-import itertools
-
 import ubii.proto
+
 from . import (
     services,
     topics,
@@ -160,6 +160,30 @@ class publish_call(Protocol):
 
         Returns:
             some awaitable performing the `master node` communication
+        """
+
+
+class start_session(Protocol):
+    async def __call__(self, session: ubii.proto.Session) -> ubii.proto.Session:
+        """
+        Await to start a session
+        Args:
+            session: session request to start
+
+        Returns:
+            the started session specifications
+        """
+
+
+class stop_session(Protocol):
+    async def __call__(self, session: ubii.proto.Session) -> bool:
+        """
+        Await to stop a session
+        Args:
+            session: session request to stop
+
+        Returns:
+            wether stopping was successful
         """
 
 
@@ -264,6 +288,25 @@ class Devices:
     deregister_device: typing.Callable[[ubii.proto.Device], typing.Awaitable[None]] | None = None
     """
     await to deregister a device
+    """
+
+
+@dataclasses.dataclass(**_data_kwargs)
+class Sessions:
+    """
+    Behavior to start and stop Sessions
+    """
+    sessions: typing.Dict[str, ubii.proto.Session] | None = None
+    """
+    the started sessions
+    """
+    start_session: start_session | None = None
+    """
+    await to start a session 
+    """
+    stop_session: stop_session | None = None
+    """
+    await to stop a session 
     """
 
 
@@ -458,7 +501,7 @@ class UbiiClient(ubii.proto.Client,
                          Services, Subscriptions, Publish
                  ),
                  optional_behaviours: typing.Tuple[typing.Type, ...] = (
-                         Register, Devices, RunProcessingModules, InitProcessingModules
+                         Register, Devices, RunProcessingModules, InitProcessingModules, Sessions
                  ),
                  **kwargs):
         """
@@ -653,7 +696,7 @@ class UbiiClient(ubii.proto.Client,
         if self.protocol.state.value is None:
             self.protocol.start()
 
-        if self.protocol.state.value == self.protocol.end_state:
+        if self.protocol.finished:
             warnings.warn(f"{self} was stopped, you can "
                           f"triggered protocol restart by resetting the client with client.reset()", UserWarning)
 

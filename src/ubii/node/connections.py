@@ -150,11 +150,21 @@ class AIOHttpWebsocketConnection(AIOHttpConnection, topics.DataConnection):
     def __anext__(self) -> t.Awaitable[ubii.proto.TopicData]:
         return self._stream.__anext__()  # type: ignore
 
-    def __init__(self, url, host_ip=local_ip):
+    def __init__(self, url: str, host_ip: str = local_ip, max_message_size: int | None = 0):
+        """
+        Create websocket connection
+
+        Args:
+            url: Url to connect to, according to broker config, see :class:`.AIOHttpConnection` for more info
+            host_ip: ip of host, see :class:`.AIOHttpConnection` for more info
+            max_message_size: maximum allowed size for socket reads,
+                set to `None` to use aiohttp default (4MB), out default is 0 (no limit)
+        """
         super().__init__(url, host_ip)
         self._ws: aiohttp.ClientWebSocketResponse | None = None
         self._client_id: str | None = None
         self._stream = self._stream_coro()
+        self._max_message_size = max_message_size
         self.events: AIOHttpWebsocketConnection.Events = self.Events()
         """
         Public events to wait for connection / disconnection in client code
@@ -223,7 +233,8 @@ class AIOHttpWebsocketConnection(AIOHttpConnection, topics.DataConnection):
             yield self
         else:
             self.client_id = client_id
-            async with self.session.ws_connect(f"{self.url}/?clientID={self.client_id}") as ws:
+            kwargs = {'max_msg_size': self._max_message_size} if self._max_message_size is not None else {}
+            async with self.session.ws_connect(f"{self.url}/?clientID={self.client_id}", **kwargs) as ws:
                 self.ws = ws
                 yield self
 
@@ -367,7 +378,8 @@ class AIOHttpRestConnection(AIOHttpConnection, services.ServiceConnection):
         await asyncio.wait_for(self._session_is_set.wait(), timeout=timeout)
         async with self.session.post(self.url, headers=self.headers, json=request, timeout=timeout) as resp:
             json = await asyncio.wait_for(resp.text(), timeout=timeout)
-            return ubii.proto.ServiceReply.from_json(json, ignore_unknown_fields=True)  # master node bug requires ignore
+            return ubii.proto.ServiceReply.from_json(json,
+                                                     ignore_unknown_fields=True)  # master node bug requires ignore
 
 
 def aiohttp_session():

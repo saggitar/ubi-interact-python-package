@@ -10,9 +10,11 @@ import functools
 import logging
 import types
 import typing
+from typing import Iterator
+
+import ubii.proto
 
 import codestare.async_utils
-import ubii.proto
 from . import (
     protocol,
     util,
@@ -114,6 +116,11 @@ class Scheduler(util.CoroutineWrapper):
     any or all of its inputs are available and then schedules its callback.
     """
 
+    DELTA_TIME_CACHE_SIZE = 30
+    """
+    number of cached delta times
+    """
+
     class LoopTime:
         """
         Utility class to calculate execution times
@@ -165,7 +172,7 @@ class Scheduler(util.CoroutineWrapper):
         """
         callables to create awaitables for possibly needed inputs
         """
-        self.delta_times: typing.Deque = collections.deque(maxlen=30)
+        self.delta_times: typing.Deque = collections.deque(maxlen=self.DELTA_TIME_CACHE_SIZE)
         """
         keep track of times between callback schedules for performance evaluation
         """
@@ -311,6 +318,9 @@ class Scheduler(util.CoroutineWrapper):
                 await awaitable
 
 
+T = typing.TypeVar('T')
+
+
 @util.dunder.repr('id', 'name', 'status')
 class ProcessingRoutine(ubii.proto.ProcessingModule, metaclass=util.ProtoRegistry):
     """
@@ -324,7 +334,6 @@ class ProcessingRoutine(ubii.proto.ProcessingModule, metaclass=util.ProtoRegistr
     """
     See documentation of :class:`ubii.framework.util.ProtoRegistry` for more information
     """
-
     class rules:
         """
         Rules to validate the protobuf message
@@ -693,8 +702,13 @@ class ProcessingRoutine(ubii.proto.ProcessingModule, metaclass=util.ProtoRegistr
         Returns:
             routine passed as argument
         """
-        assert cls.registry.pop(pm.name) == pm
+        assert cls.registry.get(pm.name) == pm
         await pm._protocol.stop()
+        async with pm.change_specs:
+            await pm.change_specs.wait_for(
+                lambda: pm.status == ubii.proto.ProcessingModule.Status.DESTROYED
+            )
+        assert pm._protocol.finished
         return pm
 
     @classmethod
@@ -712,6 +726,10 @@ class ProcessingRoutine(ubii.proto.ProcessingModule, metaclass=util.ProtoRegistr
         """
         assert pm.name in cls.registry
         await pm._protocol.state.set(PM_STAT.HALTED)
+
+        async with pm.change_specs:
+            await pm.change_specs.wait_for(
+                lambda: pm.status == ubii.proto.ProcessingModule.Status.HALTED)
         return pm
 
     def __str__(self):

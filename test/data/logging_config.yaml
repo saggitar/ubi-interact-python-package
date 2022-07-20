@@ -10,30 +10,30 @@ formatters:
     datefmt: '%Y-%m-%d %H:%M:%S'
 handlers:
   console:
-    class: logging.StreamHandler
+    class : logging.StreamHandler
     formatter: brief
-    level: DEBUG
-    stream: ext://sys.stdout
+    level   : DEBUG
+    stream  : ext://sys.stdout
   log:
-    class: logging.FileHandler
+    class : logging.FileHandler
     formatter: precise
     level: DEBUG
     filename: ubii.log
     mode: w
   websocket-in:
-    class: logging.FileHandler
+    class : logging.FileHandler
     formatter: http
     level: DEBUG
     filename: websocket.in.log
     mode: w
   websocket-out:
-    class: logging.FileHandler
+    class : logging.FileHandler
     formatter: http
     level: DEBUG
     filename: websocket.out.log
     mode: w
   services:
-    class: logging.FileHandler
+    class : logging.FileHandler
     formatter: http
     level: DEBUG
     filename: services.log
@@ -42,20 +42,22 @@ loggers:
   ubii.framework:
     propagate: yes
   ubii.framework.topics:
-    propagate: no
+    propagate: yes
   aiohttp.client:
     propagate: no
-    handlers: [ services ]
+    handlers: [services]
   ubii.framework.services:
     propagate: no
-    handlers: [ services ]
+    handlers: [services]
+  ubii.node:
+    propagate: yes
   ubii.node.connections.in.socket:
     propagate: no
-    handlers: [ websocket-in ]
+    handlers: [websocket-in]
   ubii.node.connections.out.socket:
     propagate: no
-    handlers: [ websocket-out ]
+    handlers: [websocket-out]
   codestare:
     propagate: yes
 root:
-  handlers: [ console, log ]
+  handlers: [console, log]

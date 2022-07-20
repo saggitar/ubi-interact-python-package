@@ -11,8 +11,8 @@ import warnings
 import weakref
 
 import aiohttp
-
 import ubii.proto
+
 from ubii.framework import (
     topics,
     services,
@@ -343,6 +343,15 @@ class LegacyProtocol(client.AbstractClientProtocol[States]):
         self.implement_subscriptions(context)
         self.implement_publish(context)
         self.implement_register(context)
+        await self.implement_sessions(context)
+
+    async def implement_sessions(self, context: LegacyProtocol.Context):
+        session_behaviour = await self.task_nursery.enter_async_context(
+            SessionBehaviour(context.client)
+        )
+        self.client[client.Sessions].start_session = session_behaviour.start_session
+        self.client[client.Sessions].stop_session = session_behaviour.stop_session
+        self.client[client.Sessions].sessions = session_behaviour.sessions
 
     def implement_subscriptions(self, context: LegacyProtocol.Context):
         """
@@ -629,14 +638,40 @@ class LegacyProtocol(client.AbstractClientProtocol[States]):
         Implement :class:`ubii.node.RunProcessingModules` behaviour of :attr:`context.client <.Context.client>`
         """
         pm_subscriptions: weakref.WeakValueDictionary[int, topics.Topic] = weakref.WeakValueDictionary()
-        running_pms: typing.List[processing.ProcessingRoutine] = []
+        started_by_session = []
 
-        async def on_start_session(record):
+        async def mutate_pm(module: processing.ProcessingRoutine, specs: ubii.proto.ProcessingModule):
+            async with module.change_specs:
+                # MergeFrom appends outputs and inputs, CopyFrom overwrites stuff, so we first need to "merge"
+                # with custom logic (overwriting all non-falsy values)
+                changes = {
+                    attr: value for attr, value in ubii.proto.ProcessingModule.to_dict(specs).items() if
+                    attr in specs
+                }
+
+                # then overwrite specs
+                ubii.proto.ProcessingModule.copy_from(module, changes)
+                module.change_specs.notify_all()
+
+        async def halt(module: processing.ProcessingRoutine):
+            if module.status not in [
+                ubii.proto.ProcessingModule.Status.HALTED,
+                ubii.proto.ProcessingModule.Status.DESTROYED
+            ]:
+                return await processing.ProcessingRoutine.halt(module)
+
+        @contextlib.asynccontextmanager
+        async def start(module: processing.ProcessingRoutine):
+            started: processing.ProcessingRoutine = await processing.ProcessingRoutine.start(module)
+            started_by_session.append(started)
+            yield started
+            await halt(module)
+
+        async def on_start_session(record: ubii.proto.TopicDataRecord):
             """
             When session is started, handle contained processing modules
             """
-            session: ubii.proto.Session = record.session
-            specs: ubii.proto.ProcessingModule
+            session = record.session
             for specs in session.processing_modules:
                 if specs.node_id != context.client.id:
                     continue
@@ -644,25 +679,16 @@ class LegacyProtocol(client.AbstractClientProtocol[States]):
                 if specs.name not in {pm.name for pm in context.client.processing_modules}:
                     continue
 
-                module = processing.ProcessingRoutine.registry.get(specs.name, None)
+                module: processing.ProcessingRoutine | None = processing.ProcessingRoutine.registry.get(specs.name)
                 if module is None:
                     raise ValueError(f"No processing module routine with name {specs.name} found")
 
-                # start processing
-                running_pms.append(await processing.ProcessingRoutine.start(module))
+                if module.id:
+                    log.debug(f"Not reusing module {module} with name {specs.name}")
+                    module = type(module)(**type(specs).to_dict(specs))
 
-                async with module.change_specs:
-                    # MergeFrom appends outputs and inputs, CopyFrom overwrites stuff, so we first need to "merge"
-                    # with custom logic (overwriting all non-falsy values)
-                    changes = {
-                        attr: value for attr, value in ubii.proto.ProcessingModule.to_dict(specs).items() if
-                        attr in specs
-                    }
-
-                    # then overwrite specs
-                    ubii.proto.ProcessingModule.copy_from(module, changes)
-                    module.change_specs.notify_all()
-
+                await mutate_pm(module, specs)
+                await self.task_nursery.enter_async_context(start(module))
                 assert specs.name in processing.ProcessingRoutine.registry
 
             # apply io mappings
@@ -696,7 +722,6 @@ class LegacyProtocol(client.AbstractClientProtocol[States]):
                         )
 
                 # subscribe
-                mapping: ubii.proto.TopicInputMapping
                 for mapping in io_mapping.input_mappings or ():
                     if mapping.topic_mux:
                         subscribe = context.client[client.Subscriptions].subscribe_regex(
@@ -718,12 +743,12 @@ class LegacyProtocol(client.AbstractClientProtocol[States]):
                 async with instance.change_specs:
                     instance.change_specs.notify_all()
 
-            if running_pms:
+            if started_by_session:
                 await context.client.implements(client.Services)
                 pm_runtime_add = context.client[client.Services].service_map.pm_runtime_add
                 await pm_runtime_add(
                     processing_module_list={
-                        'elements': [module for module in running_pms if module.session_id == session.id]
+                        'elements': [module for module in started_by_session if module.session_id == session.id]
                     }
                 )
 
@@ -738,30 +763,26 @@ class LegacyProtocol(client.AbstractClientProtocol[States]):
 
             """
             session: ubii.proto.Session = record.session
-            halted = []
+            to_stop = []
 
-            for module in running_pms:
+            for module in started_by_session:
                 if module.session_id != session.id:
                     continue
-                halted += [await processing.ProcessingRoutine.halt(module)]
-                log.debug(f"Stopping processing module {module.name}")
 
-                async with module.change_specs:
-                    await module.change_specs.wait_for(
-                        lambda: module.status == ubii.proto.ProcessingModule.Status.HALTED)
+                to_stop.append(await halt(module))
+                log.debug(f"Stopping processing module {module.name}")
 
                 input_topic_source = pm_subscriptions.get(id(module), None)
                 if input_topic_source:
                     await input_topic_source.remove_subscriber()
 
-            for module in halted:
-                running_pms.remove(module)
-
-            if halted:
-                stopped = await asyncio.gather(*map(processing.ProcessingRoutine.stop, halted))
+            if to_stop:
+                stopped = await asyncio.gather(*map(processing.ProcessingRoutine.stop, to_stop))
                 await context.client.implements(client.Services)
                 remove_service = context.client[client.Services].service_map.pm_runtime_remove
                 await remove_service(processing_module_list={'elements': stopped})
+                for module in to_stop:
+                    started_by_session.remove(module)
 
         assert context.client is not None
         assert context.constants is not None
@@ -779,7 +800,7 @@ class LegacyProtocol(client.AbstractClientProtocol[States]):
         default_topics = context.constants.DEFAULT_TOPICS
         await subscribe_topic(default_topics.INFO_TOPICS.START_SESSION).with_callback(on_start_session)
         await subscribe_topic(default_topics.INFO_TOPICS.STOP_SESSION).with_callback(on_stop_session)
-        context.client[client.RunProcessingModules].running_pms = running_pms
+        context.client[client.RunProcessingModules].running_pms = started_by_session
 
     async def on_halted(self, context: LegacyProtocol.Context):
         """
@@ -898,6 +919,98 @@ def __getattr__(name):
 
     else:
         raise AttributeError(f"{__name__} has no attribute {name}")
+
+
+class SessionBehaviour:
+    """
+    This implements the Session behaviour using a context manager, so that topic
+    subscriptions are removed when the client stops. Also when the context exit is caused
+    by an exception, started sessions are stopped.
+    """
+
+    def __init__(self, client: client.UbiiClient, timeout=3):
+        self._client = client
+        self.sessions: typing.Dict[str, ubii.proto.Session] = {}
+        """
+        The started sessions
+        """
+        self._start_info: topics.Topic | None = None
+        self._stop_info: topics.Topic | None = None
+        self._timeout = timeout
+
+    async def __aenter__(self):
+        if self._start_info and self._stop_info:
+            return self
+
+        consts: ubii.proto.Constants | None = getattr(self._client.protocol.context, 'constants')
+        if not consts:
+            raise ValueError(f"No broker constants in client context")
+
+        self._start_info, = await self._client[client.Subscriptions].subscribe_topic(
+            consts.DEFAULT_TOPICS.INFO_TOPICS.START_SESSION
+        )
+        self._stop_info, = await self._client[client.Subscriptions].subscribe_topic(
+            consts.DEFAULT_TOPICS.INFO_TOPICS.STOP_SESSION
+        )
+
+        return self
+
+    async def __aexit__(self, *exc_info):
+        if not any(exc_info):
+            return
+
+        removed = await asyncio.gather(*map(self.stop_session, self.sessions.values()))
+        if not all(removed) and not self.sessions:
+            raise ValueError(f"Failed to stop sessions with id[s] {set(self.sessions).difference(set(removed))}")
+
+        assert not self.sessions
+
+    async def start_session(self, session: ubii.proto.Session) -> ubii.proto.Session:
+        """
+        Start session and add to session that will be stopped on exit
+        Args:
+            session: Session specification
+
+        Returns:
+            the started Session
+        """
+        if self._start_info is None:
+            raise ValueError(f"Context manager not entered!")
+
+        if session.id:
+            raise ValueError(f"Session {session} already started.")
+
+        assert self._client.implements(client.Services)
+
+        info = self._client.task_nursery.create_task(self._start_info.buffer.get())
+        response = await self._client[client.Services].service_map.session_runtime_start(session=session)
+        informed: ubii.proto.TopicDataRecord = await asyncio.wait_for(info, timeout=self._timeout)
+        if informed.session.id != response.session.id:
+            raise ValueError(f"Session from info topic not requested session")
+
+        assert response.session.id not in self.sessions
+        self.sessions[response.session.id] = response.session
+
+        return response.session
+
+    async def stop_session(self, session: ubii.proto.Session) -> str:
+        if not session.id:
+            raise ValueError(f"Session {session} has no id")
+
+        if session.id not in self.sessions:
+            warnings.warn(f"stopping session {session.id} which is not managed")
+
+        assert self._client.implements(client.Services)
+        info = self._client.task_nursery.create_task(self._stop_info.buffer.get())
+        request_id = session.id
+        await self._client[client.Services].service_map.session_runtime_stop(session=session)
+        informed: ubii.proto.TopicDataRecord = await asyncio.wait_for(info, timeout=self._timeout)
+        if informed.session.id != request_id:
+            raise ValueError(f"Session from info topic not requested session")
+
+        removed = self.sessions.pop(request_id)
+        log.debug(f"Stopped session {removed}")
+        return request_id
 
 
 if typing.TYPE_CHECKING:
