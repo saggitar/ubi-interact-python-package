@@ -848,6 +848,9 @@ class ProcessingModuleManager(util.DefaultHookMap[str, processing.ProcessingRout
     async def notify_broker(self,
                             modules: typing.Iterable[ubii.proto.ProcessingModule],
                             remove=False):
+        if not modules:
+            return
+
         await self._context.client.implements(client.Services)
         if not remove:
             change_pm_runtime = self._context.client[client.Services].service_map.pm_runtime_add

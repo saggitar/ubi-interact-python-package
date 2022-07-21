@@ -8,10 +8,7 @@ import ubii.proto as ub
 import ubii.framework.client
 from test.test_processing import TestPy as _TestPy
 from ubii.framework.client import RunProcessingModules, Publish, Subscriptions
-
 from ubii.node.pytest import make_fixture
-
-client = make_fixture('client', scope='function')
 
 WRITE_PERFORMANCE_DATA = True
 
@@ -47,7 +44,7 @@ class TestPerformance(_TestPy):
     module_spec = [module(h) for h in [10, 60, 120]]
 
     @pytest.fixture
-    def running_pm(self, client: ubii.framework.client.UbiiClient, base_module, data_dir, request):
+    async def running_pm(self, client: ubii.framework.client.UbiiClient, base_module, data_dir, request):
         assert client.implements(RunProcessingModules)
         pm = {mod.name: mod for mod in client[RunProcessingModules].get_modules()}.get(base_module.name)
         pm._protocol.context.delta_times = []
