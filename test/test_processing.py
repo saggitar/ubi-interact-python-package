@@ -1,12 +1,13 @@
 import asyncio
 import logging
 import types
+import uuid
 
 import pytest
 import ubii.proto as ub
 
 from ubii.framework import processing
-from ubii.framework.client import RunProcessingModules, InitProcessingModules, Subscriptions, Publish
+from ubii.framework.client import RunProcessingModules, Subscriptions, Publish
 
 pytestmark = pytest.mark.asyncio
 
@@ -14,11 +15,14 @@ __protobuf__ = ub.__protobuf__
 
 log = logging.getLogger(__name__)
 
+MODULE_NAME = "example-processing-module"
+PARAM_NAME = 'test'
+
 js_on_processing_stringified = ub.ProcessingModule(
     on_processing_stringified='\n'.join((
         "function processingCallback(deltaTime, inputs) {",
         "  let outputs = {};",
-        "  outputs.outputBool = !inputs.inputBool;",
+        f"  outputs.{PARAM_NAME} = !inputs.{PARAM_NAME};",
         "  return {outputs};",
         "}",
     )),
@@ -32,8 +36,8 @@ py_on_processing_stringified = ub.ProcessingModule(
         '    import ubii.proto',
         '    log = logging.getLogger("ubii.interact.protocol")',
         '    log.info(f"------- delta_time: {context.delta_time} ---------")',
-        '    input_record = context.inputs.inputBool',
-        '    context.outputs.outputBool = ubii.proto.TopicDataRecord(bool=not input_record.bool)',
+        f'    input_record = context.inputs.{PARAM_NAME}',
+        f'    context.outputs.{PARAM_NAME} = ubii.proto.TopicDataRecord(bool=not input_record.bool)',
     )),
     language=ub.ProcessingModule.Language.PY,
 )
@@ -51,76 +55,76 @@ py_on_created_stringified = ub.ProcessingModule(
 
 
 class Processing:
-    @pytest.fixture(scope='class')
-    def base_module(self):
+    def make_module(self):
         processing_module = ub.ProcessingModule(
-            name="example-processing-module",
+            name=MODULE_NAME,
             processing_mode={'trigger_on_input': {'min_delay_ms': 0,
                                                   'all_inputs_need_update': True}},
 
             on_processing_stringified="",
             inputs=[
                 {
-                    'internal_name': 'inputBool',
+                    'internal_name': PARAM_NAME,
                     'message_format': 'bool'
                 },
             ],
             outputs=[
                 {
-                    'internal_name': 'outputBool',
+                    'internal_name': PARAM_NAME,
                     'message_format': 'bool'
                 }
             ],
         )
         return processing_module
 
-    @pytest.fixture(scope='class')
-    async def base_session(self, client, base_module, start_client):
-        await start_client(client)
-        client_bool_topic = f"{client.id}/input_bool"
-        server_bool_topic = f"{client.id}/output_bool"
+    async def make_session(self, client, start_session) -> ub.Session:
+        await client
+        module = client.processing_modules[0]
+        input_topic = f"{client.id}/test_input"
+        output_topic = f"{client.id}/test_output"
         io_mappings = [
             {
-                'processing_module_name': base_module.name,
+                'processing_module_name': module.name,
                 'input_mappings': [
                     {
-                        'input_name': base_module.inputs[0].internal_name,
-                        'topic': client_bool_topic
+                        'input_name': module.inputs[0].internal_name,
+                        'topic': input_topic
                     },
                 ],
                 'output_mappings': [
                     {
-                        'output_name': base_module.outputs[0].internal_name,
-                        'topic': server_bool_topic
+                        'output_name': module.outputs[0].internal_name,
+                        'topic': output_topic
                     }
                 ]
             },
         ]
 
-        session = ub.Session(name="Example Session",
-                             processing_modules=[base_module],
+        session = ub.Session(name=str(uuid.uuid4()),
+                             processing_modules=[module],
                              io_mappings=io_mappings)
 
-        type(session).server_bool = property(lambda _: server_bool_topic)
-        type(session).client_bool = property(lambda _: client_bool_topic)
-
+        await start_session(session)
         return session
+
+    base_session = pytest.fixture(scope='class')(make_session)
+    base_module = pytest.fixture(scope='class')(make_module)
 
     @pytest.fixture(scope='class')
     def startup(self):
         pass
 
     @pytest.fixture(scope='class')
-    async def test_value(self, startup, client, base_session):
-        topic, = await client[Subscriptions].subscribe_topic(base_session.server_bool)
+    async def test_value(self, startup, client, base_session: ub.Session):
+        topic, = await client[Subscriptions].subscribe_topic(base_session.io_mappings[0].output_mappings[0].topic)
         yield topic.buffer
 
     @pytest.mark.parametrize('data', [False, True])
-    @pytest.mark.parametrize('delay', [1, 0.1, 0.001])
+    @pytest.mark.parametrize('delay', [1, 0.5, 0.2, 0.1])
     @pytest.mark.parametrize('timeout', [0.4])
-    async def test_processing_module(self, client, test_value, base_session, delay, timeout, data):
+    async def test_processing_module(self, client, test_value, base_session: ub.Session, delay, timeout, data):
         await asyncio.sleep(delay)
-        await client[Publish].publish({'topic': base_session.client_bool, 'bool': data})
+        await client[Publish].publish({'topic': base_session.io_mappings[0].input_mappings[0].topic, 'bool': data})
         record = await asyncio.wait_for(test_value.get(), timeout=timeout)
 
         assert isinstance(record.bool, bool)
@@ -135,21 +139,21 @@ class TestPy(Processing):
     client_spec = [
         pytest.param((ub.Client(
             is_dedicated_processing_node=True,
-            processing_modules=[ub.ProcessingModule(name='example-processing-module')]
+            processing_modules=[ub.ProcessingModule(name=MODULE_NAME)]
         ),), id='processing_node')
     ]
 
     @pytest.fixture(scope='class', autouse=True)
     async def startup(self, client, session_spec, module_spec, start_session):
-        await client.implements(InitProcessingModules, RunProcessingModules)
-        await start_session(session_spec)
-        pm: processing.ProcessingRoutine = processing.ProcessingRoutine.registry[module_spec.name]
+        await client.implements(RunProcessingModules)
+        pm = {module.name: module for module in client[RunProcessingModules].get_modules()}.get(module_spec.name)
         async with pm.change_specs:
             await pm.change_specs.wait_for(
                 lambda: pm.status == pm.Status.CREATED or pm.status == pm.Status.PROCESSING
             )
 
 
+@pytest.mark.xfail(reason="Broker bug")
 class TestJS(Processing):
     module_spec = [
         pytest.param((js_on_processing_stringified,), id='js')
@@ -159,23 +163,16 @@ class TestJS(Processing):
         pytest.param((ub.Client(is_dedicated_processing_node=False, processing_modules=None),), id='server_processing')
     ]
 
-    @pytest.fixture(scope='class', autouse=True)
-    async def startup(self, client, session_spec, module_spec, start_session):
-        assert not client.processing_modules
-        await client
-        await start_session(session_spec)
-        yield True
 
-
-class TestLateInitModules:
-    class TestModule(processing.ProcessingRoutine):
+class TestLateInitModules(TestPy):
+    class FakeModule(processing.ProcessingRoutine):
         """
         Test Module
         """
 
         def __init__(self, context, **kwargs):
             super().__init__(**kwargs)
-            self.name = f'Test Module for {context.client.name}'
+            self.name = MODULE_NAME
             constants: ub.Constants = context.constants
             self.tags = ['pytest']
             self.description = 'Test Module'
@@ -202,81 +199,41 @@ class TestLateInitModules:
             self._context = context
 
         def on_processing(self, context: types.SimpleNamespace) -> None:
-            input_value: ub.TopicDataRecord = context.inputs.test
+            input_value: ub.TopicDataRecord = getattr(context.inputs, PARAM_NAME)
             if input_value:
-                context.outputs.test = ub.TopicDataRecord(bool=not input_value.bool)
-
-    client_spec = [
-        pytest.param((ub.Client(
-            is_dedicated_processing_node=True,
-        ),), id='processing_node')
-    ]
+                setattr(context.outputs, PARAM_NAME, ub.TopicDataRecord(bool=not input_value.bool))
 
     late_init_module_spec = [
-        pytest.param((TestModule,), id='test module')
+        pytest.param(FakeModule, id=MODULE_NAME)
     ]
 
-    @pytest.fixture(scope='class')
-    async def base_session(self, client) -> ub.Session:
-        await client
-        module = client.processing_modules[0]
-        input_topic = f"{client.id}/test_input"
-        output_topic = f"{client.id}/test_output"
-        io_mappings = [
-            {
-                'processing_module_name': module.name,
-                'input_mappings': [
-                    {
-                        'input_name': module.inputs[0].internal_name,
-                        'topic': input_topic
-                    },
-                ],
-                'output_mappings': [
-                    {
-                        'output_name': module.outputs[0].internal_name,
-                        'topic': output_topic
-                    }
-                ]
-            },
-        ]
-
-        session = ub.Session(name="Example Session",
-                             processing_modules=[module],
-                             io_mappings=io_mappings)
-
-        type(session).output = property(lambda _: output_topic)
-        type(session).input = property(lambda _: input_topic)
-
-        return session
-
-    @pytest.fixture(scope='class', autouse=True)
-    async def startup(self, client, session_spec, start_session):
-        await client.implements(InitProcessingModules, RunProcessingModules)
-        await start_session(session_spec)
-
-        pm: processing.ProcessingRoutine = processing.ProcessingRoutine.registry[
-            session_spec.processing_modules[0].name]
-        async with pm.change_specs:
-            await pm.change_specs.wait_for(
-                lambda: pm.status == pm.Status.CREATED or pm.status == pm.Status.PROCESSING
-            )
+    module_spec = [
+    ]
 
     @pytest.mark.parametrize('data', [False, True])
     @pytest.mark.parametrize('timeout', [0.4])
     @pytest.mark.parametrize('run_time', [4])
     @pytest.mark.parametrize('allowed_relative_error', [0.9])
-    async def test_processing_module(self, client, data, base_session, timeout, run_time, allowed_relative_error):
+    async def test_processing_module(self,
+                                     client,
+                                     data,
+                                     base_session: ub.Session,
+                                     timeout,
+                                     run_time,
+                                     allowed_relative_error):
         received = []
+        input_topic = base_session.io_mappings[0].input_mappings[0].topic
+        output_topic = base_session.io_mappings[0].output_mappings[0].topic
 
-        await client[Publish].publish({'topic': base_session.input, 'bool': data})
+        await client[Publish].publish({'topic': input_topic, 'bool': data})
         await asyncio.sleep(0.2)  # we wait until the broker processed the publishing
-        topics, tokens = await client[Subscriptions].subscribe_topic(base_session.output).with_callback(received.append)
+        topics, tokens = await client[Subscriptions].subscribe_topic(output_topic).with_callback(received.append)
         # if you subscribe to the same topic as before, you will immediately get the last value, therefore
         # we publish before we subscribe!
 
         await asyncio.sleep(run_time)
         await topics[0].unregister_callback(tokens[0], timeout=timeout)
-        await client[Subscriptions].unsubscribe_topic(base_session.output)
+        await client[Subscriptions].unsubscribe_topic(output_topic)
 
         assert all('bool' in r and r.bool != data for r in received), received
         tested_module: ub.ProcessingModule = base_session.processing_modules[0]

@@ -96,11 +96,11 @@ from .connect import (
 )
 
 from .protocol import (
-    DefaultProtocol
+    LegacyProtocol
 )
 
 __all__ = (
-    'DefaultProtocol',  # noqa
+    'LegacyProtocol',  # noqa
     'connect_client',
     'UbiiClient',
     'Services',

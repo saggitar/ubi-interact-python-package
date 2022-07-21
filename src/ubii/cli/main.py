@@ -7,8 +7,6 @@ import typing
 import warnings
 from pathlib import Path
 
-import itertools
-
 from ubii.framework.client import UbiiClient
 
 try:
@@ -71,7 +69,7 @@ def log_to_folder(log_config, folder='logs/'):
     return log_config
 
 
-def load_pm_entry_points() -> typing.List[typing.Any]:
+def load_pm_entry_points() -> typing.Dict[str, typing.Any]:
     """
     Loads setuptools entrypoints for key :attr:`SETUPTOOLS_PM_ENTRYPOINT_KEY`
 
@@ -81,7 +79,8 @@ def load_pm_entry_points() -> typing.List[typing.Any]:
     with warnings.catch_warnings():
         # this deprecation is discussed a lot
         warnings.simplefilter("ignore")
-        return [entry.load() for entry in metadata.entry_points().get(SETUPTOOLS_PM_ENTRYPOINT_KEY, ())]
+        entries = [entry for entry in metadata.entry_points().get(SETUPTOOLS_PM_ENTRYPOINT_KEY, ())]
+        return {entry.name: entry.load() for entry in entries}
 
 
 def parse_args():
@@ -135,13 +134,13 @@ def parse_args():
     return parse_args(parser=parser)
 
 
-def create_pm_factories(args: argparse.Namespace):
+def create_pm_factories(args: argparse.Namespace) -> typing.Dict[str, typing.Any]:
     pms = {}
     if not args.no_discover:
-        pms.update({None: load_pm_entry_points()})
+        pms.update(**load_pm_entry_points())
     if args.processing_modules:
         for name, value in args.processing_modules:
-            pms.setdefault(name, []).append(import_name(value))
+            pms[name] = import_name(value)
 
     for name, argdict in args.module_args:
         if name not in pms:
@@ -149,13 +148,12 @@ def create_pm_factories(args: argparse.Namespace):
             continue
 
         # update arguments
-        pms[name] = [functools.partial(pm, **argdict) for pm in pms[name]]
+        pms[name] = functools.partial(pms[name], **argdict)
 
-    if pms:
-        pms = list(itertools.chain.from_iterable(pms.values()))
-        print(f"Using module factories {', '.join(map(repr, pms))}")
-    else:
+    if not pms:
         warnings.warn(f"No processing modules imported")
+    else:
+        print(f"Loaded processing module factories {', '.join(map(repr, pms.values()))}")
 
     return pms
 
@@ -179,9 +177,7 @@ def main():
         with connect_client() as client:
             try:
                 client.is_dedicated_processing_node = True
-                client[InitProcessingModules] = InitProcessingModules(
-                    module_types=pms, initialized=[]
-                )
+                client[InitProcessingModules] = InitProcessingModules(module_factories=pms)
                 assert client.implements(InitProcessingModules)
                 await client
                 while client.state != client.State.UNAVAILABLE:
@@ -189,6 +185,7 @@ def main():
             except asyncio.CancelledError:
                 pass
 
+        await asyncio.sleep(1)
         loop.stop()
 
     loop = asyncio.get_event_loop_policy().get_event_loop()
@@ -214,12 +211,12 @@ def info_log_client():
     parser.add_argument('--url', type=str, action='store', default=None, help='URL of master node service endpoint')
     args = parse_args(parser=parser)
 
-    from ubii.node import connect_client, Subscriptions, Publish, DefaultProtocol
+    from ubii.node import connect_client, Subscriptions, Publish, LegacyProtocol
 
     loop = asyncio.get_event_loop_policy().get_event_loop()
 
     async def run():
-        client: UbiiClient[DefaultProtocol]
+        client: UbiiClient[LegacyProtocol]
         async with connect_client(url=args.url) as client:
             # we don't hard code the topic, we use the DEFAULT TOPIC from the master node
             constants = client.protocol.context.constants

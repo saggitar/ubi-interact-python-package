@@ -5,8 +5,13 @@ import uuid
 import pytest
 import ubii.proto as ub
 
+import ubii.framework.client
 from test.test_processing import TestPy as _TestPy
 from ubii.framework.client import RunProcessingModules, Publish, Subscriptions
+
+from ubii.node.pytest import make_fixture
+
+client = make_fixture('client', scope='function')
 
 WRITE_PERFORMANCE_DATA = True
 
@@ -41,18 +46,10 @@ def module(hertz):
 class TestPerformance(_TestPy):
     module_spec = [module(h) for h in [10, 60, 120]]
 
-    old_session = _TestPy.base_session
-
-    @pytest.fixture(scope='class')
-    async def base_session(self, client, old_session):
-        old_session.name = old_session.name + f"-{client.id}"
-        yield old_session
-
     @pytest.fixture
-    def running_pm(self, client, base_module, data_dir, request):
+    def running_pm(self, client: ubii.framework.client.UbiiClient, base_module, data_dir, request):
         assert client.implements(RunProcessingModules)
-        pm: ub.ProcessingModule = {pm.name: pm for pm in client[RunProcessingModules].running_pms}.get(
-            base_module.name)
+        pm = {mod.name: mod for mod in client[RunProcessingModules].get_modules()}.get(base_module.name)
         pm._protocol.context.delta_times = []
         yield pm
 
@@ -81,9 +78,9 @@ class TestPerformance(_TestPy):
               f"for target delay of {1. / pm.processing_mode.frequency.hertz}s (max error: {max_error})")
 
     @pytest.mark.parametrize('duration', [10])
-    async def test_processing_module(self, client, base_session, running_pm, duration):
+    async def test_processing_module(self, client, base_session: ub.Session, running_pm, duration):
         await asyncio.sleep(0.5)
-        await client[Publish].publish({'topic': base_session.client_bool, 'bool': True})
+        await client[Publish].publish({'topic': base_session.io_mappings[0].input_mappings[0].topic, 'bool': True})
         await asyncio.sleep(duration)
 
 

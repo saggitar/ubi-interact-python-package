@@ -77,7 +77,7 @@ class AIOHttpConnection:
             >>> import asyncio
             >>> async def main():
             ...     async with connect_client() as client:
-            ...             topic_connection = client.protocol.context.topic_connection
+            ...             topic_connection = client.protocol._context.topic_connection
             ...             assert topic_connection is not None
             ...             print(topic_connection.host_ip)
             ...             print(topic_connection.headers)
@@ -200,7 +200,7 @@ class AIOHttpWebsocketConnection(AIOHttpConnection, topics.DataConnection):
             >>> import asyncio
             >>> async def main():
             ...     async with connect_client() as client:
-            ...         topic_connection = client.protocol.context.topic_connection
+            ...         topic_connection = client.protocol._context.topic_connection
             ...         assert topic_connection is not None
             ...         async with topic_connection.connect(client.id) as connected:
             ...             print(connected.url)
@@ -380,6 +380,7 @@ class AIOHttpRestConnection(AIOHttpConnection, services.ServiceConnection):
             json = await asyncio.wait_for(resp.text(), timeout=timeout)
             return ubii.proto.ServiceReply.from_json(json,
                                                      ignore_unknown_fields=True)  # master node bug requires ignore
+
 
 
 def aiohttp_session():

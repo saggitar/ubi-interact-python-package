@@ -36,7 +36,6 @@ from __future__ import annotations
 import abc
 import asyncio
 import contextlib
-import fnmatch
 import functools
 import logging
 import re
@@ -45,12 +44,10 @@ import warnings
 import weakref
 
 import proto
-
 import ubii.proto
+
 from . import util
-from .util import dunder
 from .util.typing import (
-    T_co,
     T_contra,
     Protocol,
 )
@@ -86,7 +83,7 @@ class DataConnection(typing.AsyncIterator[ubii.proto.TopicData]):
     async def send(self, data: ubii.proto.TopicData): ...
 
 
-@dunder.repr('topic', 'callback')
+@util.dunder.repr('topic', 'callback')
 class TopicCoroutine(util.CoroutineWrapper[typing.Any, typing.Any, None], typing.Generic[T_Buffer]):
     """
     A topic coroutine waits until a value is written to the topic and then runs its callback.
@@ -107,7 +104,7 @@ class TopicCoroutine(util.CoroutineWrapper[typing.Any, typing.Any, None], typing
 
     async def _run(self):
         async for value in self.topic:
-            log.debug(f"Running {self.callback} on {value}")
+            log.log(level=5, msg=f"Running {self.callback} on {value}")
             await self.callback(value)
 
 
@@ -405,50 +402,13 @@ class BasicTopic(Topic[ubii.proto.TopicDataRecord, int]):
         return util.accessor(funcs=(self._get_buffer, self._set_buffer), name='buffer')
 
 
-class MatchMapping(typing.Mapping[str, T_co], abc.ABC):
-
-    def match_name(self, name) -> typing.Tuple[T_co, ...]:
-        """
-        Returns all values where ``name`` matches the keys of contained values interpreted as a glob pattern.
-
-        Example:
-
-            >>> container = MatchContainer({"foo": 1, "foo*": 2, "bar": 3})
-            >>> val = container.match_name('foo')
-            >>> print(val)
-            (1, 2)
-
-        See Also:
-            :mod:`fnmatch` -- details about glob patterns
-
-        """
-        return tuple(val for pattern, val in self.items() if fnmatch.fnmatch(name=name, pat=pattern))
-
-    def match_pattern(self, pattern) -> typing.Tuple[T_co, ...]:
-        """
-        Returns all values where the keys of contained values match the glob ``pattern``.
-
-        Example:
-
-            >>> container = MatchContainer({"foo": 1, "foo*": 2, "bar": 3})
-            >>> val = container.match_pattern('foo')
-            >>> print(val)
-            (1)
-
-        See Also:
-            :mod:`fnmatch` -- details about glob patterns
-
-        """
-        return tuple(top for topic_pattern, top in self.items() if fnmatch.fnmatch(name=topic_pattern, pat=pattern))
-
-
 Topic_co = typing.TypeVar('Topic_co', bound=Topic, covariant=True)
 
 
-class TopicStore(MatchMapping[Topic_co], typing.Mapping[str, Topic_co]):
+class TopicStore(util.MatchMappingMixin, util.DefaultHookMap[str, Topic_co], typing.Generic[Topic_co]):
     """
-    A TopicStore acts like a :class:`~collections.defaultdict` mapping of :math:`pattern \\rightarrow Topic`, but allows for
-    complex matching of keys using :meth:`.match_pattern` and :meth:`.match_name`
+    A TopicStore acts like a :class:`~collections.defaultdict` mapping of :math:`pattern \\rightarrow Topic`,
+    but allows for complex matching of keys using :meth:`.match_pattern` and :meth:`.match_name`
 
     Example:
 
@@ -458,84 +418,29 @@ class TopicStore(MatchMapping[Topic_co], typing.Mapping[str, Topic_co]):
         ...             self.pattern = pattern
         ...
         >>> store = TopicStore(default_factory=Topic)
-        >>> store.create_topic('topic/glob/pattern_one')
-        >>> store.create_topic('topic/glob/pattern_two')
+        >>> store.default_factory('topic/glob/pattern_one')
+        >>> store.default_factory('topic/glob/pattern_two')
         >>> [topic.pattern for topic in store.match_pattern('topic*')]
         ['topic/glob/pattern_one', 'topic/glob/pattern_two'])
-
     """
 
-    def __init__(self: TopicStore[Topic_co], default_factory: typing.Callable[[str], Topic_co]):
-        self._default_factory = default_factory
-        self.data: typing.Dict[str, Topic_co] = {}
-
-    @util.hook
-    @util.document_decorator(util.hook)
-    def create_topic(self, key: str) -> None:
+    class on_create_register_callback:
         """
-        Called whenever a key is not present in the mapping.
-        Creates new value using the ``default_factory``
-
-        Example:
-
-            >>> from ubii.framework.topics import TopicStore
-            >>> class Topic:
-            ...     def __init__(self, pattern):
-            ...             self.pattern = pattern
-            ...
-            >>> store = TopicStore(default_factory=Topic)
-            >>> topic = store['topic/glob/pattern']
-            >>> assert topic.pattern == 'topic/glob/pattern'
-
-        Args:
-            key: glob pattern
-
-        """
-        self.data[key] = self._default_factory(key)
-
-    def __getitem__(self, key: str) -> Topic_co:
-        if key not in self.data:
-            self.create_topic(key)
-        assert key in self.data
-        return self.data[key]
-
-    def __len__(self) -> int:
-        return len(self.data)
-
-    def __iter__(self) -> typing.Iterator[str]:
-        return iter(self.data)
-
-    def __contains__(self, item):
-        return item in self.data
-
-    def __delitem__(self, key):
-        if key not in self.data:
-            raise KeyError(f"Can't delete item with key {key}")
-
-        del self.data[key]
-
-    class helpers:
-        """
-        Some decorators to decorate the :meth:`~TopicStore.on_create` method that can be useful
+        This decorator can simply be applied once, if you later want to add additional callbacks
+        just add them to the :attr:`.callbacks` of the registered :class:`on_create_register_callback`
         """
 
-        class on_create_register_callback:
-            """
-            This decorator can simply be applied once, if you later want to add additional callbacks
-            just add them to the :attr:`.callbacks` of the registered :class:`on_create_register_callback`
-            """
+        def __init__(self, *callbacks):
+            self.callbacks = callbacks
 
-            def __init__(self, *callbacks):
-                self.callbacks = callbacks
+        def __call__(self, on_create: util.hook):
+            @functools.wraps(on_create)
+            def decorated(store: TopicStore, key: str):
+                on_create(store, key)
+                for cb in self.callbacks:
+                    store[key].register_callback(cb)
 
-            def __call__(self, on_create: util.hook):
-                @functools.wraps(on_create)
-                def decorated(store: TopicStore, key: str):
-                    on_create(store, key)
-                    for cb in self.callbacks:
-                        store[key].register_callback(cb)
-
-                return decorated
+            return decorated
 
 
 class StreamSplitRoutine(util.CoroutineWrapper[typing.Any, typing.Any, None]):
@@ -598,7 +503,7 @@ class StreamSplitRoutine(util.CoroutineWrapper[typing.Any, typing.Any, None]):
         """
         async for record in self.make_record():
             topics = self._container.match_name(record.topic)
-            self._logger.debug(f"Record Topic: {record.topic} -> matching: {','.join(map(str, topics))}")
+            self._logger.log(level=5, msg=f"Record Topic: {record.topic} -> matching: {','.join(map(str, topics))}")
             if not topics:
                 topics = (self._container[record.topic],)
                 log.warning(f"No topics found for record with topic {record.topic}")

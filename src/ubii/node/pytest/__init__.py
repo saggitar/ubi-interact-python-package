@@ -36,7 +36,7 @@ except ImportError:  # for Python<3.8
     import importlib_metadata as metadata
 
 import ubii.proto as ub
-from ubii.framework.client import Devices, UbiiClient, InitProcessingModules, Sessions
+from ubii.framework.client import UbiiClient, InitProcessingModules, Sessions
 from ubii.framework.logging import logging_setup
 from ubii.node.protocol import DefaultProtocol
 
@@ -143,217 +143,6 @@ def debug_settings():
 
 
 @pytest.fixture(scope='session')
-def event_loop(request) -> asyncio.AbstractEventLoop:
-    """
-    We need better control over the asyn processing
-    """
-
-    loop = asyncio.get_event_loop_policy().new_event_loop()
-    asyncio.set_event_loop(loop)
-    yield loop
-
-    tasks = asyncio.all_tasks(loop=loop)
-    if tasks:
-        for nursery in codestare.async_utils.TaskNursery.registry.values():
-            if any(t in nursery.tasks for t in tasks):
-                loop.run_until_complete(nursery.__aexit__(None, None, None))
-
-        tasks = asyncio.all_tasks(loop=loop)
-        for task in tasks:
-            task.cancel()
-            with contextlib.suppress(asyncio.CancelledError):
-                loop.run_until_complete(task)
-
-    loop.close()
-
-
-@pytest.fixture(scope='class')
-async def base_client() -> UbiiClient:
-    """
-    We need more control over the client, so don't use the default client interface.
-    """
-    protocol = DefaultProtocol()
-    client = UbiiClient(protocol=protocol)
-    protocol.client = client
-
-    yield client
-    if not client.protocol.finished:
-        await client
-        await client.protocol.stop()
-
-
-@pytest.fixture(scope='session')
-def base_module():
-    """
-    Returns an empty processing module
-    """
-    yield ub.ProcessingModule()
-
-
-@pytest.fixture(scope='session')
-def base_session():
-    """
-    Returns an empty session
-    """
-    yield ub.Session()
-
-
-@pytest.fixture(scope='class')
-def register_device(client):
-    """
-    Get callable to register devices
-    """
-
-    async def _register(*args, **kwargs):
-        _client = await client
-        await _client.implements(Devices)
-        _client[Devices].register_device(*args, **kwargs)
-
-    yield _register
-
-
-@pytest.fixture(scope='session')
-def start_client(reset_client):
-    async def start(client: UbiiClient):
-        try:
-            return await client
-        except UserWarning as w:
-            log.info(w)
-            await reset_client(client)
-            client.protocol.start()
-
-            with warnings.catch_warnings():
-                warnings.filterwarnings('ignore', category=UserWarning, module='ubii.framework.client')
-                return await client
-
-    return start
-
-
-@pytest.fixture(scope='session')
-def stop_client():
-    async def stop(client: UbiiClient):
-        await client.protocol.stop()
-
-    return stop
-
-
-@pytest.fixture(scope='class')
-async def start_session(client_spec):
-    """
-    Get callable to start a session.
-    Session will be stopped automatically if test suite finishes
-    """
-    await client_spec.implements(Sessions)
-    yield client_spec[Sessions].start_session
-    to_stop = [session for session in client_spec[Sessions].sessions.values()]
-    for session in to_stop:
-        await client_spec[Sessions].stop_session(session)
-
-
-P = t.TypeVar('P', bound=proto.message.Message)
-
-
-def _change_specs(proto: P, *specs: P):
-    base = type(proto).pb(proto)
-    for change in specs:
-        base.MergeFrom(type(change).pb(change))
-
-    type(proto).copy_from(proto, base)
-
-
-_get_param = (lambda request: request.param if hasattr(request, 'param') else ())
-
-
-@pytest.fixture(scope='class')
-def late_init_module_spec(request):
-    """
-    Yield the list of module types specified as the request
-    """
-    module_types = _get_param(request)
-    yield module_types
-
-
-@pytest.fixture(scope='class')
-def module_spec(base_module, request):
-    """
-    Update the base module with all changes from the request
-    """
-    _change_specs(base_module, *_get_param(request))
-    yield base_module
-
-
-@pytest.fixture(scope='session')
-def reset_client():
-    """
-    Reset the client if necessary
-    """
-
-    async def reset(client: UbiiClient):
-        if client.protocol.finished:
-            log.debug(f"{client} needs to be reset")
-            module_types = client[InitProcessingModules].module_types
-            await client.reset()
-            client[InitProcessingModules] = InitProcessingModules(
-                module_types=module_types, initialized=[]
-            )
-        else:
-            log.warning(f"{client} not reset, protocol is not finished")
-
-    yield reset
-
-
-@pytest.fixture(scope='class')
-async def client_spec(
-        base_client,
-        reset_client,
-        stop_client,
-        module_spec,
-        late_init_module_spec,
-        event_loop: asyncio.AbstractEventLoop,
-        request
-):
-    """
-    Update the base client with all changes from the request
-    """
-    _change_specs(base_client, *_get_param(request))
-    base_client.initial_specs.update(type(base_client).to_dict(base_client))
-
-    by_name = {pm.name: pm for pm in base_client.processing_modules}
-    if module_spec.name in by_name:
-        by_name[module_spec.name] = module_spec
-
-    base_client.processing_modules = list(by_name.values())
-    if late_init_module_spec:
-        assert base_client.implements(InitProcessingModules)
-        base_client[InitProcessingModules].module_types = late_init_module_spec
-
-    yield base_client
-    await stop_client(base_client)
-    await reset_client(base_client)
-
-
-@pytest.fixture(scope='class')
-def session_spec(base_session, module_spec, request):
-    """
-    Update the base session with all changes from the request
-    """
-    _change_specs(base_session, *_get_param(request))
-    module_names = [pm.name for pm in base_session.processing_modules]
-
-    if module_spec.name and module_spec.name not in module_names:
-        base_session.processing_modules += [module_spec]
-    yield base_session
-
-
-@pytest.fixture(scope='class')
-def client(client_spec):
-    """
-    Convenience fixture with different name, always starts the client :func:`client_spec` result
-    """
-    yield client_spec
-
-
-@pytest.fixture(scope='session')
 def data_dir(pytestconfig) -> pathlib.Path:
     """
     Configures data directory and returns it so tests can write stuff to it
@@ -385,6 +174,171 @@ def cli_entry_point(pytestconfig) -> typing.Callable:
     yield loaded[0]
 
 
+@pytest.fixture(scope='session')
+def base_module():
+    """
+    Returns an empty processing module
+    """
+    yield ub.ProcessingModule()
+
+
+@pytest.fixture(scope='session')
+def base_session():
+    """
+    Returns an empty session
+    """
+    yield ub.Session()
+
+
+@pytest.fixture(scope='session')
+def base_client():
+    """
+    Returns an empty session
+    """
+    yield ub.Client()
+
+
+P = t.TypeVar('P', bound=proto.message.Message)
+
+
+def _change_specs(proto: P, *specs: P):
+    base = type(proto).pb(proto)
+    for change in specs:
+        base.MergeFrom(type(change).pb(change))
+
+    type(proto).copy_from(proto, base)
+
+
+_get_param = (lambda request: request.param if hasattr(request, 'param') else ())
+
+
+@pytest.fixture(scope='class')
+def late_init_module_spec(request):
+    """
+    Yield the list of module types specified as the request
+    """
+    module_factory = _get_param(request)
+    if module_factory:
+        _, _, name = request.cls.late_init_module_spec[request.param_index]
+        yield {name: module_factory}
+    else:
+        yield
+
+
+@pytest.fixture(scope='class')
+def module_spec(base_module, request):
+    """
+    Update the base module with all changes from the request
+    """
+    _change_specs(base_module, *_get_param(request))
+    yield base_module
+
+
+@pytest.fixture(scope='class')
+def session_spec(base_session, module_spec, request):
+    """
+    Update the base session with all changes from the request
+    """
+    _change_specs(base_session, *_get_param(request))
+    module_names = [pm.name for pm in base_session.processing_modules]
+
+    if module_spec.name and module_spec.name not in module_names:
+        base_session.processing_modules += [module_spec]
+    yield base_session
+
+
+@pytest.fixture(scope='class')
+async def client_spec(
+        base_client,
+        module_spec,
+        late_init_module_spec,
+        request
+):
+    """
+    Update the base client with all changes from the request
+    """
+    _change_specs(base_client, *_get_param(request))
+
+    by_name = {pm.name: pm for pm in base_client.processing_modules}
+    if module_spec.name in by_name:
+        by_name[module_spec.name] = module_spec
+
+    base_client.processing_modules = list(by_name.values())
+    yield base_client
+
+
+async def _make_client(client_spec, late_init_module_spec) -> UbiiClient:
+    """
+    We need more control over the client, so don't use the default client interface.
+    """
+    protocol = DefaultProtocol()
+    client = UbiiClient(**type(client_spec).to_dict(client_spec), protocol=protocol)
+    protocol.client = client
+
+    if late_init_module_spec:
+        client[InitProcessingModules].module_factories = late_init_module_spec
+
+    yield client
+    if not client.protocol.finished:
+        await client.protocol.stop()
+
+
+async def _session(client):
+    """
+    Get callable to start a session.
+    Session will be stopped automatically if test suite finishes
+    """
+
+    async def start(session):
+        await client.implements(Sessions)
+        session_manager = client.protocol.context.session_manager
+        setattr(session_manager, f"_{type(session_manager).__name__}__remove_sessions", True)
+        return await client[Sessions].start_session(session)
+
+    yield start
+
+
+def _event_loop() -> asyncio.AbstractEventLoop:
+    """
+    We need better control over the asyn processing
+    """
+
+    loop = asyncio.get_event_loop_policy().new_event_loop()
+    asyncio.set_event_loop(loop)
+    yield loop
+
+    tasks = asyncio.all_tasks(loop=loop)
+    if tasks:
+        for nursery in codestare.async_utils.TaskNursery.registry.values():
+            if any(t in nursery.tasks for t in tasks):
+                loop.run_until_complete(nursery.__aexit__(None, None, None))
+
+        tasks = asyncio.all_tasks(loop=loop)
+        for task in tasks:
+            task.cancel()
+            with contextlib.suppress(asyncio.CancelledError):
+                loop.run_until_complete(task)
+
+    loop.close()
+
+
+def make_fixture(name, scope):
+    base = {
+        'event_loop': _event_loop,
+        'client': _make_client,
+        'start_session': _session
+    }.get(name)
+    if not base:
+        raise ValueError("Unsupported name")
+
+    return pytest.fixture(scope=scope)(base)
+
+
+client = make_fixture('client', scope='class')
+start_session = make_fixture('start_session', scope='class')
+event_loop = make_fixture('event_loop', scope='session')
+
+
 def pytest_generate_tests(metafunc):
     """
     Automatically parametrizes tests in classes with class attributes `client_spec`, `module_spec` or
@@ -399,4 +353,6 @@ def pytest_generate_tests(metafunc):
 
     for spec in specs:
         if hasattr(metafunc.cls, spec) and spec in metafunc.fixturenames:
-            metafunc.parametrize(spec, getattr(metafunc.cls, spec), indirect=[spec])
+            parametrization = getattr(metafunc.cls, spec)
+            if parametrization:
+                metafunc.parametrize(spec, parametrization, indirect=[spec])

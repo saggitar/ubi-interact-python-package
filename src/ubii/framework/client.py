@@ -87,17 +87,19 @@ from . import (
     topics,
     util,
     constants,
-    protocol
+    protocol, processing
 )
 from .util.functools import document_decorator
 from .util.typing import (
     Protocol,
     T_EnumFlag,
     T,
-    Decorator,
+    Decorator, AsyncGetter
 )
 
 __protobuf__ = ubii.proto.__protobuf__
+
+log = logging.getLogger(__name__)
 
 T_Protocol = typing.TypeVar('T_Protocol', bound='AbstractClientProtocol')
 
@@ -313,26 +315,25 @@ class Sessions:
 @dataclasses.dataclass(**_data_kwargs)
 class RunProcessingModules:
     """
-    Behavior to update and run processing modules
+    Access all running protocol instances
     """
-    running_pms: typing.Iterable[ubii.proto.ProcessingModule] | None = None
+    get_modules: typing.Callable[[], typing.Iterable[processing.ProcessingRoutine]] | None = None
     """
-    List of specs of all running processing modules
+    get all managed processing modules
     """
 
 
 @dataclasses.dataclass(**_data_kwargs)
 class InitProcessingModules:
     """
-    Behavior to initialize ProcessingModules after registration
+    Behavior to initialize ProcessingModules with custom callables
     """
-    module_types: typing.Iterable[typing.Type[ubii.proto.ProcessingModule]] | None = None
+    module_factories: typing.Mapping[str, typing.Callable[..., processing.ProcessingRoutine]] | None = None
     """
-    List of types are subclasses of :class:`ubii.proto.ProcessingModule`.
-    """
-    initialized: typing.Iterable[ubii.proto.ProcessingModule] | None = None
-    """
-    Instances of the :class:`ubii.proto.ProcessingModule` subclasses after initialization
+    Mapping :math:`name \\rightarrow factory` for module names to 
+    callables which return a :class:`processing.ProcessingRoutine` instance. If the client
+    implements it, you can put custom callables inside, so they will get used during module
+    instantiation
     """
 
 
@@ -662,6 +663,7 @@ class UbiiClient(ubii.proto.Client,
             asyncio.run(main())
 
         Args:
+            timeout: if not None, the returned awaitable will raise a :class:`asyncio.TimeoutError` after specified time
             *behaviours: tuple of :obj:`~dataclasses.dataclass` types passed to
                 this :class:`UbiiClient` as `required_behaviours` or `optional_behaviours` during initialization.
 
@@ -712,11 +714,15 @@ class UbiiClient(ubii.proto.Client,
         """
         Use this method to reset the client behaviours and allow explicitly restarting the client protocol
         if it is finished. Also resets the protobuf values to the contents of :attr:`.initial_values`
+
+        Warning:
+
+            This behaviour is experimental, it is better to simply create a new client instance
         """
         old_id = self.id
         if hasattr(self.task_nursery, 'sentinel_task') and not self.task_nursery.sentinel_task:
-            logging.debug(f"{self}'s task nursery needs seems to be dead."
-                          f" Creating new task nursery for {self}.")
+            log.debug(f"{self}'s task nursery needs seems to be dead."
+                      f" Creating new task nursery for {self}.")
 
             stack = self.task_nursery.pop_all()
             self.protocol.task_nursery = type(self.task_nursery)(
@@ -730,7 +736,7 @@ class UbiiClient(ubii.proto.Client,
         for name, value in self._init_specs.items():
             setattr(self, name, value)
 
-        logging.debug(f"{self} (with old id {old_id!r}) was reset successfully and can be used again.")
+        log.debug(f"{self} (with old id {old_id!r}) was reset successfully and can be used again.")
 
     @property
     def protocol(self: UbiiClient[T_Protocol]) -> T_Protocol:

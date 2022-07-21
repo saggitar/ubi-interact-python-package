@@ -10,15 +10,14 @@ import functools
 import logging
 import types
 import typing
-from typing import Iterator
-
+import warnings
 import ubii.proto
 
 import codestare.async_utils
 from . import (
     protocol,
     util,
-    topics
+    topics, debug
 )
 from .util.typing import AsyncGetter, AsyncSetter
 
@@ -354,6 +353,7 @@ class ProcessingRoutine(ubii.proto.ProcessingModule, metaclass=util.ProtoRegistr
             """
             if pm.language and pm.language != pm.Language.PY:
                 raise ValueError(f"{pm} can only run Python processing modules. language {pm.language!r} specified.")
+
             pm.language = pm.Language.PY
 
         @staticmethod
@@ -391,18 +391,19 @@ class ProcessingRoutine(ubii.proto.ProcessingModule, metaclass=util.ProtoRegistr
             mapping = ubii.proto.ProcessingModule.pb(mapping)
 
         self._protocol = ProcessingProtocol(pm=self)
-        self._change_specs = asyncio.Condition()
+        self._change_specs = self._protocol.state.condition
 
         super().__init__(mapping=mapping, **kwargs)
+
+        # this might set the language, so make sure that it is run before the next check
+        self.validate()
 
         # eval stringified
         if eval_strings or util.debug() and self.language == self.Language.PY:
             self._eval_string_funcs()
 
-        self.validate()
-
         self._local_output_topics = topics.TopicStore(
-            default_factory=functools.partial(topics.BasicTopic, task_nursery=self._protocol.task_nursery)
+            functools.partial(topics.BasicTopic, task_nursery=self._protocol.task_nursery)
         )
 
         self._input_source_getter = None
@@ -670,6 +671,30 @@ class ProcessingRoutine(ubii.proto.ProcessingModule, metaclass=util.ProtoRegistr
     @classmethod
     @util.hook
     @util.document_decorator(util.hook)
+    async def mutate_pm(cls, module: ProcessingRoutine, specs: ubii.proto.ProcessingModule) -> None:
+        """
+        Change specifications of a processing routine, but notify waiters for the modules
+        :attr:`.change_specs` condition.
+
+        Args:
+            module: a processing routine
+            specs: specifications as a :class:`ubii.proto.ProcessingModule` message
+        """
+        async with module.change_specs:
+            # MergeFrom appends outputs and inputs, CopyFrom overwrites stuff, so we first need to "merge"
+            # with custom logic (overwriting all non-falsy values)
+            changes = {
+                attr: value for attr, value in ubii.proto.ProcessingModule.to_dict(specs).items() if
+                attr in specs
+            }
+
+            # then overwrite specs
+            ubii.proto.ProcessingModule.copy_from(module, changes)
+            module.change_specs.notify_all()
+
+    @classmethod
+    @util.hook
+    @util.document_decorator(util.hook)
     async def start(cls, pm: ProcessingRoutine) -> ProcessingRoutine:
         """
         Start the internal :class:`ProcessingProtocol` of the passed routine.
@@ -681,11 +706,7 @@ class ProcessingRoutine(ubii.proto.ProcessingModule, metaclass=util.ProtoRegistr
             routine passed as ``pm``
         """
         assert pm.name in cls.registry
-        try:
-            pm._protocol.start()
-        except RuntimeError as e:
-            raise e
-
+        pm._protocol.start()
         return pm
 
     @classmethod
@@ -717,6 +738,7 @@ class ProcessingRoutine(ubii.proto.ProcessingModule, metaclass=util.ProtoRegistr
     async def halt(cls, pm: ProcessingRoutine):
         """
         Halt the internal :class:`ProcessingProtocol` of the passed routine.
+        If th protocol is already in end state, do nothing but raise a warning.
 
         Args:
             pm: instance that needs to be halted
@@ -724,6 +746,10 @@ class ProcessingRoutine(ubii.proto.ProcessingModule, metaclass=util.ProtoRegistr
         Returns:
             routine passed as argument
         """
+        if pm._protocol.finished:
+            warnings.warn(f"Can't halt {pm}, protocol already finished")
+            return pm
+
         assert pm.name in cls.registry
         await pm._protocol.state.set(PM_STAT.HALTED)
 
@@ -854,7 +880,8 @@ class ProcessingProtocol(protocol.AbstractProtocol[PM_STAT]):
             def callback(pm: ProcessingRoutine, *args):
                 _cb = getattr(pm, name)
                 assert callable(_cb)
-                return _cb(*args)
+                result = _cb(*args)
+                return result
 
             return cls._get_decorator(callback)
 
@@ -985,9 +1012,10 @@ class ProcessingProtocol(protocol.AbstractProtocol[PM_STAT]):
 
         # wait for applied output publishing
         async with self.pm.change_specs:
-            await self.pm.change_specs.wait_for(
+            waiter = self.pm.change_specs.wait_for(
                 lambda: all(topic.callback_tasks for topic in self.pm.local_output_topics.values())
             )
+            await asyncio.wait_for(waiter, timeout=10 if debug() else None)
 
         # start scheduler task
         context.trigger_processing = asyncio.Event()
@@ -998,7 +1026,6 @@ class ProcessingProtocol(protocol.AbstractProtocol[PM_STAT]):
         )
 
         self.created_tasks += [context.nursery.create_task(context.scheduler)]
-
         await self.state.set(PM_STAT.CREATED)
 
     @pm_proxy.callback_in_pm('on_created')

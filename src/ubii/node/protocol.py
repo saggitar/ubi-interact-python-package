@@ -53,7 +53,7 @@ class LegacyProtocol(client.AbstractClientProtocol[States]):
     """
     """
 
-    __hook_decorators__ = client.AbstractClientProtocol.__hook_decorators__.union([util.log_call(log)])
+    __hook_decorators__ = client.AbstractClientProtocol.__hook_decorators__.union([util.log_call()])
     """
     decorators applied to protocol hooks
     """
@@ -91,6 +91,16 @@ class LegacyProtocol(client.AbstractClientProtocol[States]):
         """
         async context manager to register and unregister the client, created in 
         :meth:`~ubii.node.protocol.LegacyProtocol.register_client`
+        """
+        subscription_manager: SubscriptionManager | None = None
+        """
+        async context manager which implements the subscriptions, created in 
+        :meth:`~ubii.node.protocol.LegacyProtocol.implement_subscriptions`
+        """
+        session_manager: SessionManager | None = None
+        """
+        async context manager to start and stop sessions, created in 
+        :meth:`~ubii.node.protocol.LegacyProtocol.implement_sessions`
         """
         topic_store: topics.TopicStore[topics.BasicTopic] | None = None
         """
@@ -340,15 +350,13 @@ class LegacyProtocol(client.AbstractClientProtocol[States]):
         assert context.client is not None
 
         context.client[client.Services].service_map = context.service_map
-        self.implement_subscriptions(context)
-        self.implement_publish(context)
         self.implement_register(context)
-        await self.implement_sessions(context)
+        self.implement_publish(context)
 
     async def implement_sessions(self, context: LegacyProtocol.Context):
-        session_behaviour = await self.task_nursery.enter_async_context(
-            SessionBehaviour(context.client)
-        )
+        context.session_manager = SessionManager(context.client)
+        session_behaviour = await self.task_nursery.enter_async_context(context.session_manager)
+
         self.client[client.Sessions].start_session = session_behaviour.start_session
         self.client[client.Sessions].stop_session = session_behaviour.stop_session
         self.client[client.Sessions].sessions = session_behaviour.sessions
@@ -360,172 +368,15 @@ class LegacyProtocol(client.AbstractClientProtocol[States]):
         assert context.client is not None
 
         context.topic_store = topics.TopicStore(
-            default_factory=functools.partial(topics.BasicTopic, task_nursery=self.task_nursery)
+            functools.partial(topics.BasicTopic, task_nursery=self.task_nursery)
         )
 
-        async def unsubscribe_all(topic_store: topics.TopicStore):
-            await asyncio.gather(*[topic.remove_all_subscribers() for topic in topic_store.values()])
+        context.subscription_manager = SubscriptionManager(context)
 
-        self.task_nursery.push_async_callback(unsubscribe_all, context.topic_store)
-
-        async def on_subscribe_callback(
-                client_id: str, topic: topics.Topic, as_regex: bool = False, unsubscribe: bool = False
-        ):
-            message = {
-                'client_id': client_id,
-                f"{'un' if unsubscribe else ''}"
-                f"{'subscribe_topic_regexp' if as_regex else 'subscribe_topics'}": [topic.pattern, ]
-            }
-
-            await context.service_map.topic_subscription(topic_subscription=message)
-
-        class OnSubscribersChanged(topics.OnSubscribersChange):
-            def __init__(self, topic_store, client_id, as_regex, callback: topics.OnSubscribeCallback):
-                super().__init__(client_id, as_regex, callback)
-                self.topic_store = topic_store
-
-            def __call__(self, topic: topics.Topic, change: typing.Tuple[int, int]):
-                task = super().__call__(topic, change)
-                old, new = change
-                if new == 0 and old > 0:
-                    del self.topic_store[topic.pattern]
-
-                return task
-
-        class _handle_subscribe(util.CoroutineWrapper):
-            def __init__(self, *topic_patterns, as_regex=False, unsubscribe=False):
-                self.topic_patterns = topic_patterns
-                self.as_regex = as_regex
-                self.unsubscribe = unsubscribe
-                self.topics = tuple(context.topic_store[topic] for topic in self.topic_patterns)
-
-                assert context.topic_store is not None
-                if not self.topic_patterns:
-                    raise ValueError(f"No topics passed")
-
-                for topic in self.topics:
-                    if not topic.on_subscribers_change:
-                        assert context.client.id
-                        topic.on_subscribers_change = OnSubscribersChanged(
-                            topic_store=context.topic_store,
-                            client_id=context.client.id,
-                            as_regex=self.as_regex,
-                            callback=on_subscribe_callback
-                        )
-
-                super().__init__(coroutine=self.__call())
-
-            async def with_callback(self, callback: topics.Consumer) -> (
-                    typing.Tuple[typing.Tuple[topics.Topic, ...], typing.Tuple]
-            ):
-                if self.unsubscribe:
-                    raise NotImplementedError("This is only supported for 'subscribe' calls")
-
-                tokens = [topic.register_callback(callback) for topic in self.topics]
-                await asyncio.gather(*[topic.buffer.has_waiting_read for topic in self.topics])
-                await self
-                return self.topics, tuple(tokens)
-
-            async def __call(self):
-                for topic in self.topics:
-                    if self.unsubscribe:
-                        await topic.remove_all_subscribers()
-                    else:
-                        await topic.add_subscriber()
-
-                return self.topics
-
-        # we could do this with functools.partial, but that does not genereate a useful help() for the function
-        # so instead we just manually define them
-
-        def subscribe_regex(*pattern: str):
-            """
-            Subscribe to topic with glob pattern
-
-            Args:
-                *pattern: unix wildcard patterns
-
-            Example:
-
-                >>> from ubii.node import *
-                >>> client = await connect_client()
-                >>> all_infos, = await client[Subscriptions].subscribe_regex('/info/*')
-
-            Returns:
-                awaitable returning a tuple of processed topics (one for each pattern, same order)
-            """
-            return _handle_subscribe(*pattern, as_regex=True, unsubscribe=False)
-
-        def subscribe_topic(*pattern: str):
-            """
-            Subscribe to topic with simple topic name
-
-            Args:
-                *pattern: absolute topic names
-
-            Example:
-
-                >>> from ubii.node import *
-                >>> client = await connect_client()
-                >>> start_pm, = await client[Subscriptions].subscribe_topic('/info/processing_module/start')
-
-            Returns:
-                awaitable returning a tuple of processed topics (one for each pattern, same order)
-            """
-            return _handle_subscribe(*pattern, as_regex=False, unsubscribe=False)
-
-        def unsubscribe_regex(*pattern: str):
-            """
-            Unsubscribe from topic with glob pattern
-
-            Args:
-                *pattern: absolute topic names
-
-            Example:
-
-                >>> from ubii.node import *
-                >>> client = await connect_client()
-                >>> all_infos, = await client[Subscriptions].subscribe_regex('/info/*')
-                >>> all_infos.subscriber_count
-                1
-                >>> all_infos, = await client[Subscriptions].unsubscribe_regex('/info/*')
-                >>> all_infos.subscriber_count
-                0
-
-            Returns:
-                awaitable returning a tuple of processed topics (one for each pattern, same order)
-            """
-            return _handle_subscribe(*pattern, as_regex=True, unsubscribe=True)
-
-        def unsubscribe_topic(*pattern: str):
-            """
-            Unsubscribe from topic with simple topic name
-
-            Args:
-                *pattern: absolute topic names
-
-            Example:
-
-                >>> from ubii.node import *
-                >>> client = await connect_client()
-                >>> start_pm, = await client[Subscriptions].subscribe_topic('/info/processing_module/start')
-                >>> start_pm.subscriber_count
-                1
-                >>> start_pm, = await client[Subscriptions].unsubscribe_topic('/info/processing_module/start')
-                >>> start_pm.subscriber_count
-                0
-
-            Returns:
-                awaitable returning a tuple of processed topics (one for each pattern, same order)
-            """
-            return _handle_subscribe(*pattern, as_regex=False, unsubscribe=True)
-
-        context.client[client.Subscriptions] = client.Subscriptions(
-            subscribe_regex=subscribe_regex,
-            subscribe_topic=subscribe_topic,
-            unsubscribe_regex=unsubscribe_regex,
-            unsubscribe_topic=unsubscribe_topic,
-        )
+        context.client[client.Subscriptions].subscribe_regex = context.subscription_manager.subscribe_regex
+        context.client[client.Subscriptions].subscribe_topic = context.subscription_manager.subscribe_topic
+        context.client[client.Subscriptions].unsubscribe_regex = context.subscription_manager.unsubscribe_regex
+        context.client[client.Subscriptions].unsubscribe_topic = context.subscription_manager.unsubscribe_topic
 
     def implement_publish(self, context: LegacyProtocol.Context):  # noqa don't care if it could be static
         """
@@ -557,8 +408,8 @@ class LegacyProtocol(client.AbstractClientProtocol[States]):
         assert context.register_manager is not None
         assert context.client is not None
         context.client[client.Register].register = context.register_manager.__aenter__
-        context.client[client.Register].deregister = functools.partial(context.register_manager.__aexit__, None, None,
-                                                                       None)
+        context.client[client.Register].deregister = functools.partial(context.register_manager.__aexit__,
+                                                                       None, None, None)
 
     def implement_devices(self, context: LegacyProtocol.Context):
         """
@@ -607,6 +458,13 @@ class LegacyProtocol(client.AbstractClientProtocol[States]):
         context.client[client.Devices].register_device = register
         context.client[client.Devices].deregister_device = deregister
 
+    async def on_create(self, context: LegacyProtocol.Context) -> None:
+        assert context.client is not None
+        self.implement_subscriptions(context)
+        await super().on_create(context)
+        assert context.subscription_manager is not None
+        await self.task_nursery.enter_async_context(context.subscription_manager)
+
     async def on_registration(self, context: LegacyProtocol.Context):
         """
         Use :meth:`implement_devices` to implement device registration behaviour for the client,
@@ -622,10 +480,11 @@ class LegacyProtocol(client.AbstractClientProtocol[States]):
         # give client some optional behaviour
         self.implement_devices(context)
         await self.implement_processing(context)
+        await self.implement_sessions(context)
 
         # if client has devices, register them
         to_register = [device for device in context.client.devices]
-        # clear devices, because they will be readded on registration
+        # clear devices, because they will be re-added on registration
         context.client.devices.clear()
 
         for device in to_register:
@@ -637,170 +496,23 @@ class LegacyProtocol(client.AbstractClientProtocol[States]):
         """
         Implement :class:`ubii.node.RunProcessingModules` behaviour of :attr:`context.client <.Context.client>`
         """
-        pm_subscriptions: weakref.WeakValueDictionary[int, topics.Topic] = weakref.WeakValueDictionary()
-        started_by_session = []
-
-        async def mutate_pm(module: processing.ProcessingRoutine, specs: ubii.proto.ProcessingModule):
-            async with module.change_specs:
-                # MergeFrom appends outputs and inputs, CopyFrom overwrites stuff, so we first need to "merge"
-                # with custom logic (overwriting all non-falsy values)
-                changes = {
-                    attr: value for attr, value in ubii.proto.ProcessingModule.to_dict(specs).items() if
-                    attr in specs
-                }
-
-                # then overwrite specs
-                ubii.proto.ProcessingModule.copy_from(module, changes)
-                module.change_specs.notify_all()
-
-        async def halt(module: processing.ProcessingRoutine):
-            if module.status not in [
-                ubii.proto.ProcessingModule.Status.HALTED,
-                ubii.proto.ProcessingModule.Status.DESTROYED
-            ]:
-                return await processing.ProcessingRoutine.halt(module)
-
-        @contextlib.asynccontextmanager
-        async def start(module: processing.ProcessingRoutine):
-            started: processing.ProcessingRoutine = await processing.ProcessingRoutine.start(module)
-            started_by_session.append(started)
-            yield started
-            await halt(module)
-
-        async def on_start_session(record: ubii.proto.TopicDataRecord):
-            """
-            When session is started, handle contained processing modules
-            """
-            session = record.session
-            for specs in session.processing_modules:
-                if specs.node_id != context.client.id:
-                    continue
-
-                if specs.name not in {pm.name for pm in context.client.processing_modules}:
-                    continue
-
-                module: processing.ProcessingRoutine | None = processing.ProcessingRoutine.registry.get(specs.name)
-                if module is None:
-                    raise ValueError(f"No processing module routine with name {specs.name} found")
-
-                if module.id:
-                    log.debug(f"Not reusing module {module} with name {specs.name}")
-                    module = type(module)(**type(specs).to_dict(specs))
-
-                await mutate_pm(module, specs)
-                await self.task_nursery.enter_async_context(start(module))
-                assert specs.name in processing.ProcessingRoutine.registry
-
-            # apply io mappings
-            for io_mapping in session.io_mappings:
-                if io_mapping.processing_module_name not in processing.ProcessingRoutine.registry:
-                    continue
-
-                assert io_mapping.processing_module_id is not None
-                assert io_mapping.processing_module_name is not None
-
-                instance: processing.ProcessingRoutine = (
-                    processing.ProcessingRoutine.registry[io_mapping.processing_module_name]
-                )
-                if instance.node_id != context.client.id:
-                    continue
-
-                assert context.topic_store is not None
-                await instance.apply_io_mapping(
-                    io_mapping,
-                    remote_topic_map=context.topic_store
-                )
-
-                # publish
-                if io_mapping.output_mappings:
-                    topic_map = instance.local_output_topics
-                    # the local topic map needs to auto-publish data that is written to topics
-                    decorator = topic_map.helpers.on_create_register_callback(context.client[client.Publish].publish)
-                    if decorator not in type(topic_map).create_topic.decorators(topic_map):
-                        type(topic_map).create_topic.register_decorator(
-                            decorator, instance=topic_map
-                        )
-
-                # subscribe
-                for mapping in io_mapping.input_mappings or ():
-                    if mapping.topic_mux:
-                        subscribe = context.client[client.Subscriptions].subscribe_regex(
-                            mapping.topic_mux.topic_selector
-                        )
-                    elif mapping.topic:
-                        subscribe = context.client[client.Subscriptions].subscribe_topic(
-                            mapping.topic
-                        )
-                    else:
-                        subscribe = None
-
-                    if subscribe:
-                        topic, = await subscribe
-                        assert topic.on_subscribers_change
-                        weakref.finalize(instance, lambda pm_: pm_subscriptions.pop(id(pm_), None), instance)
-                        pm_subscriptions[id(instance)] = topic
-
-                async with instance.change_specs:
-                    instance.change_specs.notify_all()
-
-            if started_by_session:
-                await context.client.implements(client.Services)
-                pm_runtime_add = context.client[client.Services].service_map.pm_runtime_add
-                await pm_runtime_add(
-                    processing_module_list={
-                        'elements': [module for module in started_by_session if module.session_id == session.id]
-                    }
-                )
-
-        async def on_stop_session(record):
-            """
-            Stop processing modules for session.
-
-            Warning:
-
-                When a client subscribes to the stop session topic, it will get sent the last stop request,
-                without having started any modules first, we need to handle that.
-
-            """
-            session: ubii.proto.Session = record.session
-            to_stop = []
-
-            for module in started_by_session:
-                if module.session_id != session.id:
-                    continue
-
-                to_stop.append(await halt(module))
-                log.debug(f"Stopping processing module {module.name}")
-
-                input_topic_source = pm_subscriptions.get(id(module), None)
-                if input_topic_source:
-                    await input_topic_source.remove_subscriber()
-
-            if to_stop:
-                stopped = await asyncio.gather(*map(processing.ProcessingRoutine.stop, to_stop))
-                await context.client.implements(client.Services)
-                remove_service = context.client[client.Services].service_map.pm_runtime_remove
-                await remove_service(processing_module_list={'elements': stopped})
-                for module in to_stop:
-                    started_by_session.remove(module)
 
         assert context.client is not None
+        module_manager = ProcessingModuleManager(context)
+
+        context.client[client.RunProcessingModules].get_modules = (
+            lambda: list(module_manager[spec.name] for spec in context.client.processing_modules)
+        )
+
         assert context.constants is not None
+        default_topics = context.constants.DEFAULT_TOPICS
+
         await context.client.implements(client.Subscriptions)
         subscribe_topic = context.client[client.Subscriptions].subscribe_topic
         assert subscribe_topic is not None
-
-        # create processing routines for all pms
-        for pm in context.client.processing_modules:
-            if pm.name not in processing.ProcessingRoutine.registry:
-                # add to registry by creating an instance
-                _ = processing.ProcessingRoutine(mapping=pm)
-
         # register callbacks
-        default_topics = context.constants.DEFAULT_TOPICS
-        await subscribe_topic(default_topics.INFO_TOPICS.START_SESSION).with_callback(on_start_session)
-        await subscribe_topic(default_topics.INFO_TOPICS.STOP_SESSION).with_callback(on_stop_session)
-        context.client[client.RunProcessingModules].running_pms = started_by_session
+        await subscribe_topic(default_topics.INFO_TOPICS.START_SESSION).with_callback(module_manager.on_start_session)
+        await subscribe_topic(default_topics.INFO_TOPICS.STOP_SESSION).with_callback(module_manager.on_stop_session)
 
     async def on_halted(self, context: LegacyProtocol.Context):
         """
@@ -845,7 +557,7 @@ class LegacyProtocol(client.AbstractClientProtocol[States]):
     # changed callbacks means state changes have to be adjusted
     state_changes = {
         (None, starting_state): on_start,
-        (starting_state, States.CREATED): client.AbstractClientProtocol.on_create,
+        (starting_state, States.CREATED): on_create,
         (States.CREATED, States.REGISTERED): on_registration,
         (States.REGISTERED, States.CONNECTED): client.AbstractClientProtocol.on_connect,
         (States.ANY, States.HALTED): on_halted,
@@ -870,36 +582,16 @@ class LatePMInitProtocol(LegacyProtocol):
         processing modules of the client defined by it's :class:`InitProcessingModules` behaviour
         """
         await super().create_client(context)
-        already_initialized_pms = list(context.client.processing_modules)
-        late_initialized = []
+        already_initialized_pms = {module.name: module for module in context.client.processing_modules}
 
-        assert context.client.implements(client.InitProcessingModules)
-        for pm in context.client[client.InitProcessingModules].module_types:
-            if not callable(pm):
-                warnings.warn(f"{pm} is not callable!")
-                continue
-            instance: processing.ProcessingRoutine = pm(context)
-            if not isinstance(instance, processing.ProcessingRoutine):
-                warnings.warn(f"Calling {pm} did not return a "
-                              f"{processing.ProcessingRoutine.__module__}.{processing.ProcessingRoutine.__qualname__} "
-                              f"instance")
-                continue
-            assert instance.name in processing.ProcessingRoutine.registry
-            late_initialized.append(instance)
+        if context.client.implements(client.InitProcessingModules):
+            for name, pm in context.client[client.InitProcessingModules].module_factories.items():
+                instance: processing.ProcessingRoutine = pm(context)
+                instance.name = name
+                assert instance.name in processing.ProcessingRoutine.registry
+                already_initialized_pms[instance.name] = instance
 
-        context.client[client.InitProcessingModules].initialized = late_initialized
-        context.client.processing_modules = already_initialized_pms + late_initialized
-
-    def __setattr__(self, key, value):
-        if key == 'client' and value is not None:
-            assert isinstance(value, client.UbiiClient)
-            value: client.UbiiClient
-            if value[client.InitProcessingModules].module_types is None:
-                value[client.InitProcessingModules].module_types = []
-            if value[client.InitProcessingModules].initialized is None:
-                value[client.InitProcessingModules].initialized = []
-
-        super(LatePMInitProtocol, self).__setattr__(key, value)
+        context.client.processing_modules = list(already_initialized_pms.values())
 
 
 def __getattr__(name):
@@ -921,14 +613,17 @@ def __getattr__(name):
         raise AttributeError(f"{__name__} has no attribute {name}")
 
 
-class SessionBehaviour:
+class SessionManager:
     """
     This implements the Session behaviour using a context manager, so that topic
     subscriptions are removed when the client stops. Also when the context exit is caused
     by an exception, started sessions are stopped.
     """
 
-    def __init__(self, client: client.UbiiClient, timeout=3):
+    def __init__(self,
+                 client: client.UbiiClient,
+                 timeout=3,
+                 __remove_session_on_clean_exit: bool = False):
         self._client = client
         self.sessions: typing.Dict[str, ubii.proto.Session] = {}
         """
@@ -937,6 +632,7 @@ class SessionBehaviour:
         self._start_info: topics.Topic | None = None
         self._stop_info: topics.Topic | None = None
         self._timeout = timeout
+        self.__remove_sessions = __remove_session_on_clean_exit
 
     async def __aenter__(self):
         if self._start_info and self._stop_info:
@@ -956,12 +652,14 @@ class SessionBehaviour:
         return self
 
     async def __aexit__(self, *exc_info):
-        if not any(exc_info):
+        if not any(exc_info) and not self.__remove_sessions:
             return
 
         removed = await asyncio.gather(*map(self.stop_session, self.sessions.values()))
         if not all(removed) and not self.sessions:
             raise ValueError(f"Failed to stop sessions with id[s] {set(self.sessions).difference(set(removed))}")
+
+        log.debug(f"Stopped all remaining sessions {removed}")
 
         assert not self.sessions
 
@@ -1008,9 +706,435 @@ class SessionBehaviour:
         if informed.session.id != request_id:
             raise ValueError(f"Session from info topic not requested session")
 
+        pms = [processing.ProcessingRoutine.registry.get(spec.name) for spec in session.processing_modules]
+
+        async def wait_destroyed(pm: processing.ProcessingRoutine):
+            async with pm.change_specs:
+                await pm.change_specs.wait_for(lambda: pm.status == pm.Status.DESTROYED)
+
+        await asyncio.gather(*map(wait_destroyed, pms))
+
         removed = self.sessions.pop(request_id)
         log.debug(f"Stopped session {removed}")
         return request_id
+
+
+class ProcessingModuleManager(util.DefaultHookMap[str, processing.ProcessingRoutine]):
+    """
+    Handles processing module setup and teardown for a :class:`LegacyProtocol`
+    """
+
+    class access_handler:
+        def __init__(self, container: typing.Mapping[str, ubii.proto.ProcessingModule]):
+            self.container: typing.Mapping[str, ubii.proto.ProcessingModule] = container
+            """
+            managed container of :math:`name \\rightarrow ProcessingModule`
+            """
+
+        def status(self, *statuses: ubii.proto.ProcessingModule.Status) -> typing.List[ubii.proto.ProcessingModule]:
+            """
+            Get modules with matching status
+
+            Args:
+                statuses: allowed protobuf status, only modules with matching status will be returned
+
+            Returns:
+                matching processing modules
+            """
+            return [module for module in self.container.values() if module.status in statuses]
+
+        def name(self, name: str) -> ubii.proto.ProcessingModule | None:
+            """
+            Get module with matching name. Only one module can match, so it is returned if found
+
+            Args:
+                name: a protobuf name, only module with this name will be returned
+
+            Returns:
+                processing module if found or None
+            """
+            return self.container.get(name)
+
+        def id(self, id: str) -> ubii.proto.ProcessingModule | None:
+            """
+            Get module with matching id. Only one module can match, so it is returned if found
+
+            Args:
+                id: a protobuf id, only module with this id will be returned
+
+            Returns:
+                generator yielding processing modules
+            """
+            return {module.id: module for module in self.container.values()}.get(id)
+
+    def __init__(self, context):
+        """
+        Create a handler for a protocol context
+        Args:
+            context: the context we are working with
+        """
+        super().__init__(base_factory=self.create_module)
+        self.by: ProcessingModuleManager.access_handler = self.access_handler(self.data)
+        """
+        Use the specific methods to access the managed modules by status / name / id
+        """
+        self.pm_subscriptions: weakref.WeakValueDictionary[int, topics.Topic] = weakref.WeakValueDictionary()
+
+        self.running = util.accessor()
+
+        self._context: LegacyProtocol.Context = context
+        self._create_specs = {module.name: module for module in context.client.processing_modules}
+        self._create_specs_by = self.access_handler(self._create_specs)
+
+    @contextlib.asynccontextmanager
+    async def _handle(self, module: processing.ProcessingRoutine):
+        started = await processing.ProcessingRoutine.start(module)
+        yield started
+        if started.status != started.Status.DESTROYED:
+            await processing.ProcessingRoutine.halt(started)
+
+    def create_module(self, name: str):
+        specs = self._create_specs_by.name(name)
+        if not specs:
+            raise ValueError(f"No module specs for name {name} found")
+
+        factory = None
+
+        if self._context.client.implements(client.InitProcessingModules):
+            factory = self._context.client[client.InitProcessingModules].module_factories.get(name)
+            if factory:
+                factory = functools.partial(factory, self._context)
+
+        factory = factory or processing.ProcessingRoutine
+
+        module: processing.ProcessingRoutine = processing.ProcessingRoutine.registry.get(specs.name)
+
+        if module is None:
+            module = factory(**type(specs).to_dict(specs))
+            log.debug(f"Created module new with name {specs.name}")
+        elif module.status in [module.Status.HALTED, module.Status.DESTROYED]:
+            module = factory(**type(specs).to_dict(specs))
+            log.debug(f"Created new module of type {type(module)} with name {specs.name}")
+        elif type(module).to_dict(module) != type(specs).to_dict(specs):
+            module = factory(**type(specs).to_dict(specs))
+            log.debug(f"Created new module of type {type(module)} with name {specs.name}")
+        else:
+            log.warning(f"Already running module with same specifications and name {specs.name}")
+
+        return module
+
+    async def add_modules(self, session: ubii.proto.Session):
+        added = []
+        for specs in session.processing_modules:
+            if specs.node_id != self._context.client.id:
+                continue
+
+            if specs.name not in {pm.name for pm in self._context.client.processing_modules}:
+                continue
+
+            if 'name' not in specs:
+                raise ValueError(f"Module specs {specs} don't include a name, can't create module without name")
+
+            self._create_specs[specs.name] = specs
+            module = self[specs.name]
+
+            await processing.ProcessingRoutine.mutate_pm(module, specs)
+            await self._context.client.task_nursery.enter_async_context(self._handle(module))
+            assert specs.name in self
+            added.append(module)
+
+        return added
+
+    async def notify_broker(self,
+                            modules: typing.Iterable[ubii.proto.ProcessingModule],
+                            remove=False):
+        await self._context.client.implements(client.Services)
+        if not remove:
+            change_pm_runtime = self._context.client[client.Services].service_map.pm_runtime_add
+        else:
+            change_pm_runtime = self._context.client[client.Services].service_map.pm_runtime_remove
+
+        await change_pm_runtime(
+            processing_module_list={
+                'elements': modules
+            }
+        )
+
+    async def handle_io_specs(self, session: ubii.proto.Session):
+
+        # apply io mappings
+        for io_mapping in session.io_mappings:
+            assert io_mapping.processing_module_id is not None
+            assert io_mapping.processing_module_name is not None
+
+            instance = self.by.name(io_mapping.processing_module_name)
+
+            if not instance or instance.node_id != self._context.client.id:
+                continue
+
+            assert self._context.topic_store is not None
+
+            await instance.apply_io_mapping(
+                io_mapping,
+                remote_topic_map=self._context.topic_store
+            )
+
+            assert self._context.client.implements(client.Publish)
+            assert self._context.client.implements(client.Subscriptions)
+
+            # publish
+            if io_mapping.output_mappings:
+                topic_map = instance.local_output_topics
+                # the local topic map needs to auto-publish data that is written to topics
+                decorator = topic_map.on_create_register_callback(self._context.client[client.Publish].publish)
+                if decorator not in type(topic_map).default_factory.decorators(topic_map):
+                    type(topic_map).default_factory.register_decorator(
+                        decorator, instance=topic_map
+                    )
+
+            # subscribe
+            for mapping in io_mapping.input_mappings or ():
+                if mapping.topic_mux:
+                    subscribe = self._context.client[client.Subscriptions].subscribe_regex(
+                        mapping.topic_mux.topic_selector
+                    )
+                elif mapping.topic:
+                    subscribe = self._context.client[client.Subscriptions].subscribe_topic(
+                        mapping.topic
+                    )
+                else:
+                    subscribe = None
+
+                if subscribe:
+                    topic, = await subscribe
+                    assert topic.on_subscribers_change
+                    weakref.finalize(instance, lambda pm_: self.pm_subscriptions.pop(id(pm_), None), instance)
+                    self.pm_subscriptions[id(instance)] = topic
+
+            async with instance.change_specs:
+                instance.change_specs.notify_all()
+
+    async def on_start_session(self, record: ubii.proto.TopicDataRecord):
+        """
+        When session is started, handle contained processing modules
+        """
+        session = record.session
+        added = await self.add_modules(session)
+        await self.handle_io_specs(session)
+
+        await asyncio.gather(
+            *(self._wait_for_status(module, ubii.proto.ProcessingModule.Status.CREATED) for module in added)
+        )
+        await self.notify_broker(added)
+
+    async def _wait_for_status(self, module: processing.ProcessingRoutine, status: ubii.proto.ProcessingModule.Status):
+        async with module.change_specs:
+            await module.change_specs.wait_for(lambda: module.status == status)
+
+    async def on_stop_session(self, record):
+        """
+        Stop processing modules for session.
+
+        Warning:
+
+            When a client subscribes to the stop session topic, it will get sent the last stop request,
+            without having started any modules first, we need to handle that.
+
+        """
+        session: ubii.proto.Session = record.session
+        status = ubii.proto.ProcessingModule.Status
+        to_stop = []
+
+        for module in self.by.status(status.CREATED, status.PROCESSING, status.INITIALIZED):
+            if module.session_id != session.id:
+                continue
+
+            await processing.ProcessingRoutine.halt(module)
+
+        for module in self.by.status(status.HALTED):
+            to_stop.append(module)
+            input_topic_source = self.pm_subscriptions.get(id(module), None)
+            if input_topic_source:
+                await input_topic_source.remove_subscriber()
+
+        if to_stop:
+            stopped = await asyncio.gather(*map(processing.ProcessingRoutine.stop, to_stop))
+            if not stopped == to_stop:
+                raise ValueError(f"Could not stop all processing modules from {to_stop}")
+
+        destroyed = []
+        for module in self.by.status(status.DESTROYED):
+            destroyed.append(module)
+            self.data.pop(module.name)
+
+        await self.notify_broker(destroyed, remove=True)
+
+
+class SubscriptionManager:
+    class OnSubscribersChanged(topics.OnSubscribersChange):
+        def __init__(self, topic_store, client_id, as_regex, callback: topics.OnSubscribeCallback):
+            super().__init__(client_id, as_regex, callback)
+            self.topic_store = topic_store
+
+        def __call__(self, topic: topics.Topic, change: typing.Tuple[int, int]):
+            task = super().__call__(topic, change)
+            old, new = change
+            if new == 0 and old > 0:
+                del self.topic_store[topic.pattern]
+
+            return task
+
+    def __init__(self, context: LegacyProtocol.Context):
+        self.context: LegacyProtocol.Context = context
+        assert context.service_map is not None
+        assert context.service_map.topic_subscription
+        assert context.topic_store is not None
+        self._subscription_handler = functools.partial(self.handle_subscribe, self.context, self.on_subscribe_callback)
+
+    async def on_subscribe_callback(self, client_id, topic: topics.Topic, as_regex: bool = False,
+                                    unsubscribe: bool = False):
+        message = {
+            'client_id': client_id,
+            f"{'un' if unsubscribe else ''}"
+            f"{'subscribe_topic_regexp' if as_regex else 'subscribe_topics'}": [topic.pattern, ]
+        }
+        await self.context.service_map.topic_subscription(topic_subscription=message)
+
+    class handle_subscribe(util.CoroutineWrapper):
+        """
+        Implements the features required by a `subscribe call` according to the Protocol specification
+        of the behaviour
+        """
+
+        def __init__(self, context, callback, *topic_patterns, as_regex=False, unsubscribe=False):
+            self.topic_patterns = topic_patterns
+            self.as_regex = as_regex
+            self.unsubscribe = unsubscribe
+            self.topics = tuple(context.topic_store[topic] for topic in self.topic_patterns)
+
+            assert context.topic_store is not None
+            if not self.topic_patterns:
+                raise ValueError(f"No topics passed")
+
+            for topic in self.topics:
+                if not topic.on_subscribers_change:
+                    assert context.client.id
+                    topic.on_subscribers_change = SubscriptionManager.OnSubscribersChanged(
+                        topic_store=context.topic_store,
+                        client_id=context.client.id,
+                        as_regex=self.as_regex,
+                        callback=callback
+                    )
+
+            super().__init__(coroutine=self.__call())
+
+        async def with_callback(self, callback: topics.Consumer) -> (
+                typing.Tuple[typing.Tuple[topics.Topic, ...], typing.Tuple]
+        ):
+            if self.unsubscribe:
+                raise NotImplementedError("This is only supported for 'subscribe' calls")
+
+            tokens = [topic.register_callback(callback) for topic in self.topics]
+            await asyncio.gather(*[topic.buffer.has_waiting_read for topic in self.topics])
+            await self
+            return self.topics, tuple(tokens)
+
+        async def __call(self):
+            for topic in self.topics:
+                if self.unsubscribe:
+                    await topic.remove_all_subscribers()
+                else:
+                    await topic.add_subscriber()
+
+            return self.topics
+
+    async def __aenter__(self):
+        return self
+
+    async def __aexit__(self, *exc_info):
+        await asyncio.gather(*[topic.remove_all_subscribers() for topic in self.context.topic_store.values()])
+
+    def subscribe_regex(self, *pattern: str):
+        """
+        Subscribe to topic with glob pattern
+
+        Args:
+            *pattern: unix wildcard patterns
+
+        Example:
+
+            >>> from ubii.node import *
+            >>> client = await connect_client()
+            >>> all_infos, = await client[Subscriptions].subscribe_regex('/info/*')
+
+        Returns:
+            awaitable returning a tuple of processed topics (one for each pattern, same order)
+        """
+        return self._subscription_handler(*pattern, as_regex=True, unsubscribe=False)
+
+    def subscribe_topic(self, *pattern: str):
+        """
+        Subscribe to topic with simple topic name
+
+        Args:
+            *pattern: absolute topic names
+
+        Example:
+
+            >>> from ubii.node import *
+            >>> client = await connect_client()
+            >>> start_pm, = await client[Subscriptions].subscribe_topic('/info/processing_module/start')
+
+        Returns:
+            awaitable returning a tuple of processed topics (one for each pattern, same order)
+        """
+        return self._subscription_handler(*pattern, as_regex=False, unsubscribe=False)
+
+    def unsubscribe_regex(self, *pattern: str):
+        """
+        Unsubscribe from topic with glob pattern
+
+        Args:
+            *pattern: absolute topic names
+
+        Example:
+
+            >>> from ubii.node import *
+            >>> client = await connect_client()
+            >>> all_infos, = await client[Subscriptions].subscribe_regex('/info/*')
+            >>> all_infos.subscriber_count
+            1
+            >>> all_infos, = await client[Subscriptions].unsubscribe_regex('/info/*')
+            >>> all_infos.subscriber_count
+            0
+
+        Returns:
+            awaitable returning a tuple of processed topics (one for each pattern, same order)
+        """
+        return self._subscription_handler(*pattern, as_regex=True, unsubscribe=True)
+
+    def unsubscribe_topic(self, *pattern: str):
+        """
+        Unsubscribe from topic with simple topic name
+
+        Args:
+            *pattern: absolute topic names
+
+        Example:
+
+            >>> from ubii.node import *
+            >>> client = await connect_client()
+            >>> start_pm, = await client[Subscriptions].subscribe_topic('/info/processing_module/start')
+            >>> start_pm.subscriber_count
+            1
+            >>> start_pm, = await client[Subscriptions].unsubscribe_topic('/info/processing_module/start')
+            >>> start_pm.subscriber_count
+            0
+
+        Returns:
+            awaitable returning a tuple of processed topics (one for each pattern, same order)
+        """
+        return self._subscription_handler(*pattern, as_regex=False, unsubscribe=True)
 
 
 if typing.TYPE_CHECKING:
@@ -1025,6 +1149,8 @@ __all__ = dynamic_names + (
     'States',
     'LatePMInitProtocol',
     'LegacyProtocol',
+    'SessionManager',
+    'ProcessingModuleManager'
 )
 
 

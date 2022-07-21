@@ -5,7 +5,6 @@ import ubii.proto as ub
 
 from ubii.framework import debug
 
-pytestmark = pytest.mark.asyncio
 __protobuf__ = ub.__protobuf__
 
 

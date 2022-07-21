@@ -12,7 +12,7 @@ import pytest
 
 from ubii.framework.client import UbiiClient
 from ubii.framework.protocol import AbstractProtocol, RunProtocol
-from ubii.node.protocol import DefaultProtocol, States as UbiiStates
+from ubii.node.protocol import LegacyProtocol, States as UbiiStates
 
 pytestmark = pytest.mark.asyncio
 log = logging.getLogger(__name__)
@@ -76,8 +76,8 @@ def warning_filter():
         yield
 
 
-@pytest.mark.parametrize('protocol', [DefaultProtocol], indirect=True)
-async def test_default_protocol(protocol: DefaultProtocol):
+@pytest.mark.parametrize('protocol', [LegacyProtocol], indirect=True)
+async def test_default_protocol(protocol: LegacyProtocol):
     await asyncio.wait_for(
         protocol.state.get(predicate=lambda state: state == UbiiStates.CONNECTED),
         timeout=6
@@ -86,8 +86,8 @@ async def test_default_protocol(protocol: DefaultProtocol):
     assert client.id
 
 
-@pytest.mark.parametrize('protocol', [DefaultProtocol], indirect=True)
-async def test_default_protocol_stop(protocol: DefaultProtocol):
+@pytest.mark.parametrize('protocol', [LegacyProtocol], indirect=True)
+async def test_default_protocol_stop(protocol: LegacyProtocol):
     await asyncio.wait_for(protocol.state.get(predicate=lambda state: state == UbiiStates.CONNECTED),
                            timeout=5)
     client = protocol.client

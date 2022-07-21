@@ -61,7 +61,7 @@ def make_connection(request):
 
 @pytest.fixture
 def container():
-    container = TopicStore(default_factory=BasicTopic)
+    container = TopicStore(BasicTopic)
     yield container
 
 

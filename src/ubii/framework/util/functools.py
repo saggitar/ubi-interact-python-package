@@ -221,7 +221,7 @@ class hook(typing.Generic[T_Callable]):
         Args:
             instance: return decorators for this specific instance -- `optional`
         """
-        return self._global_decorators + self._instance_decorators.get(id(instance), []) if instance else []
+        return self._global_decorators + (self._instance_decorators.get(id(instance), []) if instance else [])
 
     def register_decorator(self, decorator, instance: object | None = None) -> None:
         """
@@ -399,19 +399,21 @@ def exc_handler_decorator(handler: typing.Callable[[ExcInfo], typing.Awaitable[N
     return decorator
 
 
-def log_call(logger: logging.Logger):
+def log_call(logger: logging.Logger | None = None):
     """
     Args:
-        logger: calls are logged as :meth:`logging.Logger.debug`
+        logger: calls are logged as :meth:`logging.Logger.debug`, if not passed use logger with module name
 
     Returns:
         A decorator to log calls to decorated callable to ``logger``
     """
 
     def decorator(fun):
+        log = logger or logging.getLogger(fun.__module__)
+
         @functools.wraps(fun)
         def __inner(*args):
-            logger.debug(f"called {fun}")
+            log.debug(f"called {fun}")
             return fun(*args)
 
         return __inner

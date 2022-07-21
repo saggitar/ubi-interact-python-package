@@ -12,7 +12,11 @@ from codestare.async_utils import (
     Registry,
 )
 
-from .collections import merge_dicts
+from .collections import (
+    merge_dicts,
+    MatchMappingMixin,
+    DefaultHookMap
+)
 from .enum import EnumMatcher
 from .functools import (
     similar,

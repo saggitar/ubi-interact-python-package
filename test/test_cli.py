@@ -1,4 +1,5 @@
 import asyncio
+import contextlib
 import functools
 import os
 import threading
@@ -24,7 +25,7 @@ def event_loop(request, record_property) -> asyncio.AbstractEventLoop:
     loop.close()
 
 
-class TestPM(ubii.framework.processing.ProcessingRoutine):
+class FakePM(ubii.framework.processing.ProcessingRoutine):
     """
     Test PM
     """
@@ -59,13 +60,14 @@ class TestCLI:
         'args, cancel_after_timeout',
         [
             pytest.param(
-                [f"--processing-modules {TestPM.__module__}.{TestPM.__qualname__}"], DEFAULT_TIMEOUT,
+                [f"--debug --processing-modules {FakePM.__module__}.{FakePM.__qualname__}"], DEFAULT_TIMEOUT,
                 id="test_pm"
             ),
             pytest.param(
                 [
-                    f"--processing-modules test:{TestPM.__module__}.{TestPM.__qualname__}",
-                    f"--module-args test:argument='foo',name='test'"
+                    "--debug",
+                    f"--processing-modules test:{FakePM.__module__}.{FakePM.__qualname__}",
+                    "--module-args test:argument='foo',name='test'"
                 ], DEFAULT_TIMEOUT,
                 id="test_mod_args"
             )
@@ -83,10 +85,15 @@ class TestCLI:
         cli_entry_point()
 
         from ubii.cli.main import parse_args
+        from ubii.framework import client
+
+        used_client: client.UbiiClient = list(client.UbiiClient.registry.values())[-1]
+        assert used_client.implements(client.InitProcessingModules)
+
         args = parse_args()
         for name, mod in args.processing_modules:
             modargs = {n:v for n, v in args.module_args}.get(name, {})
-            initialized_module = ubii.framework.processing.ProcessingRoutine.registry.get(name or '')
-            assert initialized_module
+            instance = ubii.framework.processing.ProcessingRoutine.registry.get(name)
+
             for arg, value in modargs.items():
-                assert getattr(initialized_module, arg) == value
+                assert getattr(instance, arg) == value

@@ -8,6 +8,7 @@ import ubii.proto
 import ubii.framework.client
 import ubii.framework.processing
 import ubii.framework.topics
+import ubii.node.pytest
 
 
 @pytest.fixture
@@ -127,8 +128,8 @@ class TestMuxerProcessing:
     @pytest.mark.parametrize('topic_data', [
         [{'int32': n} for n in range(10)]
     ], indirect=True)
-    async def test_muxer_processing(self, client_spec, session_spec, module_spec, start_session, topic_data):
-        client = await client_spec
+    async def test_muxer_processing(self, client, session_spec, module_spec, start_session, topic_data):
+        await client
         await start_session(session_spec)
 
         topic, = await client[ubii.framework.client.Subscriptions].subscribe_regex('/demuxer/*')
