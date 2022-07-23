@@ -111,6 +111,10 @@ class LegacyProtocol(client.AbstractClientProtocol[States]):
         """
         Filled when some protocol task raises an exception
         """
+        state_change: typing.Tuple[States, States] | None = None
+        """
+        The state change that triggered the last callback that handled the context
+        """
 
     def __init__(self,
                  config: constants.UbiiConfig = constants.GLOBAL_CONFIG,
@@ -355,11 +359,12 @@ class LegacyProtocol(client.AbstractClientProtocol[States]):
 
     async def implement_sessions(self, context: LegacyProtocol.Context):
         context.session_manager = SessionManager(context.client)
-        session_behaviour = await self.task_nursery.enter_async_context(context.session_manager)
+        session_behaviour: SessionManager = await self.task_nursery.enter_async_context(context.session_manager)
 
         self.client[client.Sessions].start_session = session_behaviour.start_session
         self.client[client.Sessions].stop_session = session_behaviour.stop_session
         self.client[client.Sessions].sessions = session_behaviour.sessions
+        self.client[client.Sessions].get_sessions = session_behaviour.get_sessions
 
     def implement_subscriptions(self, context: LegacyProtocol.Context):
         """
@@ -594,6 +599,15 @@ class LatePMInitProtocol(LegacyProtocol):
         context.client.processing_modules = list(already_initialized_pms.values())
 
 
+class ResettableProtocol(LatePMInitProtocol):
+
+    async def on_reset(self, context: LegacyProtocol.Context):
+        assert context.state_change == (States.STOPPED, None)
+
+    state_changes = LegacyProtocol.state_changes
+    state_changes[(States.STOPPED, None)] = on_reset
+
+
 def __getattr__(name):
     try:
         import importlib.metadata as importlib_metadata
@@ -607,7 +621,7 @@ def __getattr__(name):
         warnings.warn(f"The default Protocol was updated, if you experience bugs with the new DefaultProtocol"
                       f" please use the ``LegacyProtocol`` instead and report the bug at {url}.", DeprecationWarning)
 
-        return LatePMInitProtocol
+        return ResettableProtocol
 
     else:
         raise AttributeError(f"{__name__} has no attribute {name}")
@@ -632,9 +646,13 @@ class SessionManager:
         self._start_info: topics.Topic | None = None
         self._stop_info: topics.Topic | None = None
         self._timeout = timeout
-        self.__remove_sessions = __remove_session_on_clean_exit
+        self.stop_sessions_on_exit = __remove_session_on_clean_exit
 
-    async def __aenter__(self):
+    async def __aenter__(self) -> SessionManager:
+        """
+        Subscribes to the info topics for broker communication,
+        then returns reference to self
+        """
         if self._start_info and self._stop_info:
             return self
 
@@ -651,8 +669,18 @@ class SessionManager:
 
         return self
 
-    async def __aexit__(self, *exc_info):
-        if not any(exc_info) and not self.__remove_sessions:
+    async def __aexit__(self, *exc_info) -> None:
+        """
+        Remove started sessions if the session manager is closed with
+        an exception or its :attr:`.stop_sessions_on_exit` attribute is True
+
+        Args:
+            *exc_info: Exception info
+
+        Returns:
+            always returns None so possible exceptions are not suppressed
+        """
+        if not any(exc_info) and not self.stop_sessions_on_exit:
             return
 
         removed = await asyncio.gather(*map(self.stop_session, self.sessions.values()))
@@ -663,14 +691,31 @@ class SessionManager:
 
         assert not self.sessions
 
+    async def get_sessions(self) -> ubii.proto.SessionList:
+        """
+        Simple wrapper around a service request which returns the session list inside
+        the response
+
+        Returns:
+            list of running sessions
+        """
+
+        assert self._client.implements(client.Services)
+        service = self._client[client.Services].service_map.session_runtime_get_list
+        if not service:
+            raise ValueError(f"Get Session Service not available")
+        result = await service()
+        return result.session_list
+
     async def start_session(self, session: ubii.proto.Session) -> ubii.proto.Session:
         """
-        Start session and add to session that will be stopped on exit
+        Sends session start request and waits for the broker to confirm start
+
         Args:
             session: Session specification
 
         Returns:
-            the started Session
+            the specifications of the started session as communicated by the broker
         """
         if self._start_info is None:
             raise ValueError(f"Context manager not entered!")
@@ -688,10 +733,19 @@ class SessionManager:
 
         assert response.session.id not in self.sessions
         self.sessions[response.session.id] = response.session
-
         return response.session
 
     async def stop_session(self, session: ubii.proto.Session) -> str:
+        """
+        Sends a session stop request, waits for the broker to confirm stopping of the session,
+        then waits for all associated processing modules to be destroyed.
+
+        Args:
+            session: session specification as protobuf message
+
+        Returns:
+            the id of the stopped session
+        """
         if not session.id:
             raise ValueError(f"Session {session} has no id")
 
@@ -715,6 +769,7 @@ class SessionManager:
         await asyncio.gather(*map(wait_destroyed, pms))
 
         removed = self.sessions.pop(request_id)
+        removed.id = ""
         log.debug(f"Stopped session {removed}")
         return request_id
 
@@ -862,6 +917,8 @@ class ProcessingModuleManager(util.DefaultHookMap[str, processing.ProcessingRout
                 'elements': modules
             }
         )
+
+        log.debug(f"Sucessfully {'removed' if remove else 'started'} processing modules {modules}")
 
     async def handle_io_specs(self, session: ubii.proto.Session):
 

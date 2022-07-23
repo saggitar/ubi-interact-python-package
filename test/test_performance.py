@@ -2,31 +2,28 @@ import asyncio
 import logging
 import uuid
 
+import pandas as pd
 import pytest
 import ubii.proto as ub
 
-import ubii.framework.client
 from test.test_processing import TestPy as _TestPy
 from ubii.framework.client import RunProcessingModules, Publish, Subscriptions
-from ubii.node.pytest import make_fixture
-
-WRITE_PERFORMANCE_DATA = True
-
-pytestmark = pytest.mark.asyncio
+from ubii.framework.processing import Scheduler
+from ubii.node.pytest import params
 
 test_module = ub.ProcessingModule(
     on_created_stringified='\n'.join((
         'def on_created(self, context):',
-        '    context.frame_count = 0',
-        '    context.delta_times = []',
+        '    context.schedule_times = []',
+        '    context.exec_times = []',
         '',
     )),
     on_processing_stringified='\n'.join((
         'def on_processing(self, context):',
-        '    context.frame_count += 1',
-        '    if context.frame_count % 30 == 0:',
-        '        context.frame_count = 0',
-        '        context.delta_times.extend(context.scheduler.delta_times)',
+        '    if context.scheduler.schedule_delta_times:',
+        '        context.schedule_times.append(context.scheduler.schedule_delta_times[-1])',
+        '    if context.scheduler.exec_delta_times:',
+        '        context.exec_times.append(context.scheduler.exec_delta_times[-1])',
     )),
     language=ub.ProcessingModule.Language.PY,
 )
@@ -40,45 +37,127 @@ def module(hertz):
     return pytest.param((modified,), id=f'{hertz}hz')
 
 
+def get_err_specs(*values):
+    return {'count,mean,std,allowed_slow_frames': pytest.param(*values, id=f"err{'_'.join(map(str, values))}")}
+
+
 class TestPerformance(_TestPy):
-    module_spec = [module(h) for h in [10, 60, 120]]
+    module_spec = [module(h) for h in [200, 120, 60, 10]]  # overwrite class level module spec from TestPy
+
+    module_spec_params = {
+        '10hz': get_err_specs(0.15, 0.05, 0.05, 0),
+        '60hz': get_err_specs(0.15, 0.1, 0.8, 0),
+        '120hz': get_err_specs(0.15, 0.15, 2.5, 0),
+        '200hz': get_err_specs(0.15, 0.2, 8.0, 0.01),
+    }
+
+    @pytest.fixture(scope='class')
+    def count(self, request):
+        """
+        allowed relative error of counts
+        """
+        return request.param
+
+    @pytest.fixture(scope='class')
+    def mean(self, request):
+        """
+        allowed relative error of mean to target frequency
+        """
+        return request.param
+
+    @pytest.fixture(scope='class')
+    def std(self, request):
+        """
+        allowed std of average frequencies for 1s
+        """
+        return request.param
+
+    @pytest.fixture(scope='class')
+    def allowed_slow_frames(self, request):
+        """
+        Allowed relative number of frames where the execution time is larger than the delay
+        associated with the target frequency
+        """
+        return request.param
+
+    # we need to set up these fixtures like this so that the client is reset before the session is started!
+    @pytest.fixture
+    def reset_client(self, reset_and_start_client):
+        yield
 
     @pytest.fixture
-    async def running_pm(self, client: ubii.framework.client.UbiiClient, base_module, data_dir, request):
-        assert client.implements(RunProcessingModules)
-        pm = {mod.name: mod for mod in client[RunProcessingModules].get_modules()}.get(base_module.name)
-        pm._protocol.context.delta_times = []
+    def start_session(self, reset_client, session_for_client):
+        yield
+
+    @pytest.fixture
+    async def pm_startup(self, client, module_spec, caplog, start_session, task_clean_frequency):
+        """
+        Start the processing module, set the task clean frequency of the scheduler, wait until it is processing
+        """
+        caplog.set_level(logging.WARNING)
+
+        await client.implements(RunProcessingModules)
+        pm = {module.name: module for module in client[RunProcessingModules].get_modules()}.get(module_spec.name)
+
+        async with pm.change_specs:
+            await pm.change_specs.wait_for(lambda: pm.status == pm.Status.CREATED)
+
+        pm.protocol.context.scheduler.task_clean_frequency = task_clean_frequency
+        async with pm.change_specs:
+            await pm.change_specs.wait_for(lambda: pm.status == pm.Status.PROCESSING)
+
         yield pm
 
-        delta_times = pm._protocol.context.delta_times[1:]  # first value is time before processing was triggered
-        assert delta_times
-        assert all(r > 0 for r in delta_times)
-        assert pm.processing_mode.frequency
-
-        avg_delta = sum(delta_times) / len(delta_times)
-        max_delta = max(delta_times)
-
-        def relative_error(value):
-            delay = 1. / pm.processing_mode.frequency.hertz
-            return abs(delay - value) / delay
-
-        if WRITE_PERFORMANCE_DATA:
-            with (data_dir / request.node.name).open('w') as f:
-                f.write(f'delta_times\n')
-                f.write('\n'.join(map('{:.5f}'.format, delta_times)))
-
-        allowed_error = 0.05 * pm.processing_mode.frequency.hertz / 30
-        assert relative_error(avg_delta) < allowed_error
-        max_error = relative_error(max_delta)
-
-        print(f"Avg delta time: {avg_delta} over {len(delta_times)} measurements "
-              f"for target delay of {1. / pm.processing_mode.frequency.hertz}s (max error: {max_error})")
-
-    @pytest.mark.parametrize('duration', [10])
-    async def test_processing_module(self, client, base_session: ub.Session, running_pm, duration):
+    @pytest.mark.parametrize('duration', params('duration', 10))
+    @pytest.mark.parametrize('task_clean_frequency', params('task', 1, 10, 30))
+    @pytest.mark.parametrize('configure_logging', [{'version': 1}], indirect=True)
+    async def test_processing_module(self,
+                                     client,
+                                     configure_logging,
+                                     module_spec,
+                                     base_session: ub.Session,
+                                     pm_startup,
+                                     duration,
+                                     count,
+                                     mean,
+                                     std,
+                                     test_data,
+                                     task_clean_frequency,
+                                     allowed_slow_frames,
+                                     request):
         await asyncio.sleep(0.5)
         await client[Publish].publish({'topic': base_session.io_mappings[0].input_mappings[0].topic, 'bool': True})
         await asyncio.sleep(duration)
+
+        # stop the processing module
+        await type(pm_startup).halt(pm_startup)
+        await type(pm_startup).stop(pm_startup)
+
+        # evaluate performance
+        target_freq = pm_startup.processing_mode.frequency.hertz
+        target_count = duration * target_freq
+        schedule_times = pd.Series(pm_startup.protocol.context.schedule_times[1:])
+        exec_times = pd.Series(pm_startup.protocol.context.exec_times[5:])
+
+        stats = (1. / schedule_times).describe()
+        rolled_stats = (1. / schedule_times.rolling(target_freq // 2, min_periods=0).mean()).describe()
+
+        # first write performance data even for failed tests, disable by setting
+        # write_test_references=False in pytest.ini
+        interesting_values = {'hz': target_freq, 'task_clean_frequency': task_clean_frequency, 'duration': duration}
+        with test_data.write('_'.join(f"{k}-{v}" for k, v in interesting_values.items())) as f:
+            df = pd.concat({'raw': stats, 'rolling': rolled_stats}, axis=1)
+            df.to_csv(f, float_format='%.4f')
+
+        # check if the performance is ok
+        assert (exec_times > (1. / target_freq)).sum() / len(exec_times) <= allowed_slow_frames
+        assert not schedule_times.empty
+        assert (schedule_times > 0).all()
+        assert pm_startup.processing_mode.frequency
+        assert abs(target_freq - rolled_stats['mean']) / target_freq < mean
+        assert rolled_stats['std'] < std
+        assert abs(target_count - rolled_stats['count']) / target_count < count
+        print(rolled_stats)
 
 
 class TestPublishReceivePerformance:

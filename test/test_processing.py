@@ -7,7 +7,7 @@ import pytest
 import ubii.proto as ub
 
 from ubii.framework import processing
-from ubii.framework.client import RunProcessingModules, Subscriptions, Publish
+from ubii.framework.client import RunProcessingModules, Subscriptions, Publish, Sessions
 
 pytestmark = pytest.mark.asyncio
 
@@ -55,7 +55,8 @@ py_on_created_stringified = ub.ProcessingModule(
 
 
 class Processing:
-    def make_module(self):
+    @pytest.fixture(scope='class')
+    def base_module(self):
         processing_module = ub.ProcessingModule(
             name=MODULE_NAME,
             processing_mode={'trigger_on_input': {'min_delay_ms': 0,
@@ -77,7 +78,8 @@ class Processing:
         )
         return processing_module
 
-    async def make_session(self, client, start_session) -> ub.Session:
+    @pytest.fixture(scope='class')
+    async def base_session(self, client) -> ub.Session:
         await client
         module = client.processing_modules[0]
         input_topic = f"{client.id}/test_input"
@@ -104,18 +106,14 @@ class Processing:
                              processing_modules=[module],
                              io_mappings=io_mappings)
 
-        await start_session(session)
-        return session
+        yield session
 
-    base_session = pytest.fixture(scope='class')(make_session)
-    base_module = pytest.fixture(scope='class')(make_module)
-
-    @pytest.fixture(scope='class')
-    def startup(self):
+    @pytest.fixture
+    def pm_startup(self):
         pass
 
-    @pytest.fixture(scope='class')
-    async def test_value(self, startup, client, base_session: ub.Session):
+    @pytest.fixture
+    async def test_value(self, pm_startup, client, base_session: ub.Session):
         topic, = await client[Subscriptions].subscribe_topic(base_session.io_mappings[0].output_mappings[0].topic)
         yield topic.buffer
 
@@ -143,8 +141,8 @@ class TestPy(Processing):
         ),), id='processing_node')
     ]
 
-    @pytest.fixture(scope='class', autouse=True)
-    async def startup(self, client, session_spec, module_spec, start_session):
+    @pytest.fixture
+    async def pm_startup(self, client, module_spec, base_session, session_for_client):
         await client.implements(RunProcessingModules)
         pm = {module.name: module for module in client[RunProcessingModules].get_modules()}.get(module_spec.name)
         async with pm.change_specs:
@@ -207,8 +205,7 @@ class TestLateInitModules(TestPy):
         pytest.param(FakeModule, id=MODULE_NAME)
     ]
 
-    module_spec = [
-    ]
+    module_spec = []
 
     @pytest.mark.parametrize('data', [False, True])
     @pytest.mark.parametrize('timeout', [0.4])

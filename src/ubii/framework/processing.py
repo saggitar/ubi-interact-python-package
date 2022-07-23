@@ -11,13 +11,15 @@ import logging
 import types
 import typing
 import warnings
+
 import ubii.proto
 
 import codestare.async_utils
 from . import (
     protocol,
     util,
-    topics, debug
+    topics,
+    debug
 )
 from .util.typing import AsyncGetter, AsyncSetter
 
@@ -69,26 +71,43 @@ def fix_io_fmt(message_format: str) -> str:
 MAX_WORKERS = 8
 
 
-def default_perf_calc(scheduler: 'Scheduler') -> float:
+class perf_calc_callable(util.typing.Protocol):
+    def __call__(self, scheduler: Scheduler) -> float:
+        """
+        This should evalutate the performance of a scheduler instance somehow.
+
+        Args:
+            scheduler: scheduler instance
+
+        Returns:
+            a value indicating the performance
+        """
+
+
+def perf_calc(attr: str, scheduler: Scheduler) -> float:
     """
+    Args:
+        scheduler: scheduler instance
+        attr: name of attribute of the scheduler which contains the data for the performance evaluation.
+
     Returns:
-        performace of scheduler, calculated by computing relative error of average past execution times to
+        performace of scheduler, calculated by computing relative error of data to
         :attr:`~Scheduler.delay` i.e. for an average of past execution times
-        :math:`\\overline{t} = avg(\\text{scheduler.delta_times})` return :math:`1` if
+        :math:`\\overline{t} = avg(\\text{scheduler.exec_delta_times})` return :math:`1` if
         :math:`\\overline{t} < \\text{scheduler.delay}` otherwise calculate the relative deviation
         :math:`\\Delta t = \\frac{\\overline{t} - \\text{scheduler.delay}}{\\text{scheduler.delay}}` and return
         :math:`1 - \\Delta t` (negative values if :math:`\\Delta t > 1` allowed)
 
     """
-    values = scheduler.delta_times
+    if 'lockstep' in scheduler.mode:
+        warnings.warn(f"This performance rating is not applicable to schedulers in lockstep mode")
+
+    values = getattr(scheduler, attr, ())
     if not values:
         return 1.
 
     avg = sum(values) / len(values)
-    if avg < scheduler.delay:
-        return 1.  # 100 % performance
-    else:
-        return 1. - (avg - scheduler.delay) / scheduler.delay  # 1 - rel error
+    return 1. - (avg - scheduler.delay) / scheduler.delay  # 1 - rel error
 
 
 def check_datatype(io: ubii.proto.ModuleIO, record: ubii.proto.TopicDataRecord):
@@ -120,34 +139,16 @@ class Scheduler(util.CoroutineWrapper):
     number of cached delta times
     """
 
-    class LoopTime:
-        """
-        Utility class to calculate execution times
-        """
+    def __init__(
+            self,
+            callback: typing.Callable[[], None],
+            inputs: typing.Iterable[AsyncGetter],
+            mode: ubii.proto.ProcessingMode,
+            *,
+            schedule_perf_metric: perf_calc_callable = functools.partial(perf_calc, 'schedule_delta_times'),
+            exec_perf_metric: perf_calc_callable = functools.partial(perf_calc, 'exec_delta_times')
 
-        def __init__(self, loop: asyncio.AbstractEventLoop):
-            self.value = None
-            self.loop = loop
-
-        def record(self) -> None:
-            """
-            Records current loop time
-            """
-            self.value = self.loop.time()
-
-        def delta(self) -> float:
-            """
-            Evaluate delta between current loop time and last recorded loop time.
-            Returns 0 if no time has been recorded yet
-            """
-            return self.loop.time() - self.value if self.value else 0.
-
-    def __init__(self,
-                 callback: typing.Callable[[], None],
-                 inputs: typing.Iterable[AsyncGetter],
-                 mode: ubii.proto.ProcessingMode,
-                 *,
-                 perf_metric=default_perf_calc):
+    ):
         """
         The mode and inputs determine when the callback is executed.
 
@@ -158,22 +159,33 @@ class Scheduler(util.CoroutineWrapper):
                 returned :class:`~typing.Awaitable` will either be in :attr:`.done` or :attr:`.pending` when
                 the callback is scheduled
             mode: used :class:`~ubii.proto.ProcessingMode`
-            perf_metric: callable to evaluate scheduler overhead / performance
+            schedule_perf_metric: callable to evaluate scheduling overhead / performance, schould take one argument, the scheduler instance
+            exec_perf_metric: callable to evaluate execution callback overhead / performance
 
         See Also:
             :attr:`ubii.proto.ProcessingMode.mode` -- details on processing modes
         """
         self._nursery = codestare.async_utils.TaskNursery(name=f'Nursery for {self}', loop=asyncio.get_running_loop())
 
-        self._perf_metric = perf_metric.__get__(self, type(self))
-
+        self.schedule_perf_metric: typing.Callable[[], float] = functools.partial(schedule_perf_metric, self)
+        """
+        Call this method to calculate the performance of the scheduling timings
+        """
+        self.exec_perf_metric: typing.Callable[[], float] = functools.partial(exec_perf_metric, self)
+        """
+        Call this method to calculate the performance of the execution
+        """
         self.inputs: typing.Iterable[AsyncGetter] = inputs
         """
         callables to create awaitables for possibly needed inputs
         """
-        self.delta_times: typing.Deque = collections.deque(maxlen=self.DELTA_TIME_CACHE_SIZE)
+        self.schedule_delta_times: typing.Deque = collections.deque(maxlen=self.DELTA_TIME_CACHE_SIZE)
         """
         keep track of times between callback schedules for performance evaluation
+        """
+        self.exec_delta_times: typing.Deque = collections.deque(maxlen=self.DELTA_TIME_CACHE_SIZE)
+        """
+        keep track of execution times for callback for performance evaluation
         """
         self.done: typing.List[typing.Awaitable] = []
         """
@@ -194,19 +206,18 @@ class Scheduler(util.CoroutineWrapper):
         callbacks are possibly non-async callables, will be scheduled in this executor using 
         :meth:`asyncio.loop.run_in_executor`
         """
-        self.task_clean_frequency = 10
+        self.task_clean_frequency = 20
         """
         After every n callback schedules, cancel old input awaitables
         """
-        self.loop_time: Scheduler.LoopTime = self.LoopTime(self._nursery.loop)
-        """
-        Helps to calculate loop times for execution scheduling
-        """
 
         self._stop_during_next_iteration = False
-
         self._old_input_tasks = []
         self._scheduling_count = 0
+
+        self._scheduling_timestamp = None
+        self._exec_timestamp = None
+        self._get_timestamp = self._nursery.loop.time
 
         super().__init__(coroutine=self._trigger_loop())
 
@@ -228,19 +239,6 @@ class Scheduler(util.CoroutineWrapper):
         if self.mode.lockstep:
             raise NotImplementedError(f"Not implemented yet")
 
-    @property
-    def performance_rating(self) -> float:
-        """
-        Calculated using callable passed as ``perf_metric`` during initialization
-
-        Raises:
-            NotImplementedError: when the mode is ``lockstep``
-        """
-        if self.mode.lockstep:
-            raise NotImplementedError(f"Not applicable")
-
-        return self._perf_metric()
-
     def halt(self) -> None:
         """
         Call this method to stop the internal scheduler loop after the next iteration, which will finish the
@@ -248,7 +246,7 @@ class Scheduler(util.CoroutineWrapper):
         """
         self._stop_during_next_iteration = True
 
-    def _wait(self):
+    def _wait(self, epsilon=0.001):
         """
         Create input awaitables from :attr:`.inputs`, start possible coroutines as tasks
 
@@ -256,7 +254,7 @@ class Scheduler(util.CoroutineWrapper):
             awaitable that waits for inputs to become ready, depending on :attr:`.mode`
         """
         if self.mode.frequency:
-            timeout = self.delay - self.loop_time.delta()
+            timeout = self.delay - (self._get_timestamp() - self._scheduling_timestamp) - epsilon
             timeout = timeout if timeout > 0 else 0
         else:
             timeout = None
@@ -274,7 +272,7 @@ class Scheduler(util.CoroutineWrapper):
         )
         return asyncio.wait(awts, timeout=timeout, return_when=return_when)
 
-    async def _trigger_loop(self):
+    async def _trigger_loop(self, epsilon=0.001):
         """
         This method is used to generate the coroutine that is wrapped internally.
         There is no need to call this method manually, just `await` the scheduler.
@@ -284,25 +282,30 @@ class Scheduler(util.CoroutineWrapper):
         :attr:`.inputs` are `ready` (this means that either `one` or `all` of the input awaitables finished,
         depending on the :attr:`.mode`) and / or the :attr:`.delay` has passed.
         """
-        self.loop_time.record()
+        self._scheduling_timestamp = self._get_timestamp()
 
         with self.executor as pool:
             while not self._stop_during_next_iteration:
 
                 self.done, self.pending = await self._wait()
-                since_last_recorded_time = self.loop_time.delta()
-                remaining = self.delay - since_last_recorded_time
+                since_last_schedule = self._get_timestamp() - self._scheduling_timestamp
+                remaining = self.delay - since_last_schedule
 
-                if remaining > 0:
-                    await asyncio.sleep(remaining)
-                    self.delta_times.append(self.loop_time.delta())
-                else:
-                    self.delta_times.append(since_last_recorded_time)
+                if remaining > epsilon:
+                    await asyncio.sleep(remaining - epsilon)
+                    since_last_schedule = self._get_timestamp() - self._scheduling_timestamp
 
+                self.schedule_delta_times.append(since_last_schedule)
+                self._exec_timestamp = self._get_timestamp()
+                self._scheduling_timestamp = self._get_timestamp()
                 await self._nursery.loop.run_in_executor(pool, self.callback)
-                self.loop_time.record()
+                self.exec_delta_times.append(self._get_timestamp() - self._exec_timestamp)
 
                 self._scheduling_count += 1
+                if self.task_clean_frequency == 1:
+                    await self._clean_old_inputs()
+                    continue
+
                 self._old_input_tasks.extend(self.pending)
                 if self._scheduling_count % self.task_clean_frequency == 0:
                     self._scheduling_count = 0
@@ -333,6 +336,7 @@ class ProcessingRoutine(ubii.proto.ProcessingModule, metaclass=util.ProtoRegistr
     """
     See documentation of :class:`ubii.framework.util.ProtoRegistry` for more information
     """
+
     class rules:
         """
         Rules to validate the protobuf message
@@ -408,6 +412,13 @@ class ProcessingRoutine(ubii.proto.ProcessingModule, metaclass=util.ProtoRegistr
 
         self._input_source_getter = None
         self._output_destination_getter = None
+
+    @property
+    def protocol(self):
+        """
+        Reference to the :class:`ProcessingProtocol` managing this routine
+        """
+        return self._protocol
 
     def _eval_string_funcs(self):
         suffix = '_stringified'
@@ -509,12 +520,7 @@ class ProcessingRoutine(ubii.proto.ProcessingModule, metaclass=util.ProtoRegistr
                     muxer = topics.TopicMuxer(mapping=mapping.topic_mux)
                     topic_map[muxer.topic_selector].register_callback(lambda record: muxer.records.set([record]))
 
-                muxer_getter = (
-                    functools.partial(muxer.records.get, predicate=lambda: True)
-                    if self.processing_mode.frequency else
-                    muxer.records.get
-                )
-                return muxer_getter
+                return functools.partial(muxer.records.get, wait_for_write=not self.processing_mode.frequency)
 
             elif mapping.topic:
                 return functools.partial(
@@ -902,7 +908,7 @@ class ProcessingProtocol(protocol.AbstractProtocol[PM_STAT]):
                 scheduler: The Scheduler scheduling the callback
                 ctx: The context that will be passed to the callback
             """
-            ctx.delta_time = scheduler.delta_times[-1] if scheduler.delta_times else None
+            ctx.delta_time = scheduler.schedule_delta_times[-1] if scheduler.schedule_delta_times else None
             inputs = vars(ctx.inputs)
 
             inputs.update(**{

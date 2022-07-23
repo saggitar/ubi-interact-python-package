@@ -2,8 +2,10 @@ from __future__ import annotations
 
 import argparse
 import collections
+import functools
 import importlib.resources
 import logging.config
+import warnings
 from typing import (
     Dict,
     List,
@@ -20,7 +22,40 @@ __config__ = yaml.safe_load(importlib.resources.read_text(util, 'logging_config.
 class _logging_setup:
     log_config = collections.namedtuple('log_config', ['config', 'level', 'warning_filter'])
 
+    @staticmethod
+    def add_log_level(name: str, value: int):
+        """
+        Adds a custom log level to the logging module
+
+        Args:
+            value: logging level
+            name: name of the new level
+
+        """
+        callback_name = name.lower()
+        logger_kls = logging.getLoggerClass()
+        existing = {
+            obj: getattr(obj, attr, None)
+            for obj in (logging, logger_kls)
+            for attr in (name, callback_name)
+        }
+        if any(existing.values()):
+            warnings.warn(
+                f"Can't configure new log level, "
+                f"attributes found: {','.join(f'{k} -> {v}' for k,v in existing.items() if v)}"
+            )
+            return
+
+        assert hasattr(logger_kls, 'log')
+        logging.addLevelName(value, name)
+        setattr(logging, name, value)
+        setattr(logger_kls, callback_name, functools.partialmethod(logger_kls.log, value))
+        setattr(logging, callback_name, functools.partial(logging.log, value))
+
     def __init__(self, base_config=__config__, log_level=logging.INFO, warning_filter: str = 'always'):
+        if not hasattr(logging, 'VERBOSE'):
+            self.add_log_level('VERBOSE', logging.DEBUG - 5)
+
         self.base_config = self.log_config(config=base_config, warning_filter=warning_filter, level=log_level)
         self._configs: List[_logging_setup.log_config] = [self.base_config]
         self._applied = False

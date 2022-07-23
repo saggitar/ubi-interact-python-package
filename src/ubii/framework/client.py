@@ -75,11 +75,11 @@ import abc
 import asyncio
 import contextlib
 import dataclasses
-import itertools
 import logging
 import typing
 import warnings
 
+import itertools
 import ubii.proto
 
 from . import (
@@ -94,7 +94,7 @@ from .util.typing import (
     Protocol,
     T_EnumFlag,
     T,
-    Decorator, AsyncGetter
+    Decorator
 )
 
 __protobuf__ = ubii.proto.__protobuf__
@@ -310,6 +310,10 @@ class Sessions:
     """
     await to stop a session 
     """
+    get_sessions: typing.Callable[[], typing.Awaitable[ubii.proto.SessionList]] | None = None
+    """
+    await to get running sessions
+    """
 
 
 @dataclasses.dataclass(**_data_kwargs)
@@ -450,6 +454,12 @@ class UbiiClient(ubii.proto.Client,
     """
 
     __unique_key_attr__: str = 'id'
+
+    IMPLEMENT_TIMEOUT = None
+    """
+    Set this value if you want to debug code that hangs in waiting for implementations using
+    :attr:`.implements`
+    """
 
     @util.dunder.repr('client')
     class ClientInitTaskWrapper(typing.Awaitable['UbiiClient']):
@@ -631,7 +641,7 @@ class UbiiClient(ubii.proto.Client,
         """
         return self._change_specs
 
-    def implements(self, *behaviours) -> util.awaitable_predicate:
+    def implements(self, *behaviours, timeout: float | None = IMPLEMENT_TIMEOUT) -> util.awaitable_predicate:
         """
         Returns an object that can be used to check if the client implements a certain behaviour
         or wait until it is implemented.
@@ -677,7 +687,7 @@ class UbiiClient(ubii.proto.Client,
             return all(getattr(self._behaviours[b], field.name) is not None
                        for b in behaviours for field in dataclasses.fields(b))
 
-        return util.awaitable_predicate(predicate=fields_not_none, condition=self._change_specs)
+        return util.awaitable_predicate(predicate=fields_not_none, condition=self._change_specs, timeout=timeout)
 
     @property
     def behaviours(self):
@@ -695,12 +705,13 @@ class UbiiClient(ubii.proto.Client,
             yield client
 
     def __await__(self):
-        if self.protocol.state.value is None:
-            self.protocol.start()
-
         if self.protocol.finished:
             warnings.warn(f"{self} was stopped, you can "
-                          f"triggered protocol restart by resetting the client with client.reset()", UserWarning)
+                          f"try triggering a protocol restart by resetting the "
+                          f"client with client.reset()", UserWarning)
+
+        if not self.protocol.was_started:
+            self.protocol.start()
 
         return self._init.__await__()
 
@@ -733,10 +744,21 @@ class UbiiClient(ubii.proto.Client,
 
         self._init.reset()
 
+        warning = None
+
+        try:
+            await self.protocol.state.set(None)
+        except ValueError:
+            warning = (f"{type(self.protocol)} does not seem to support resetting the protocol state."
+                       f" It does not define a state change from its end state to None!")
+
         for name, value in self._init_specs.items():
             setattr(self, name, value)
 
-        log.debug(f"{self} (with old id {old_id!r}) was reset successfully and can be used again.")
+        if warning:
+            warnings.warn(warning)
+        else:
+            log.debug(f"{self} (with old id {old_id!r}) was reset successfully and can be used again.")
 
     @property
     def protocol(self: UbiiClient[T_Protocol]) -> T_Protocol:

@@ -62,6 +62,10 @@ def pytest_addoption(parser):
         'cli_entry_point',
         default='ubii-client', help='Entry point for CLI'
     )
+    parser.addini(
+        'write_test_references',
+        default=True, help='Some tests write additional data to the data_dir, set to false to disable'
+    )
 
 
 def pytest_configure(config):
@@ -69,7 +73,7 @@ def pytest_configure(config):
     Sets verbosity and checks if the protobuf package is installed correctly
     """
     global __verbosity__
-    __verbosity__ = logging.INFO - 10 * config.getoption('verbose')
+    __verbosity__ = logging.INFO - 5 * config.getoption('verbose')
 
     import ubii.proto
     assert ubii.proto.__proto_package__ is not None, "No proto package set, aborting test setup."
@@ -91,10 +95,17 @@ def pytest_runtest_setup(item: pytest.Item):
                                 f" a function scoped event_loop fixture to create a new loop for each call")
 
 
-@pytest.fixture(scope='session', autouse=True)
+@pytest.fixture(autouse=True)
+def configure_verbosity(caplog):
+    caplog.set_level(__verbosity__)
+    yield
+
+
+@pytest.fixture(scope='session')
 def configure_logging(request):
     """
-    Change log config if fixture is requested
+    Change log config if fixture is requested.
+    You should use the caplog fixture if possible!
 
     Args:
         request: will be passed if fixture is parametrized indirectly,
@@ -113,6 +124,37 @@ def configure_logging(request):
 
     with logging_setup:
         yield logging_setup
+
+
+class TestDataHandler:
+    """
+    Easier management of test data files
+    """
+
+    def __init__(self, dir_path: pathlib.Path):
+        self.dir_path = dir_path
+        self.dir_path.mkdir(exist_ok=True, parents=True)
+
+    @contextlib.contextmanager
+    def write(self, filename: str, mode='w'):
+        with (self.dir_path / filename).open(mode=mode) as f:
+            yield f
+
+    @contextlib.contextmanager
+    def read(self, filename: str, mode='r'):
+        with (self.dir_path / filename).open(mode=mode) as f:
+            yield f
+
+
+@pytest.fixture
+def test_data(pytestconfig, data_dir, tmp_path, request) -> TestDataHandler:
+    cls = getattr(request.node, 'cls', None)
+    if cls:
+        data_dir = data_dir / cls.__name__
+
+    yield TestDataHandler(
+        data_dir / request.node.originalname if pytestconfig.getini('write_test_references') else tmp_path
+    )
 
 
 @pytest.fixture(scope='session', autouse=True)
@@ -267,38 +309,53 @@ async def client_spec(
     yield base_client
 
 
-async def _make_client(client_spec, late_init_module_spec) -> UbiiClient:
+@pytest.fixture(scope='class')
+async def client(client_spec, late_init_module_spec) -> UbiiClient:
     """
     We need more control over the client, so don't use the default client interface.
     """
     protocol = DefaultProtocol()
     client = UbiiClient(**type(client_spec).to_dict(client_spec), protocol=protocol)
     protocol.client = client
+    type(client).IMPLEMENT_TIMEOUT = 2
 
     if late_init_module_spec:
         client[InitProcessingModules].module_factories = late_init_module_spec
 
     yield client
-    if not client.protocol.finished:
+    if not client.protocol.finished and client.protocol.was_started:
         await client.protocol.stop()
 
 
-async def _session(client):
-    """
-    Get callable to start a session.
-    Session will be stopped automatically if test suite finishes
-    """
-
-    async def start(session):
+@pytest.fixture
+async def session_for_client(client, base_session):
+    if not base_session.id:
         await client.implements(Sessions)
-        session_manager = client.protocol.context.session_manager
-        setattr(session_manager, f"_{type(session_manager).__name__}__remove_sessions", True)
-        return await client[Sessions].start_session(session)
+        for module in base_session.processing_modules:
+            module.node_id = client.id
 
-    yield start
+        started = await client[Sessions].start_session(base_session)
+    else:
+        started = base_session
+
+    yield
+
+    if started.id:
+        await client[Sessions].stop_session(started)
 
 
-def _event_loop() -> asyncio.AbstractEventLoop:
+@pytest.fixture
+async def reset_and_start_client(client):
+    await client
+
+    yield
+
+    await client.protocol.stop()
+    await client.reset()
+
+
+@pytest.fixture(scope='session')
+def event_loop() -> asyncio.AbstractEventLoop:
     """
     We need better control over the asyn processing
     """
@@ -322,21 +379,8 @@ def _event_loop() -> asyncio.AbstractEventLoop:
     loop.close()
 
 
-def make_fixture(name, scope):
-    base = {
-        'event_loop': _event_loop,
-        'client': _make_client,
-        'start_session': _session
-    }.get(name)
-    if not base:
-        raise ValueError("Unsupported name")
-
-    return pytest.fixture(scope=scope)(base)
-
-
-client = make_fixture('client', scope='class')
-start_session = make_fixture('start_session', scope='class')
-event_loop = make_fixture('event_loop', scope='session')
+def params(name: str, *values):
+    return [pytest.param(value, id=f"{name}{value}") for value in values]
 
 
 def pytest_generate_tests(metafunc):
@@ -354,5 +398,30 @@ def pytest_generate_tests(metafunc):
     for spec in specs:
         if hasattr(metafunc.cls, spec) and spec in metafunc.fixturenames:
             parametrization = getattr(metafunc.cls, spec)
+            additional_params = getattr(metafunc.cls, f"{spec}_params", None)
+            assert not additional_params or parametrization, (
+                f"Additional params {additional_params} without parametrization {spec}"
+            )
+
             if parametrization:
-                metafunc.parametrize(spec, parametrization, indirect=[spec])
+                if not additional_params:
+                    metafunc.parametrize(spec, parametrization, indirect=[spec])
+                    continue
+
+                param_dict = {id_: (values, marks, id_) for values, marks, id_ in parametrization}
+                param_ids = list(param_dict)
+
+                for param_id in param_ids:
+                    param_string = spec
+                    params = additional_params.get(param_id, {})
+                    values, marks, id = param_dict.pop(param_id)
+                    for n, (new_values, new_marks, new_id) in params.items():
+                        param_string += f',{n}'
+                        id += f"-{new_id}"
+                        values = *values, *new_values
+                        marks = *marks, *new_marks
+
+                    param_dict.setdefault(param_string, []).append(pytest.param(*values, marks=marks, id=id))
+
+                for k, params in param_dict.items():
+                    metafunc.parametrize(k, params, indirect=[*k.split(',')])

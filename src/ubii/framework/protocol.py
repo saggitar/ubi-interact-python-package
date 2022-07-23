@@ -55,6 +55,13 @@ class AbstractProtocol(Generic[T_EnumFlag], abc.ABC):
         """
         return self.state.value == self.end_state
 
+    @property
+    def was_started(self) -> bool:
+        """
+        Convenience property that returns whether a protocol has already been started
+        """
+        return self._run is not None
+
     @util.cached_property
     def context(self) -> types.SimpleNamespace:
         """
@@ -124,7 +131,7 @@ class AbstractProtocol(Generic[T_EnumFlag], abc.ABC):
             :attr:`.task_nursery` -- the object that handles cancellation / stopping of the task when
             necessary
         """
-        if self._run:
+        if self.was_started:
             warnings.warn(f"{self} already running.")
             return self
 
@@ -145,7 +152,7 @@ class AbstractProtocol(Generic[T_EnumFlag], abc.ABC):
         Returns control back to the caller after the task created by :meth:`.start` stopped and all teardown
         callbacks have been scheduled
         """
-        assert self._run, "Protocol not running, `start()` first"
+        assert self.was_started, "Protocol not running, `start()` first"
         await self.state.set(self.end_state)
         await self._run
         await self.task_nursery.aclose()

@@ -18,8 +18,8 @@ import urllib.parse
 import warnings
 
 import aiohttp
-
 import ubii.proto
+
 from ubii.framework import (
     services,
     topics,
@@ -253,9 +253,9 @@ class AIOHttpWebsocketConnection(AIOHttpConnection, topics.DataConnection):
             elif message.type == aiohttp.WSMsgType.TEXT:
                 if message.data == "PING":
                     await self.ws.send_str('PONG')
-                    self.log_socket_out.debug(f"Sending 'PONG'")
+                    self.log_socket_out.log(logging.DEBUG - 5, f"Sending 'PONG'")
 
-                self.log_socket_in.debug(f"Received {message.data}")
+                self.log_socket_in.log(logging.DEBUG - 5, f"Received {message.data}")
             elif message.type == aiohttp.WSMsgType.BINARY:
                 data = ubii.proto.TopicData.deserialize(message.data)
                 self.log_socket_in.debug(f"Received {data}")
@@ -380,7 +380,6 @@ class AIOHttpRestConnection(AIOHttpConnection, services.ServiceConnection):
             json = await asyncio.wait_for(resp.text(), timeout=timeout)
             return ubii.proto.ServiceReply.from_json(json,
                                                      ignore_unknown_fields=True)  # master node bug requires ignore
-
 
 
 def aiohttp_session():

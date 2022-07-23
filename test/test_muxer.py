@@ -128,9 +128,10 @@ class TestMuxerProcessing:
     @pytest.mark.parametrize('topic_data', [
         [{'int32': n} for n in range(10)]
     ], indirect=True)
-    async def test_muxer_processing(self, client, session_spec, module_spec, start_session, topic_data):
+    async def test_muxer_processing(self, client, session_spec, module_spec, topic_data):
         await client
-        await start_session(session_spec)
+        await client.implements(ubii.framework.client.Sessions)
+        await client[ubii.framework.client.Sessions].start_session(session_spec)
 
         topic, = await client[ubii.framework.client.Subscriptions].subscribe_regex('/demuxer/*')
         received = []
@@ -144,3 +145,4 @@ class TestMuxerProcessing:
         assert len(received) == 5
         assert all(record.topic == f"/demuxer/{client.id}" for record in received)
         assert all(value in [record.int32 for record in received] for value in [0, 2, 4, 6, 8])
+        await client[ubii.framework.client.Sessions].stop_session(session_spec)
