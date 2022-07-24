@@ -12,6 +12,7 @@ import types
 import typing
 import warnings
 
+import sys
 import ubii.proto
 
 import codestare.async_utils
@@ -211,15 +212,57 @@ class Scheduler(util.CoroutineWrapper):
         After every n callback schedules, cancel old input awaitables
         """
 
+        self._timing_epsilons = None
+
         self._stop_during_next_iteration = False
         self._old_input_tasks = []
         self._scheduling_count = 0
-
         self._scheduling_timestamp = None
         self._exec_timestamp = None
         self._get_timestamp = self._nursery.loop.time
 
         super().__init__(coroutine=self._trigger_loop())
+
+    @property
+    def timing_thresholds(self) -> typing.Tuple[float, ...]:
+        """
+        These are the thresholds and minimum times for the asyncio sleep call. They depend on your system and
+        event loop implementation. If they are set, the scheduler will adjust it's scheduling behaviour in frequency
+        mode accordingly. If they are not set, no adjustments are made.
+
+        Example:
+
+            On linux with the default event loop you can set
+
+                scheduler.timing_epsilons = (0.001, 0.00015)
+
+            to adjust for the behaviour of the `epoll_await` system call
+
+        """
+        return self._timing_epsilons
+
+    @timing_thresholds.setter
+    def timing_thresholds(self, value) -> None:
+        self._timing_epsilons = value
+        if self.timing_adjustment is not None:
+            del self.timing_adjustment
+
+    @functools.cached_property
+    def timing_adjustment(self):
+        """
+        This read only property caches the appropriate adjustment for the timing code according to the
+        set :attr:`timing_thresholds` and the processing mode (in all modes but frequency mode, the adjustment
+        is 0)
+        """
+        if 'frequency' not in self.mode:
+            return 0.
+
+        values = sorted((self.delay,) + self._timing_epsilons)
+        cutoff = values.index(self.delay)
+        if values[:cutoff]:
+            return values[:cutoff][-1]
+
+        return self._timing_epsilons[0] if self._timing_epsilons else 0.
 
     @property
     def delay(self) -> float:
@@ -246,7 +289,7 @@ class Scheduler(util.CoroutineWrapper):
         """
         self._stop_during_next_iteration = True
 
-    def _wait(self, epsilon=0.001):
+    def _wait(self):
         """
         Create input awaitables from :attr:`.inputs`, start possible coroutines as tasks
 
@@ -254,7 +297,7 @@ class Scheduler(util.CoroutineWrapper):
             awaitable that waits for inputs to become ready, depending on :attr:`.mode`
         """
         if self.mode.frequency:
-            timeout = self.delay - (self._get_timestamp() - self._scheduling_timestamp) - epsilon
+            timeout = self.delay - (self._get_timestamp() - self._scheduling_timestamp) - 2 * self.timing_adjustment
             timeout = timeout if timeout > 0 else 0
         else:
             timeout = None
@@ -272,7 +315,7 @@ class Scheduler(util.CoroutineWrapper):
         )
         return asyncio.wait(awts, timeout=timeout, return_when=return_when)
 
-    async def _trigger_loop(self, epsilon=0.001):
+    async def _trigger_loop(self):
         """
         This method is used to generate the coroutine that is wrapped internally.
         There is no need to call this method manually, just `await` the scheduler.
@@ -282,6 +325,8 @@ class Scheduler(util.CoroutineWrapper):
         :attr:`.inputs` are `ready` (this means that either `one` or `all` of the input awaitables finished,
         depending on the :attr:`.mode`) and / or the :attr:`.delay` has passed.
         """
+
+        _ = self.timing_adjustment
         self._scheduling_timestamp = self._get_timestamp()
 
         with self.executor as pool:
@@ -289,10 +334,10 @@ class Scheduler(util.CoroutineWrapper):
 
                 self.done, self.pending = await self._wait()
                 since_last_schedule = self._get_timestamp() - self._scheduling_timestamp
-                remaining = self.delay - since_last_schedule
+                remaining = self.delay - since_last_schedule - self.timing_adjustment
 
-                if remaining > epsilon:
-                    await asyncio.sleep(remaining - epsilon)
+                if remaining > 0:
+                    await asyncio.sleep(remaining)
                     since_last_schedule = self._get_timestamp() - self._scheduling_timestamp
 
                 self.schedule_delta_times.append(since_last_schedule)
@@ -1030,6 +1075,9 @@ class ProcessingProtocol(protocol.AbstractProtocol[PM_STAT]):
             inputs=[util.enrich(name, getter) for name, getter in inputs.items()],
             mode=self.pm.processing_mode
         )
+
+        if 'linux' in sys.platform and 'frequency' in context.scheduler.mode:
+            context.scheduler.timing_thresholds = (0.001, 0.00015)
 
         self.created_tasks += [context.nursery.create_task(context.scheduler)]
         await self.state.set(PM_STAT.CREATED)

@@ -8,7 +8,6 @@ import ubii.proto as ub
 
 from test.test_processing import TestPy as _TestPy
 from ubii.framework.client import RunProcessingModules, Publish, Subscriptions
-from ubii.framework.processing import Scheduler
 from ubii.node.pytest import params
 
 test_module = ub.ProcessingModule(
@@ -47,7 +46,7 @@ class TestPerformance(_TestPy):
     module_spec_params = {
         '10hz': get_err_specs(0.15, 0.05, 0.05, 0),
         '60hz': get_err_specs(0.15, 0.1, 0.8, 0),
-        '120hz': get_err_specs(0.15, 0.15, 2.5, 0),
+        '120hz': get_err_specs(0.15, 0.15, 3.5, 0),
         '200hz': get_err_specs(0.15, 0.2, 8.0, 0.01),
     }
 
@@ -90,7 +89,7 @@ class TestPerformance(_TestPy):
         yield
 
     @pytest.fixture
-    async def pm_startup(self, client, module_spec, caplog, start_session, task_clean_frequency):
+    async def pm_startup(self, client, module_spec, caplog, start_session, task_clean_frequency, adjust_asyncio_delay):
         """
         Start the processing module, set the task clean frequency of the scheduler, wait until it is processing
         """
@@ -103,6 +102,10 @@ class TestPerformance(_TestPy):
             await pm.change_specs.wait_for(lambda: pm.status == pm.Status.CREATED)
 
         pm.protocol.context.scheduler.task_clean_frequency = task_clean_frequency
+
+        if not adjust_asyncio_delay:
+            pm.protocol.context.scheduler.timing_thresholds = ()
+
         async with pm.change_specs:
             await pm.change_specs.wait_for(lambda: pm.status == pm.Status.PROCESSING)
 
@@ -110,6 +113,7 @@ class TestPerformance(_TestPy):
 
     @pytest.mark.parametrize('duration', params('duration', 10))
     @pytest.mark.parametrize('task_clean_frequency', params('task', 1, 10, 30))
+    @pytest.mark.parametrize('adjust_asyncio_delay', params('adjust_delay', True, False))
     @pytest.mark.parametrize('configure_logging', [{'version': 1}], indirect=True)
     async def test_processing_module(self,
                                      client,
@@ -124,6 +128,7 @@ class TestPerformance(_TestPy):
                                      test_data,
                                      task_clean_frequency,
                                      allowed_slow_frames,
+                                     adjust_asyncio_delay,
                                      request):
         await asyncio.sleep(0.5)
         await client[Publish].publish({'topic': base_session.io_mappings[0].input_mappings[0].topic, 'bool': True})
@@ -144,7 +149,11 @@ class TestPerformance(_TestPy):
 
         # first write performance data even for failed tests, disable by setting
         # write_test_references=False in pytest.ini
-        interesting_values = {'hz': target_freq, 'task_clean_frequency': task_clean_frequency, 'duration': duration}
+        interesting_values = {
+            'hz': target_freq,
+            'task_clean_frequency': task_clean_frequency,
+            'adjust_delay': adjust_asyncio_delay
+        }
         with test_data.write('_'.join(f"{k}-{v}" for k, v in interesting_values.items())) as f:
             df = pd.concat({'raw': stats, 'rolling': rolled_stats}, axis=1)
             df.to_csv(f, float_format='%.4f')
