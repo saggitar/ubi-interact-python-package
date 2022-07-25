@@ -136,7 +136,7 @@ class AbstractProtocol(Generic[T_EnumFlag], abc.ABC):
             return self
 
         async def stop_if_running(protocol: AbstractProtocol):
-            if protocol._run:
+            if protocol.was_started and not protocol.finished:
                 await protocol.stop()
 
         self._run = self.task_nursery.create_task(RunProtocol(self))

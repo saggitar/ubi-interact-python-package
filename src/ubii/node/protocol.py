@@ -11,8 +11,8 @@ import warnings
 import weakref
 
 import aiohttp
-import ubii.proto
 
+import ubii.proto
 from ubii.framework import (
     topics,
     services,
@@ -505,8 +505,8 @@ class LegacyProtocol(client.AbstractClientProtocol[States]):
         assert context.client is not None
         module_manager = ProcessingModuleManager(context)
 
-        context.client[client.RunProcessingModules].get_modules = (
-            lambda: list(module_manager[spec.name] for spec in context.client.processing_modules)
+        context.client[client.RunProcessingModules].get_module_instance = (
+            module_manager.get_instance
         )
 
         assert context.constants is not None
@@ -641,7 +641,7 @@ class SessionManager:
         self._client = client
         self.sessions: typing.Dict[str, ubii.proto.Session] = {}
         """
-        The started sessions
+        The started sessions, mapping :math:`id \\rightarrow Session`
         """
         self._start_info: topics.Topic | None = None
         self._stop_info: topics.Topic | None = None
@@ -733,6 +733,23 @@ class SessionManager:
 
         assert response.session.id not in self.sessions
         self.sessions[response.session.id] = response.session
+
+        own_modules = [module for module in informed.session.processing_modules if module.node_id == self._client.id]
+        if own_modules:
+            assert self._client.implements(client.RunProcessingModules), (
+                f"{client} can't run processing modules {own_modules}"
+            )
+
+            created = await asyncio.gather(*[
+                self._client[client.RunProcessingModules].get_module_instance(
+                    module.name,
+                    ubii.proto.ProcessingModule.Status.CREATED
+                )
+                for module in own_modules
+            ])
+
+            assert len(created) == len(own_modules)
+
         return response.session
 
     async def stop_session(self, session: ubii.proto.Session) -> str:
@@ -754,27 +771,32 @@ class SessionManager:
 
         assert self._client.implements(client.Services)
         info = self._client.task_nursery.create_task(self._stop_info.buffer.get())
-        request_id = session.id
+
+        own_modules = [module for module in session.processing_modules if module.node_id == self._client.id]
+        if own_modules:
+            stopped = asyncio.gather(*[
+                self._client[client.RunProcessingModules].get_module_instance(module.name, module.Status.DESTROYED)
+                for module in own_modules
+            ])
+        else:
+            stopped = []
+
         await self._client[client.Services].service_map.session_runtime_stop(session=session)
+
         informed: ubii.proto.TopicDataRecord = await asyncio.wait_for(info, timeout=self._timeout)
-        if informed.session.id != request_id:
+        if informed.session.id != session.id:
             raise ValueError(f"Session from info topic not requested session")
 
-        pms = [processing.ProcessingRoutine.registry.get(spec.name) for spec in session.processing_modules]
+        if stopped:
+            await stopped
+            assert len(stopped.result()) == len(own_modules), "Failed to stop own modules"
 
-        async def wait_destroyed(pm: processing.ProcessingRoutine):
-            async with pm.change_specs:
-                await pm.change_specs.wait_for(lambda: pm.status == pm.Status.DESTROYED)
-
-        await asyncio.gather(*map(wait_destroyed, pms))
-
-        removed = self.sessions.pop(request_id)
-        removed.id = ""
+        removed = self.sessions.pop(session.id)
         log.debug(f"Stopped session {removed}")
-        return request_id
+        return session.id
 
 
-class ProcessingModuleManager(util.DefaultHookMap[str, processing.ProcessingRoutine]):
+class ProcessingModuleManager:
     """
     Handles processing module setup and teardown for a :class:`LegacyProtocol`
     """
@@ -828,18 +850,21 @@ class ProcessingModuleManager(util.DefaultHookMap[str, processing.ProcessingRout
         Args:
             context: the context we are working with
         """
-        super().__init__(base_factory=self.create_module)
-        self.by: ProcessingModuleManager.access_handler = self.access_handler(self.data)
+        self.managed_modules: typing.MutableMapping[str, processing.ProcessingRoutine] = {}
+        """
+        modules instantiated by the manager 
+        """
+        self.by: ProcessingModuleManager.access_handler = self.access_handler(self.managed_modules)
         """
         Use the specific methods to access the managed modules by status / name / id
         """
         self.pm_subscriptions: weakref.WeakValueDictionary[int, topics.Topic] = weakref.WeakValueDictionary()
 
-        self.running = util.accessor()
-
         self._context: LegacyProtocol.Context = context
         self._create_specs = {module.name: module for module in context.client.processing_modules}
         self._create_specs_by = self.access_handler(self._create_specs)
+
+        self._managed_modules_changed = asyncio.Condition()
 
     @contextlib.asynccontextmanager
     async def _handle(self, module: processing.ProcessingRoutine):
@@ -848,7 +873,34 @@ class ProcessingModuleManager(util.DefaultHookMap[str, processing.ProcessingRout
         if started.status != started.Status.DESTROYED:
             await processing.ProcessingRoutine.halt(started)
 
-    def create_module(self, name: str):
+    async def get_instance(
+            self,
+            name: str,
+            *status: ubii.proto.ProcessingModule.Status
+    ) -> processing.ProcessingRoutine:
+        async with self._managed_modules_changed:
+            module: processing.ProcessingRoutine = (
+                await self._managed_modules_changed.wait_for(functools.partial(self.managed_modules.get, name))
+            )
+
+        async with module.change_specs:
+            every_status = set(module.Status)
+            await module.change_specs.wait_for(
+                lambda: module.status in status or every_status
+            )
+
+        return module
+
+    async def create_module(self, name: str) -> None:
+        """
+        Create a module if specifications for the module are part of the clients processing modules
+
+        Args:
+            name: The name of the module
+
+        Returns:
+            a processing module instance
+        """
         specs = self._create_specs_by.name(name)
         if not specs:
             raise ValueError(f"No module specs for name {name} found")
@@ -876,10 +928,12 @@ class ProcessingModuleManager(util.DefaultHookMap[str, processing.ProcessingRout
         else:
             log.warning(f"Already running module with same specifications and name {specs.name}")
 
-        return module
+        async with self._managed_modules_changed:
+            self.managed_modules[name] = module
+            self._managed_modules_changed.notify_all()
 
-    async def add_modules(self, session: ubii.proto.Session):
-        added = []
+    async def create_modules_for_sessions(self, session: ubii.proto.Session):
+        created = []
         for specs in session.processing_modules:
             if specs.node_id != self._context.client.id:
                 continue
@@ -891,14 +945,15 @@ class ProcessingModuleManager(util.DefaultHookMap[str, processing.ProcessingRout
                 raise ValueError(f"Module specs {specs} don't include a name, can't create module without name")
 
             self._create_specs[specs.name] = specs
-            module = self[specs.name]
+            await self.create_module(specs.name)
+            module = self.managed_modules[specs.name]
 
             await processing.ProcessingRoutine.mutate_pm(module, specs)
             await self._context.client.task_nursery.enter_async_context(self._handle(module))
-            assert specs.name in self
-            added.append(module)
+            assert specs.name in self.managed_modules
+            created.append(module)
 
-        return added
+        return created
 
     async def notify_broker(self,
                             modules: typing.Iterable[ubii.proto.ProcessingModule],
@@ -978,18 +1033,19 @@ class ProcessingModuleManager(util.DefaultHookMap[str, processing.ProcessingRout
         """
         When session is started, handle contained processing modules
         """
+
+        async def _wait_for_status(module: processing.ProcessingRoutine, status: ubii.proto.ProcessingModule.Status):
+            async with module.change_specs:
+                await module.change_specs.wait_for(lambda: module.status == status)
+
         session = record.session
-        added = await self.add_modules(session)
+        added = await self.create_modules_for_sessions(session)
         await self.handle_io_specs(session)
 
         await asyncio.gather(
-            *(self._wait_for_status(module, ubii.proto.ProcessingModule.Status.CREATED) for module in added)
+            *(_wait_for_status(module, ubii.proto.ProcessingModule.Status.CREATED) for module in added)
         )
         await self.notify_broker(added)
-
-    async def _wait_for_status(self, module: processing.ProcessingRoutine, status: ubii.proto.ProcessingModule.Status):
-        async with module.change_specs:
-            await module.change_specs.wait_for(lambda: module.status == status)
 
     async def on_stop_session(self, record):
         """
@@ -1012,19 +1068,27 @@ class ProcessingModuleManager(util.DefaultHookMap[str, processing.ProcessingRout
             await processing.ProcessingRoutine.halt(module)
 
         for module in self.by.status(status.HALTED):
+            if module.session_id != session.id:
+                continue
+
             to_stop.append(module)
             input_topic_source = self.pm_subscriptions.get(id(module), None)
             if input_topic_source:
                 await input_topic_source.remove_subscriber()
 
         stopped = await asyncio.gather(*map(processing.ProcessingRoutine.stop, to_stop))
+
         if not stopped == to_stop:
             raise ValueError(f"Could not stop all processing modules from {to_stop}")
 
-        for module in stopped:
-            self.data.pop(module.name)
+        destroyed = [module for module in self.by.status(status.DESTROYED) if module.session_id == session.id]
+        async with self._managed_modules_changed:
+            for module in destroyed:
+                self.managed_modules.pop(module.name)
 
-        await self.notify_broker(stopped, remove=True)
+            self._managed_modules_changed.notify_all()
+
+        await self.notify_broker(destroyed, remove=True)
 
 
 class SubscriptionManager:

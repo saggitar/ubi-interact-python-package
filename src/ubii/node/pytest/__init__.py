@@ -297,7 +297,6 @@ def session_spec(base_session, module_spec, request):
 async def client_spec(
         base_client,
         module_spec,
-        late_init_module_spec,
         request
 ):
     """
@@ -332,32 +331,14 @@ async def client(client_spec, late_init_module_spec) -> UbiiClient:
 
 
 @pytest.fixture
-async def session_for_client(client, base_session):
-    if not base_session.id:
-        await client.implements(Sessions)
-        for module in base_session.processing_modules:
-            module.node_id = client.id
-
-        started = await client[Sessions].start_session(base_session)
-    else:
-        started = base_session
-
-    yield
-
-    if started.id:
-        await client[Sessions].stop_session(started)
-
-
-@pytest.fixture
 async def reset_and_start_client(client):
     await client
-
     yield
+    await client.protocol.stop()
 
-    if not client.protocol.finished:
-        await client.protocol.stop()
-
+    module_factories = client[InitProcessingModules].module_factories
     await client.reset()
+    client[InitProcessingModules].module_factories = module_factories
 
 
 @pytest.fixture(scope='session')

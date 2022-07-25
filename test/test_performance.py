@@ -7,7 +7,7 @@ import pytest
 import ubii.proto as ub
 
 from test.test_processing import TestPy as _TestPy
-from ubii.framework.client import RunProcessingModules, Publish, Subscriptions
+from ubii.framework.client import RunProcessingModules, Publish, Subscriptions, Sessions
 from ubii.node.pytest import params
 
 test_module = ub.ProcessingModule(
@@ -79,24 +79,24 @@ class TestPerformance(_TestPy):
         """
         return request.param
 
-    # we need to set up these fixtures like this so that the client is reset before the session is started!
     @pytest.fixture
-    def reset_client(self, reset_and_start_client):
-        yield
-
-    @pytest.fixture
-    def start_session(self, reset_client, session_for_client):
-        yield
-
-    @pytest.fixture
-    async def pm_startup(self, client, module_spec, caplog, start_session, task_clean_frequency, adjust_asyncio_delay):
+    async def pm_startup(self,
+                         client,
+                         base_session,
+                         module_spec,
+                         reset_and_start_client,
+                         caplog,
+                         task_clean_frequency,
+                         adjust_asyncio_delay):
         """
         Start the processing module, set the task clean frequency of the scheduler, wait until it is processing
         """
-        caplog.set_level(logging.WARNING)
-
+        #caplog.set_level(logging.WARNING)
         await client.implements(RunProcessingModules)
-        pm = {module.name: module for module in client[RunProcessingModules].get_modules()}.get(module_spec.name)
+        await client.implements(Sessions)
+
+        started_session = await client[Sessions].start_session(base_session)
+        pm = await client[RunProcessingModules].get_module_instance(module_spec.name)
 
         async with pm.change_specs:
             await pm.change_specs.wait_for(lambda: pm.status == pm.Status.CREATED)
@@ -110,6 +110,9 @@ class TestPerformance(_TestPy):
             await pm.change_specs.wait_for(lambda: pm.status == pm.Status.PROCESSING)
 
         yield pm
+
+        await client[Sessions].stop_session(started_session)
+
 
     @pytest.mark.parametrize('duration', params('duration', 10))
     @pytest.mark.parametrize('task_clean_frequency', params('task', 1, 10, 30))

@@ -1181,11 +1181,10 @@ class ProcessingProtocol(protocol.AbstractProtocol[PM_STAT]):
 
     state_changes = {
         (None, PM_STAT.INITIALIZED): on_init,
-        (AnyState, PM_STAT.CREATED): on_created,
-        (AnyState, PM_STAT.PROCESSING): on_processing,
-        (AnyState, PM_STAT.HALTED): on_halted,
-        (PM_STAT.HALTED, PM_STAT.DESTROYED): on_destroyed,
-        (PM_STAT.DESTROYED, PM_STAT.INITIALIZED): on_init,
+        (PM_STAT.INITIALIZED, PM_STAT.CREATED): on_created,
+        (PM_STAT.CREATED, PM_STAT.PROCESSING): on_processing,
+        (PM_STAT.PROCESSING, PM_STAT.HALTED): on_halted,
+        (AnyState, PM_STAT.DESTROYED): on_destroyed,
     }
     """
     Possible state changes and respective callbacks

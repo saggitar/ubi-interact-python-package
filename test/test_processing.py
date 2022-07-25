@@ -142,13 +142,17 @@ class TestPy(Processing):
     ]
 
     @pytest.fixture
-    async def pm_startup(self, client, module_spec, base_session, session_for_client):
+    async def pm_startup(self, client, module_spec, base_session):
         await client.implements(RunProcessingModules)
-        pm = {module.name: module for module in client[RunProcessingModules].get_modules()}.get(module_spec.name)
-        async with pm.change_specs:
-            await pm.change_specs.wait_for(
-                lambda: pm.status == pm.Status.CREATED or pm.status == pm.Status.PROCESSING
-            )
+        await client.implements(Sessions)
+        started = await client[Sessions].start_session(base_session)
+
+        pm = await client[RunProcessingModules].get_module_instance(
+            module_spec.name, module_spec.Status.CREATED
+        )
+        yield pm
+
+        await client[Sessions].stop_session(started)
 
 
 @pytest.mark.xfail(reason="Broker bug")

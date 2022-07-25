@@ -80,8 +80,8 @@ import typing
 import warnings
 
 import itertools
-import ubii.proto
 
+import ubii.proto
 from . import (
     services,
     topics,
@@ -300,7 +300,7 @@ class Sessions:
     """
     sessions: typing.Dict[str, ubii.proto.Session] | None = None
     """
-    the started sessions
+    the sessions started by this node
     """
     start_session: start_session | None = None
     """
@@ -312,18 +312,36 @@ class Sessions:
     """
     get_sessions: typing.Callable[[], typing.Awaitable[ubii.proto.SessionList]] | None = None
     """
-    await to get running sessions
+    await to get running sessions from broker
     """
+
+
+class wait_for_module(Protocol):
+    def __call__(
+            self, name: str,
+            *possible_status: ubii.proto.ProcessingModule.Status
+    ) -> typing.Awaitable[processing.ProcessingRoutine]:
+        """
+        Wait until the specified module has the specified status
+
+        Args:
+            name: module name
+            possible_status: callable should use INITIALIZED by default if no other status is given,
+                any statuses given will be accepted
+
+        Returns:
+            an awaitable returning the module once it has (one of) the specified status(es)
+        """
 
 
 @dataclasses.dataclass(**_data_kwargs)
 class RunProcessingModules:
     """
-    Access all running protocol instances
+    Access all running processing module instances
     """
-    get_modules: typing.Callable[[], typing.Iterable[processing.ProcessingRoutine]] | None = None
+    get_module_instance: wait_for_module | None = None
     """
-    get all managed processing modules
+    Wait until the specified module is e.g. initialized, then return the module
     """
 
 
