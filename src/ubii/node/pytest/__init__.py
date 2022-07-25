@@ -135,14 +135,17 @@ class TestDataHandler:
         self.dir_path = dir_path
         self.dir_path.mkdir(exist_ok=True, parents=True)
 
+    def path(self, filename: str):
+        return self.dir_path / filename
+
     @contextlib.contextmanager
     def write(self, filename: str, mode='w'):
-        with (self.dir_path / filename).open(mode=mode) as f:
+        with self.path(filename).open(mode=mode) as f:
             yield f
 
     @contextlib.contextmanager
     def read(self, filename: str, mode='r'):
-        with (self.dir_path / filename).open(mode=mode) as f:
+        with self.path(filename).open(mode=mode) as f:
             yield f
 
 
@@ -153,7 +156,7 @@ def test_data(pytestconfig, data_dir, tmp_path, request) -> TestDataHandler:
         data_dir = data_dir / cls.__name__
 
     yield TestDataHandler(
-        data_dir / request.node.originalname if pytestconfig.getini('write_test_references') else tmp_path
+        data_dir / request.node.callspec.id if pytestconfig.getini('write_test_references') else tmp_path
     )
 
 
@@ -261,7 +264,8 @@ def late_init_module_spec(request):
     """
     module_factory = _get_param(request)
     if module_factory:
-        _, _, name = request.cls.late_init_module_spec[request.param_index]
+        specs = list(request.cls.late_init_module_spec)
+        _, _, name = specs[request.param_index]
         yield {name: module_factory}
     else:
         yield
@@ -350,7 +354,9 @@ async def reset_and_start_client(client):
 
     yield
 
-    await client.protocol.stop()
+    if not client.protocol.finished:
+        await client.protocol.stop()
+
     await client.reset()
 
 

@@ -1017,17 +1017,14 @@ class ProcessingModuleManager(util.DefaultHookMap[str, processing.ProcessingRout
             if input_topic_source:
                 await input_topic_source.remove_subscriber()
 
-        if to_stop:
-            stopped = await asyncio.gather(*map(processing.ProcessingRoutine.stop, to_stop))
-            if not stopped == to_stop:
-                raise ValueError(f"Could not stop all processing modules from {to_stop}")
+        stopped = await asyncio.gather(*map(processing.ProcessingRoutine.stop, to_stop))
+        if not stopped == to_stop:
+            raise ValueError(f"Could not stop all processing modules from {to_stop}")
 
-        destroyed = []
-        for module in self.by.status(status.DESTROYED):
-            destroyed.append(module)
+        for module in stopped:
             self.data.pop(module.name)
 
-        await self.notify_broker(destroyed, remove=True)
+        await self.notify_broker(stopped, remove=True)
 
 
 class SubscriptionManager:

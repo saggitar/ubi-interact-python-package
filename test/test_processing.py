@@ -217,6 +217,7 @@ class TestLateInitModules(TestPy):
                                      base_session: ub.Session,
                                      timeout,
                                      run_time,
+                                     pm_startup,
                                      allowed_relative_error):
         received = []
         input_topic = base_session.io_mappings[0].input_mappings[0].topic

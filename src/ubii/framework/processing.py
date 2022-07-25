@@ -213,6 +213,7 @@ class Scheduler(util.CoroutineWrapper):
         """
 
         self._timing_epsilons = None
+        self._timing_adjustment = 0.
 
         self._stop_during_next_iteration = False
         self._old_input_tasks = []
@@ -243,26 +244,28 @@ class Scheduler(util.CoroutineWrapper):
 
     @timing_thresholds.setter
     def timing_thresholds(self, value) -> None:
-        self._timing_epsilons = value
-        if self.timing_adjustment is not None:
-            del self.timing_adjustment
+        self._timing_epsilons = tuple(value)
+        self._timing_adjustment = self._calculate_adjustment(self.delay)
 
-    @functools.cached_property
+    def _calculate_adjustment(self, delay):
+        if 'frequency' not in self.mode:
+            return 0.
+
+        values = sorted((delay,) + self._timing_epsilons)
+        cutoff = values.index(delay)
+        if values[:cutoff]:
+            return values[:cutoff][-1]
+
+        return self._timing_epsilons[0] if self._timing_epsilons else 0.
+
+    @property
     def timing_adjustment(self):
         """
         This read only property caches the appropriate adjustment for the timing code according to the
         set :attr:`timing_thresholds` and the processing mode (in all modes but frequency mode, the adjustment
         is 0)
         """
-        if 'frequency' not in self.mode:
-            return 0.
-
-        values = sorted((self.delay,) + self._timing_epsilons)
-        cutoff = values.index(self.delay)
-        if values[:cutoff]:
-            return values[:cutoff][-1]
-
-        return self._timing_epsilons[0] if self._timing_epsilons else 0.
+        return self._timing_adjustment
 
     @property
     def delay(self) -> float:
@@ -297,8 +300,9 @@ class Scheduler(util.CoroutineWrapper):
             awaitable that waits for inputs to become ready, depending on :attr:`.mode`
         """
         if self.mode.frequency:
-            timeout = self.delay - (self._get_timestamp() - self._scheduling_timestamp) - 2 * self.timing_adjustment
-            timeout = timeout if timeout > 0 else 0
+            timeout = self.delay - (self._get_timestamp() - self._scheduling_timestamp)
+            adjustment = self._calculate_adjustment(timeout)
+            timeout = timeout - adjustment if timeout > adjustment else 0
         else:
             timeout = None
 
@@ -334,10 +338,11 @@ class Scheduler(util.CoroutineWrapper):
 
                 self.done, self.pending = await self._wait()
                 since_last_schedule = self._get_timestamp() - self._scheduling_timestamp
-                remaining = self.delay - since_last_schedule - self.timing_adjustment
+                remaining = self.delay - since_last_schedule
+                adjustment = self._calculate_adjustment(remaining)
 
-                if remaining > 0:
-                    await asyncio.sleep(remaining)
+                if remaining > adjustment:
+                    await asyncio.sleep(remaining - adjustment)
                     since_last_schedule = self._get_timestamp() - self._scheduling_timestamp
 
                 self.schedule_delta_times.append(since_last_schedule)
