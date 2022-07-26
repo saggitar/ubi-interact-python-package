@@ -1183,7 +1183,7 @@ class ProcessingProtocol(protocol.AbstractProtocol[PM_STAT]):
         (None, PM_STAT.INITIALIZED): on_init,
         (PM_STAT.INITIALIZED, PM_STAT.CREATED): on_created,
         (PM_STAT.CREATED, PM_STAT.PROCESSING): on_processing,
-        (PM_STAT.PROCESSING, PM_STAT.HALTED): on_halted,
+        (AnyState, PM_STAT.HALTED): on_halted,
         (AnyState, PM_STAT.DESTROYED): on_destroyed,
     }
     """

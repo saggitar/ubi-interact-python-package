@@ -91,9 +91,8 @@ class TestPerformance(_TestPy):
         """
         Start the processing module, set the task clean frequency of the scheduler, wait until it is processing
         """
-        #caplog.set_level(logging.WARNING)
-        await client.implements(RunProcessingModules)
-        await client.implements(Sessions)
+        caplog.set_level(logging.WARNING)
+        await client.implements(RunProcessingModules, Sessions)
 
         started_session = await client[Sessions].start_session(base_session)
         pm = await client[RunProcessingModules].get_module_instance(module_spec.name)
