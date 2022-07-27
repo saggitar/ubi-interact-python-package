@@ -829,6 +829,12 @@ class ProcessingRoutine(ubii.proto.ProcessingModule, metaclass=util.ProtoRegistr
         :class:`ProcessingRoutine.rules` -- details on rules used here
     """
 
+    def __delattr__(self, item):
+        if item in type(self).to_dict(self):
+            super().__delattr__(item)
+        else:
+            object.__delattr__(self, item)
+
 
 class PM_STAT(enum.IntFlag):
     """
