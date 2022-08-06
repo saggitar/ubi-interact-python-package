@@ -3,7 +3,7 @@ This module implements the framework to implement a Ubi Interact Node.
 A Ubi Interact Node is expected to perform some communication with the `master node` and conceptualizes
 the API for all *master node* interactions, e.g. subscribing to topics, registering devices and so on.
 What exactly is expected from a client node to be functional, and what the specific client node actually
-implements on top of the required behaviour depends on the state of the *master node* implementation.
+implements on top of the required behavior depends on the state of the *master node* implementation.
 
 The currently used *master node* for all Ubi Interact scenarios is the `Node JS node`, which expects
 the client node to:
@@ -20,7 +20,7 @@ Optionally, some client nodes (e.g. a Python Node using the :class:`ubii.node.pr
 
 These two requirements are separated in the python framework:
 
-1.  A :class:`.UbiiClient` defines what kind of behaviour and features it is able to implement
+1.  A :class:`.UbiiClient` defines what kind of behavior and features it is able to implement
 2.  A :class:`.AbstractClientProtocol` provides a flexible framework to implement the necessary communication
     with the `master node` to implement those features
 
@@ -35,7 +35,7 @@ Instead of fixing the design, the framework uses :mod:`dataclasses` to describe 
 user defined attributes, grouped by feature:
 
     -   each :obj:`~dataclasses.dataclass` describes one feature
-    -   the :class:`.UbiiClient` is initialized with lists of dataclasses for required and optional behaviours
+    -   the :class:`.UbiiClient` is initialized with lists of dataclasses for required and optional behaviors
     -   the attributes of the :obj:`~dataclasses.dataclass` are accessible through the :class:`.UbiiClient` (for
         every class passed during initialization)
     -   since :obj:`dataclasses <dataclasses.dataclass>` enforce the use of typehints, a
@@ -45,22 +45,22 @@ user defined attributes, grouped by feature:
         :attr:`.UbiiClient.protocol`
 
 Note:
-    A client is considered usable if all attributes defined by *required* behaviours have been assigned!
+    A client is considered usable if all attributes defined by *required* behaviors have been assigned!
 
 
-By default, the :class:`.UbiiClient` has the required behaviours:
+By default, the :class:`.UbiiClient` has the required behaviors:
     -   :class:`.Services`
     -   :class:`.Subscriptions`
     -   :class:`.Publish`
 
-and optional behaviours
+and optional behaviors
     -   :class:`.Register`
     -   :class:`.Devices`
     -   :class:`.RunProcessingModules`
     -   :class:`InitProcessingModules`
 
 The :class:`ubii.node.DefaultProtocol` will register the client and implement
-the behaviours. The client is considered usable as soon as the required behaviours are implemented,
+the behaviors. The client is considered usable as soon as the required behaviors are implemented,
 i.e. when it is able to make service calls, (un-)subscribe to/from topics and publish its own
 :class:`ubii.proto.TopicData`.
 Subscribing and unsubscribing are technically partly also service calls, but in addition to communicating the
@@ -104,6 +104,11 @@ log = logging.getLogger(__name__)
 T_Protocol = typing.TypeVar('T_Protocol', bound='AbstractClientProtocol')
 
 _data_kwargs = {'init': True, 'repr': True, 'eq': True}
+
+BehaviorDict = typing.TypedDict(
+    'BehaviorDict',
+    {'required_behaviors': typing.Tuple[typing.Type, ...], 'optional_behaviors': typing.Tuple[typing.Type, ...]}
+)
 
 
 class subscribe_call(Protocol):
@@ -192,7 +197,7 @@ class stop_session(Protocol):
 @dataclasses.dataclass(**_data_kwargs)
 class Services:
     """
-    Behaviour to make service calls (accessed via the service map)
+    Behavior to make service calls (accessed via the service map)
 
     Example:
 
@@ -219,7 +224,7 @@ class Services:
 @dataclasses.dataclass(**_data_kwargs)
 class Subscriptions:
     """
-    Behaviour to subscribe and unsubscribe from topics
+    Behavior to subscribe and unsubscribe from topics
 
     Example:
 
@@ -251,7 +256,7 @@ class Subscriptions:
 @dataclasses.dataclass(**_data_kwargs)
 class Publish:
     """
-    Behaviour to publish :class:`ubii.proto.TopicDataRecord` messages.
+    Behavior to publish :class:`ubii.proto.TopicDataRecord` messages.
     If multiple records are passed they should be converted to a :class:`ubii.proto.TopicDataList` and published as such,
     otherwise they should be wrapped in a :class:`ubii.proto.TopicData` message.
     """
@@ -264,8 +269,8 @@ class Publish:
 @dataclasses.dataclass(**_data_kwargs)
 class Register:
     """
-    Behaviour to optionally unregister and re-register the client node (registering once is probably required
-    to establish a data connection for :class:`.Publish` behaviour but unregistering and re-registering is typically
+    Behavior to optionally unregister and re-register the client node (registering once is probably required
+    to establish a data connection for :class:`.Publish` behavior but unregistering and re-registering is typically
     optional -- consult the documentation of the used :class:`protocol <.AbstractClientProtocol>` for details)
     """
     register: typing.Callable[[], typing.Awaitable[UbiiClient]] | None = None
@@ -367,9 +372,9 @@ class UbiiClient(ubii.proto.Client,
     """
     A :class:`UbiiClient` inherits its proto message wrapping capabilities from :class:`ubii.proto.Client`.
 
-    The protocol of the client typically implements the following additional behaviours:
+    The protocol of the client typically implements the following additional behaviors:
 
-        *   making :class:`ServiceCalls <.services.ServiceCall>` via the :class:`Services` behaviour --
+        *   making :class:`ServiceCalls <.services.ServiceCall>` via the :class:`Services` behavior --
             this involves accessing the right Service for your task by topic, and calling it with the right kind of
             data (see https://github.com/SandroWeber/ubi-interact/wiki/Requests for more documentation on default
             topics for services and expected data)
@@ -377,22 +382,22 @@ class UbiiClient(ubii.proto.Client,
         *   subscribe to topics (or topic patterns) at the master node -- this process involves making the right
             service call and then creating a internal representation of the topic to add callbacks and forward
             received data. Because of this complexity you should not subscribe to topics via a simple `ServiceCall`,
-            and instead use the :class:`Subscriptions` behaviour. Make sure to use the ``_regex`` version of a method
+            and instead use the :class:`Subscriptions` behavior. Make sure to use the ``_regex`` version of a method
             when you subscribe to a wildcard pattern.
 
         *   publish data on topics -- this requires a :class:`~ubii.proto.TopicDataRecord` message or
-            a compatible dictionary (see documentation of the message formats) and the :class:`Publish` behaviour
+            a compatible dictionary (see documentation of the message formats) and the :class:`Publish` behavior
 
         *   run `Processing Modules` -- processing modules need to be registered at the master node.
             Add the modules to the :attr:`~.UbiiClient.processing_modules` field of the client for PMs which can be
             initialized when the client node is created, or to the
             :class:`~InitProcessingModules.late_init_processing_modules` field of the :class:`InitProcessingModules`
-            behaviour for modules that need to be initialized at a later point of the protocol (e.g. a processing
+            behavior for modules that need to be initialized at a later point of the protocol (e.g. a processing
             module might need to know the *master node's* definition of datatype messages, so it can only be initialized
             after some initial communication between `client` and `master node`.
 
     The :class:`UbiiClient` will start it's :class:`Client Protocol <AbstractClientProtocol>` when it is awaited
-    directly or indirectly (see examples below). The protocol will implement the `behaviours`.
+    directly or indirectly (see examples below). The protocol will implement the `behaviors`.
 
     It's required to link a client and its protocol explicitly::
 
@@ -482,7 +487,7 @@ class UbiiClient(ubii.proto.Client,
     @util.dunder.repr('client')
     class ClientInitTaskWrapper(typing.Awaitable['UbiiClient']):
         """
-        This is a wrapper around a task that waits until the client implements the required behaviours,
+        This is a wrapper around a task that waits until the client implements the required behaviors,
         and then returns the client. The wrapper can be `reset`, with :attr:`.reset` so that a new
         task is created to be used inside the wrapper.
         """
@@ -497,7 +502,7 @@ class UbiiClient(ubii.proto.Client,
 
         def reset(self) -> None:
             """
-            Use this method to reset the client behaviours and create a new wrapped task inside the wrapper.
+            Use this method to reset the client behaviors and create a new wrapped task inside the wrapper.
 
             Returns:
                 Reference to self, with new wrapped task
@@ -510,14 +515,14 @@ class UbiiClient(ubii.proto.Client,
                     f"{self.client.protocol.state.value!r} instead."
                 )
 
-            for behaviour in self.client._behaviours:
-                for field in dataclasses.fields(behaviour):
-                    setattr(self.client[behaviour], field.name, None)
+            for behavior in self.client._behaviors:
+                for field in dataclasses.fields(behavior):
+                    setattr(self.client[behavior], field.name, None)
 
             self._set_task()
 
         async def _wait_for_client_implementation(self):
-            await self.client.implements(*self.client._required_behaviours)
+            await self.client.implements(*self.client._required_behaviors)
             return self.client
 
         def __await__(self):
@@ -526,50 +531,54 @@ class UbiiClient(ubii.proto.Client,
     def __init__(self: UbiiClient[T_Protocol],
                  mapping=None, *,
                  protocol: T_Protocol,
-                 required_behaviours: typing.Tuple[typing.Type, ...] = (
+                 required_behaviors: typing.Tuple[typing.Type, ...] = (
                          Services, Subscriptions, Publish
                  ),
-                 optional_behaviours: typing.Tuple[typing.Type, ...] = (
+                 optional_behaviors: typing.Tuple[typing.Type, ...] = (
                          Register, Devices, RunProcessingModules, InitProcessingModules, Sessions
                  ),
                  **kwargs):
         """
         Creates a :class:`UbiiClient` object.
         The :class:`UbiiClient` is awaitable. When it is used in an :ref:`await`, the coroutine will
-        wait until all attributes for the clients `required_behaviours` are assigned. These assignments
+        wait until all attributes for the clients `required_behaviors` are assigned. These assignments
         typically happen as part of the clients :attr:`.protocol` running, sometime the types
-        passed as `required_behaviours` or `optional_behaviours` are referred to as
-        `behaviours`, and assigning something to their attributes is referred to as `implementing` the behaviour.
+        passed as `required_behaviors` or `optional_behaviors` are referred to as
+        `behaviors`, and assigning something to their attributes is referred to as `implementing` the behavior.
 
 
         Args:
             mapping (Union[dict, ~.Message]): A dictionary or message to be
                 used to determine the values for the message fields.
             protocol (AbstractClientProtocol): A concrete protocol instance to be used py the client node
-            required_behaviours (typing.Tuple[typing.Type, ...]): tuple of :obj:`~dataclasses.dataclass` types
+            required_behaviors (typing.Tuple[typing.Type, ...]): tuple of :obj:`~dataclasses.dataclass` types
                 that need to be `implemented` by the protocol to consider the `UbiiClient` as usable
-            optional_behaviours (typing.Tuple[typing.Type, ...]): tuple of :obj:`~dataclasses.dataclass` types
+            optional_behaviors (typing.Tuple[typing.Type, ...]): tuple of :obj:`~dataclasses.dataclass` types
                 that can optionally be `implemented` by the protocol whose attributes can be accessed through the
                 `UbiiClient` node.
             **kwargs: passed to :class:`ubii.proto.Client` (e.g. field assignments)
         """
         super().__init__(mapping=mapping, **kwargs)
 
-        behaviours = list(itertools.chain(required_behaviours or (), optional_behaviours or ()))
-        if not all(dataclasses.is_dataclass(b) for b in behaviours):
-            raise ValueError(f"Only dataclasses can be passed as behaviours")
+        self._required_behaviors = required_behaviors or ()
+        self._optional_behaviors = optional_behaviors or ()
+        behaviors = list(
+            itertools.chain(self._required_behaviors, self._optional_behaviors)
+        )
+
+        if not all(dataclasses.is_dataclass(b) for b in behaviors):
+            raise ValueError(f"Only dataclasses can be passed as behaviors")
 
         if not self.name:
             self.name = f"Python-Client-{self.__class__.__name__}"  # type: str
 
-        if not 'state' in self:
+        if 'state' not in self:
             self.state = self.State.UNAVAILABLE
 
         self._change_specs = asyncio.Condition()
         self._notifier = None
         self._protocol = protocol
-        self._required_behaviours = required_behaviours or ()
-        self._behaviours = {kls: self._patch_behaviour(kls)() for kls in behaviours}
+        self._behaviors = {kls: self._patch_behavior(kls)() for kls in behaviors}
 
         self._ctx: typing.AsyncContextManager = self._with_running_protocol()
         self._init = self.ClientInitTaskWrapper(self)
@@ -588,15 +597,15 @@ class UbiiClient(ubii.proto.Client,
         """
         return self._init_specs
 
-    def _patch_behaviour(self, behaviour: typing.Type):
+    def _patch_behavior(self, behavior: typing.Type):
         """
-        Setting attributes of the behaviour should notify the tasks waiting for changed specs of this client,
+        Setting attributes of the behavior should notify the tasks waiting for changed specs of this client,
         e.g. the tasks waiting for implementation state.
         """
         client = self
 
         # see if (https://github.com/python/mypy/issues/5865) is resolved to check if mypy gets this
-        class _(behaviour):  # type: ignore
+        class _(behavior):  # type: ignore
             """
             Proxy to notify client of changed fields.
             """
@@ -607,11 +616,11 @@ class UbiiClient(ubii.proto.Client,
 
             def __repr__(self):
                 fields = dataclasses.fields(self)
-                return (f"{behaviour.__module__}.{behaviour.__name__}"
+                return (f"{behavior.__module__}.{behavior.__name__}"
                         f"({', '.join('{}={!r}'.format(f.name, getattr(self, f.name)) for f in fields)})")
 
         from .util.functools import append_doc
-        append_doc(_)(behaviour.__doc__)
+        append_doc(_)(behavior.__doc__)
         return _
 
     def notify(self) -> None:
@@ -642,7 +651,7 @@ class UbiiClient(ubii.proto.Client,
     @property
     def change_specs(self) -> asyncio.Condition:
         """
-        Allows waiting for behaviour attribute assignments.
+        Allows waiting for behavior attribute assignments.
         See also: :attr:`.implements`
         ::
 
@@ -654,14 +663,18 @@ class UbiiClient(ubii.proto.Client,
             async def main():
                 async with connect_client() as client:
                     await client.change_specs.wait()
-                    print("A behaviour was implemented!")
+                    print("A behavior was implemented!")
 
         """
         return self._change_specs
 
-    def implements(self, *behaviours, timeout: float | None = IMPLEMENT_TIMEOUT) -> util.awaitable_predicate:
+    def implements(
+            self,
+            *behaviors,
+            timeout: float | None = IMPLEMENT_TIMEOUT,
+    ) -> util.awaitable_predicate:
         """
-        Returns an object that can be used to check if the client implements a certain behaviour
+        Returns an object that can be used to check if the client implements a certain behavior
         or wait until it is implemented.
 
         ::
@@ -675,44 +688,45 @@ class UbiiClient(ubii.proto.Client,
                 client = UbiiClient(protocol=protocol)
                 protocol.client = client
 
-                async def wait_for_required_behaviours_implicitly():
+                async def wait_for_required_behaviors_implicitly():
                     return await client
 
-                async def wait_for_behaviour_explicitly():
+                async def wait_for_behavior_explicitly():
                     await client.implements(Services)  # used in await expression
                     assert client.implements(Services)  # used in boolean expression
 
                 await asyncio.gather(
-                    wait_for_required_behaviours_implicitly(),
-                    wait_for_behaviour_explicitly()
+                    wait_for_required_behaviors_implicitly(),
+                    wait_for_behavior_explicitly()
                 )
 
 
             asyncio.run(main())
 
         Args:
-            timeout: if not None, the returned awaitable will raise a :class:`asyncio.TimeoutError` after specified time
-            *behaviours: tuple of :obj:`~dataclasses.dataclass` types passed to
-                this :class:`UbiiClient` as `required_behaviours` or `optional_behaviours` during initialization.
+            *behaviors: tuple of :obj:`~dataclasses.dataclass` types passed to
+                this :class:`UbiiClient` as `required_behaviors` or `optional_behaviors` during initialization.
 
+            timeout: if not None, the returned awaitable will raise a :class:`asyncio.TimeoutError` after specified time
         Returns:
             an :class:`~ubii.framework.util.awaitable_predicate` that converts to
-            `True` if all fields of the passed `behaviours` are initialized in this :class:`UbiiClient`
+            `True` if all fields of the passed `behaviors` are initialized in this :class:`UbiiClient`
             and / or can be used in an :ref:`await` to wait until that is the case
         """
 
         def fields_not_none():
-            return all(getattr(self._behaviours[b], field.name) is not None
-                       for b in behaviours for field in dataclasses.fields(b))
+            return all(getattr(self._behaviors[b], field.name) is not None
+                       for b in behaviors for field in dataclasses.fields(b))
 
         return util.awaitable_predicate(predicate=fields_not_none, condition=self._change_specs, timeout=timeout)
 
     @property
-    def behaviours(self):
+    def behaviors(self) -> BehaviorDict:
         """
-        List of all behaviours that are currently :meth:`implemented <.implements>`
+        Return mapping :math:`(optional / required) \\rightarrow dataclass` showing which behaviors are defined as
+        optional or required by this client. You can check their implementation status using :func:`.implements`.
         """
-        return [behaviour for behaviour in self._behaviours if self.implements(behaviour)]
+        return {'optional_behaviors': self._optional_behaviors, 'required_behaviors': self._required_behaviors}
 
     @contextlib.asynccontextmanager
     async def _with_running_protocol(self):
@@ -741,12 +755,12 @@ class UbiiClient(ubii.proto.Client,
 
     async def reset(self):
         """
-        Use this method to reset the client behaviours and allow explicitly restarting the client protocol
+        Use this method to reset the client behaviors and allow explicitly restarting the client protocol
         if it is finished. Also resets the protobuf values to the contents of :attr:`.initial_values`
 
         Warning:
 
-            This behaviour is experimental, it is better to simply create a new client instance
+            This behavior is experimental, it is better to simply create a new client instance
         """
         old_id = self.id
         if hasattr(self.task_nursery, 'sentinel_task') and not self.task_nursery.sentinel_task:
@@ -785,15 +799,15 @@ class UbiiClient(ubii.proto.Client,
         """
         return self._protocol
 
-    def __getitem__(self, behaviour: typing.Type[T]) -> T:
-        return self._behaviours[behaviour]
+    def __getitem__(self, behavior: typing.Type[T]) -> T:
+        return self._behaviors[behavior]
 
     def __setitem__(self, key, value):
         if not dataclasses.is_dataclass(value):
             raise ValueError(f"can only assign dataclass instances to {key}, got {type(value)}")
 
         # create copy of value that is a proxy object
-        self._behaviours[key] = self._patch_behaviour(type(value))(**dataclasses.asdict(value))  # type: ignore
+        self._behaviors[key] = self._patch_behavior(type(value))(**dataclasses.asdict(value))  # type: ignore
         self.notify()
 
 
@@ -892,7 +906,7 @@ class AbstractClientProtocol(protocol.AbstractProtocol[T_EnumFlag], util.Registr
     @abc.abstractmethod
     async def implement_client(self, context):
         """
-        Make sure the ``context.client`` has fully implemented behaviour. The context at this point should contain
+        Make sure the ``context.client`` has fully implemented behavior. The context at this point should contain
         a `context.service_map` and a `context.topic_connection`.
 
             *   ``context.client`` can be awaited after this coroutine is finished, to return a fully functional client.
@@ -949,7 +963,7 @@ class AbstractClientProtocol(protocol.AbstractProtocol[T_EnumFlag], util.Registr
             - :meth:`create_topic_connection`
             - :meth:`implement_client`
 
-        Then the ``context.client`` is awaited to make sure that all behaviours are implemented.
+        Then the ``context.client`` is awaited to make sure that all behaviors are implemented.
         The ``context`` is passed for each call, and updated according to the concrete implementation.
 
         Note:

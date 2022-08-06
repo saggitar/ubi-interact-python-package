@@ -1,0 +1,33 @@
+<component name="ProjectRunConfigurationManager">
+  <configuration default="false" name="All Thesis Tests" type="tests" factoryName="py.test">
+    <module name="ubii-processing-module-ocr" />
+    <option name="INTERPRETER_OPTIONS" value="" />
+    <option name="PARENT_ENVS" value="true" />
+    <option name="SDK_HOME" value="" />
+    <option name="WORKING_DIRECTORY" value="$PROJECT_DIR$/test" />
+    <option name="IS_MODULE_SDK" value="true" />
+    <option name="ADD_CONTENT_ROOTS" value="true" />
+    <option name="ADD_SOURCE_ROOTS" value="true" />
+    <EXTENSION ID="PythonCoverageRunConfigurationExtension" runner="coverage.py" />
+    <option name="_new_keywords" value="&quot;&quot;" />
+    <option name="_new_parameters" value="&quot;pm-PURE-default-test&quot;" />
+    <option name="_new_additionalArguments" value="&quot;&quot;" />
+    <option name="_new_target" value="&quot;test_processing.TestOCRPerformance.test_processing_module&quot;" />
+    <option name="_new_targetType" value="&quot;PYTHON&quot;" />
+    <method v="2">
+      <option name="RunConfigurationTask" enabled="true" run_configuration_name="pm-PURE-sparse-empty-webcam" run_configuration_type="tests" />
+      <option name="RunConfigurationTask" enabled="true" run_configuration_name="pm-PURE-sparse-confvals-ortsschild" run_configuration_type="tests" />
+      <option name="RunConfigurationTask" enabled="true" run_configuration_name="pm-PURE-confvals-ortsschild" run_configuration_type="tests" />
+      <option name="RunConfigurationTask" enabled="true" run_configuration_name="pm-MSER-variation-charwhitelist-0.1-empty-65-webcam" run_configuration_type="tests" />
+      <option name="RunConfigurationTask" enabled="true" run_configuration_name="pm-MSER-test" run_configuration_type="tests" />
+      <option name="RunConfigurationTask" enabled="true" run_configuration_name="pm-MSER-padding3-variation0.02-empty-50-ortsschild" run_configuration_type="tests" />
+      <option name="RunConfigurationTask" enabled="true" run_configuration_name="pm-MSER-padding0-test" run_configuration_type="tests" />
+      <option name="RunConfigurationTask" enabled="true" run_configuration_name="pm-MSER-ortsschild" run_configuration_type="tests" />
+      <option name="RunConfigurationTask" enabled="true" run_configuration_name="pm-EAST-nms0.7-no-merge-confvals50-ortsschild" run_configuration_type="tests" />
+      <option name="RunConfigurationTask" enabled="true" run_configuration_name="pm-EAST-nms0.6-no-merge-empty-60-ortsschild" run_configuration_type="tests" />
+      <option name="RunConfigurationTask" enabled="true" run_configuration_name="pm-EAST-nms0.5-no-merge-empty-webcam" run_configuration_type="tests" />
+      <option name="RunConfigurationTask" enabled="true" run_configuration_name="pm-EAST-nms0.5-no-merge-empty-test" run_configuration_type="tests" />
+      <option name="RunConfigurationTask" enabled="true" run_configuration_name="pm-EAST-nms0.5-no-merge-confvals-ortsschild" run_configuration_type="tests" />
+    </method>
+  </configuration>
+</component>

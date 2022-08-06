@@ -112,7 +112,6 @@ class TestPerformance(_TestPy):
 
         await client[Sessions].stop_session(started_session)
 
-
     @pytest.mark.parametrize('duration', params('duration', 10))
     @pytest.mark.parametrize('task_clean_frequency', params('task', 1, 10, 30))
     @pytest.mark.parametrize('adjust_asyncio_delay', params('adjust_delay', True, False))
@@ -197,7 +196,12 @@ class TestPublishReceivePerformance:
         assert len(received) == publish_count
 
     @pytest.mark.parametrize('data', [False])
-    @pytest.mark.parametrize('delay', [0.0005, 0.001, 0.005, 0.01])
+    @pytest.mark.parametrize('delay', [
+        pytest.param(0.0005, marks=pytest.mark.xfail(reason="Faster than communication channel")),
+        0.001,
+        0.005,
+        0.01
+    ])
     @pytest.mark.parametrize('publish_count', [10], indirect=True)
     @pytest.mark.parametrize('receive_delay', [0.1], indirect=True)
     async def test_publish(self, client, subscription, delay, publish_count, data, receive_delay):

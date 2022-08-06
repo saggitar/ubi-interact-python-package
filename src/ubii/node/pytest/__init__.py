@@ -36,7 +36,7 @@ except ImportError:  # for Python<3.8
     import importlib_metadata as metadata
 
 import ubii.proto as ub
-from ubii.framework.client import UbiiClient, InitProcessingModules, Sessions
+from ubii.framework.client import UbiiClient, InitProcessingModules
 from ubii.framework.logging import logging_setup
 from ubii.node.protocol import DefaultProtocol
 
@@ -246,12 +246,14 @@ def base_client():
 P = t.TypeVar('P', bound=proto.message.Message)
 
 
-def _change_specs(proto: P, *specs: P):
-    base = type(proto).pb(proto)
+def _change_specs(message: P, *specs: P):
+    base = type(message).pb(message)
     for change in specs:
+        if not isinstance(change, proto.message.Message):
+            change = type(message)(mapping=change)
         base.MergeFrom(type(change).pb(change))
 
-    type(proto).copy_from(proto, base)
+    type(message).copy_from(message, base)
 
 
 _get_param = (lambda request: request.param if hasattr(request, 'param') else ())
@@ -262,11 +264,11 @@ def late_init_module_spec(request):
     """
     Yield the list of module types specified as the request
     """
-    module_factory = _get_param(request)
-    if module_factory:
-        specs = list(request.cls.late_init_module_spec)
-        _, _, name = specs[request.param_index]
-        yield {name: module_factory}
+    factory = _get_param(request)
+    if factory:
+        factories = list(request.cls.late_init_module_spec)
+        _, _, name = factories[request.param_index]
+        yield {name: factory}
     else:
         yield
 
@@ -330,17 +332,6 @@ async def client(client_spec, late_init_module_spec) -> UbiiClient:
         await client.protocol.stop()
 
 
-@pytest.fixture
-async def reset_and_start_client(client):
-    await client
-    yield
-    await client.protocol.stop()
-
-    module_factories = client[InitProcessingModules].module_factories
-    await client.reset()
-    client[InitProcessingModules].module_factories = module_factories
-
-
 @pytest.fixture(scope='session')
 def event_loop() -> asyncio.AbstractEventLoop:
     """
@@ -385,6 +376,9 @@ def pytest_generate_tests(metafunc):
     for spec in specs:
         if hasattr(metafunc.cls, spec) and spec in metafunc.fixturenames:
             parametrization = getattr(metafunc.cls, spec)
+            if not isinstance(parametrization, typing.Iterable):
+                parametrization = None
+
             additional_params = getattr(metafunc.cls, f"{spec}_params", None)
             assert not additional_params or parametrization, (
                 f"Additional params {additional_params} without parametrization {spec}"
