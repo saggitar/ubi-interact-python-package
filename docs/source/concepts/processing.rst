@@ -44,9 +44,10 @@ of the module. State changes of the module should be reflected in it's represent
 
 .. warning::
 
-    Currently there are no defined state changes for a :class:`~ubii.proto.ProcessingModule` so in theory
-    any state change would be valid. In practice, states typically change linearly in the order defined in the
-    :class:`~ubii.proto.ProcessingModule.Status` enum. For a python implementation refer to the documentation of the
+    Currently the state changes for a :class:`~ubii.proto.ProcessingModule` are only defined in
+    `Weber et. al. <https://dl.acm.org/doi/10.1145/3448891.3448924>`_ but this is not modeled exactly in the python code.
+    Since in practice, states typically change linearly in the order defined in the
+    :class:`~ubii.proto.ProcessingModule.Status` enum, simply refer to the documentation of the
     :class:`~ubii.framework.processing.ProcessingRoutine` wrapper, providing a way to cleanly define allowed state
     changes and callbacks.
 
