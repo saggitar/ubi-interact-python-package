@@ -119,19 +119,22 @@ modules.
 ::
 
    $ ubii-client --help
+     usage: ubii-client [-h] [--processing-modules PROCESSING_MODULES] [--no-discover]
+                       [--module-args MODULE_ARGS] [--verbose] [--debug]
+                       [--log-config LOG_CONFIG]
 
-   usage: ubii-client [-h]
-                      [--processing-modules PROCESSING_MODULES]
-                      [--verbose] [--debug]
-                      [--log-config LOG_CONFIG]
-
-   options:
-     -h, --help            show this help message and exit
-     --processing-modules PROCESSING_MODULES
-     --no-discover
-     --verbose, -v
-     --debug
-     --log-config LOG_CONFIG
+     options:
+       -h, --help            show this help message and exit
+       --processing-modules PROCESSING_MODULES
+                             Import processing modules to load. You can also use the format
+                             {name}:{type} to load them with specific names.
+       --no-discover         Don't use the automatic processing module discovery mechanism
+       --module-args MODULE_ARGS
+                             Format {name}:{key}={value}(,{key}={value})*, e.g. my-
+                             module:tags=['custom'],description='Wow!'
+       --verbose, -v
+       --debug
+       --log-config LOG_CONFIG
 
 (non obvious) arguments:
 
@@ -149,7 +152,10 @@ modules.
    ``ubi-interact-python`` framework, see
    `processing-modules <#processing-modules>`__. Use it together with
    `auto discovery <#processing-modules>`__ during development or as a
-   fallback
+   fallback. Also allows to specify alternative names.
+-  ``--module-args`` specify a mapping of processing module names to argument maps,
+   e.g. ``--module-args test:name='test'`` to specify argument ``name`` as ``'test'``
+   for the module loaded with name ``test``.
 
 Processing Modules
 ^^^^^^^^^^^^^^^^^^
@@ -173,7 +179,7 @@ Example usage after install of module:
 
    $ pip install ubii-processing-module-ocr
    $ ubii-client
-   > Imported [<class 'ubii.processing_modules.ocr.tesseract_ocr.TesseractOCR_EAST'>, ... ]
+   > Loaded processing module factories <class 'ubii.processing_modules.ocr.tesseract_ocr.TesseractOCR_EAST'>, ...
    > ...
 
 or with cli argument to only load specific processing modules (also
@@ -183,7 +189,7 @@ turning off auto discovery in this example)
 
    $ pip install ubii-processing-module-ocr
    $ ubii-client --no-discover --processing-modules ubii.processing_modules.ocr.tesseract_ocr.TesseractOCR_EAST
-   > Imported <class 'ubii.processing_modules.ocr.tesseract_ocr.TesseractOCR_EAST'>
+   > Loaded processing module factories <class 'ubii.processing_modules.ocr.tesseract_ocr.TesseractOCR_EAST'>
    > ...
 
 
