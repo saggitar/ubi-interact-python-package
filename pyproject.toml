@@ -7,11 +7,5 @@ requires = [
 
 build-backend = "setuptools.build_meta"
 
-[tool.pytest.ini_options]
-filterwarnings = [
-    "default",
-]
-asyncio_mode = "auto"
-
 [tool.setuptools_scm]
 local_scheme = "no-local-version"
