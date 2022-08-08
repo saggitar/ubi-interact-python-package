@@ -8,6 +8,8 @@ University of Munich) for developing distributed and reactive
 applications, the main focus of the Python node is to allow the
 implementation of ``processing-modules`` in Python.
 
+Documentation is available `here <https://ubii-node-python.readthedocs.io/en/develop/>`_.
+
 Installation
 ------------
 
