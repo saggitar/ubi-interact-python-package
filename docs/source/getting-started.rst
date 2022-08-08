@@ -88,11 +88,6 @@ This packages uses
 -  ``[test]`` Requirements to run ``pytest`` suite if you install the
    package from source, and not from PyPi
 
-      Currently the ``[test]`` extra depends on some processing-module
-      packages. Make sure you have all requirements installed
-      (especially on Windows some processing dependencies are not in
-      pypi)
-
 -  ``[cli]`` Installs a `CLI <#CLI>`__ script which runs the node and
    auto-discovers installed Processing Modules (see
    `below <#processing-modules>`__)

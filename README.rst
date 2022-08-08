@@ -98,11 +98,6 @@ This packages uses
 -  ``[test]`` Requirements to run ``pytest`` suite if you install the
    package from source, and not from PyPi
 
-      Currently the ``[test]`` extra depends on some processing-module
-      packages. Make sure you have all requirements installed
-      (especially on Windows some processing dependencies are not in
-      pypi)
-
 -  ``[cli]`` Installs a `CLI <#CLI>`__ script which runs the node and
    auto-discovers installed Processing Modules (see
    `below <#processing-modules>`__)
@@ -127,19 +122,22 @@ modules.
 ::
 
    $ ubii-client --help
+     usage: ubii-client [-h] [--processing-modules PROCESSING_MODULES] [--no-discover]
+                       [--module-args MODULE_ARGS] [--verbose] [--debug]
+                       [--log-config LOG_CONFIG]
 
-   usage: ubii-client [-h]
-                      [--processing-modules PROCESSING_MODULES]
-                      [--verbose] [--debug]
-                      [--log-config LOG_CONFIG]
-
-   options:
-     -h, --help            show this help message and exit
-     --processing-modules PROCESSING_MODULES
-     --no-discover
-     --verbose, -v
-     --debug
-     --log-config LOG_CONFIG
+     options:
+       -h, --help            show this help message and exit
+       --processing-modules PROCESSING_MODULES
+                             Import processing modules to load. You can also use the format
+                             {name}:{type} to load them with specific names.
+       --no-discover         Don't use the automatic processing module discovery mechanism
+       --module-args MODULE_ARGS
+                             Format {name}:{key}={value}(,{key}={value})*, e.g. my-
+                             module:tags=['custom'],description='Wow!'
+       --verbose, -v
+       --debug
+       --log-config LOG_CONFIG
 
 (non obvious) arguments:
 
@@ -148,9 +146,8 @@ modules.
    and fails loudly
 -  ``--log-config`` optional path to a **.yaml** file containing a
    dictionary of logging options consistent with the
-   ```logging.config.dictConfig`` <https://docs.python.org/3/library/logging.config.html#logging.config.dictConfig>`__
-   format (`example
-   config <src/ubii/framework/util/logging_config.yaml>`__)
+   `logging.config.dictConfig <https://docs.python.org/3/library/logging.config.html#logging.config.dictConfig>`__
+   format (`example config <src/ubii/framework/util/logging_config.yaml>`__)
 -  ``--no-discover`` flag to turn off auto discovery of processing
    modules via entry points
 -  ``--processing-modules`` specify a list of import paths for *Ubi
@@ -158,7 +155,10 @@ modules.
    ``ubi-interact-python`` framework, see
    `processing-modules <#processing-modules>`__. Use it together with
    `auto discovery <#processing-modules>`__ during development or as a
-   fallback
+   fallback. Also allows to specify alternative names.
+-  ``--module-args`` specify a mapping of processing module names to argument maps,
+   e.g. ``--module-args test:name='test'`` to specify argument ``name`` as ``'test'``
+   for the module loaded with name ``test``.
 
 
 Processing Modules
