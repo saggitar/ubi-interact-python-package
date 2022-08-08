@@ -80,8 +80,8 @@ import typing
 import warnings
 
 import itertools
-
 import ubii.proto
+
 from . import (
     services,
     topics,
@@ -350,17 +350,35 @@ class RunProcessingModules:
     """
 
 
+ProcessingModuleFactory = typing.Callable[..., processing.ProcessingRoutine]
+"""
+Convenience Type
+"""
+
+
 @dataclasses.dataclass(**_data_kwargs)
 class InitProcessingModules:
     """
     Behavior to initialize ProcessingModules with custom callables
     """
-    module_factories: typing.Mapping[str, typing.Callable[..., processing.ProcessingRoutine]] | None = None
+    module_factories: typing.Mapping[str, ProcessingModuleFactory] | None = None
     """
     Mapping :math:`name \\rightarrow factory` for module names to 
     callables which return a :class:`processing.ProcessingRoutine` instance. If the client
     implements it, you can put custom callables inside, so they will get used during module
     instantiation
+    """
+
+
+@dataclasses.dataclass(**_data_kwargs)
+class DiscoverProcessingModules:
+    """
+    Behaviour to automatically load ProcessingModules
+    """
+    discover_processing_modules: typing.Callable[[], typing.Dict[str, ProcessingModuleFactory]] | None = None
+    """
+    Callable returning a mapping of math:`name \\rightarrow factory` for module names to 
+    callables which return a :class:`processing.ProcessingRoutine` instance.
     """
 
 
@@ -535,7 +553,12 @@ class UbiiClient(ubii.proto.Client,
                          Services, Subscriptions, Publish
                  ),
                  optional_behaviors: typing.Tuple[typing.Type, ...] = (
-                         Register, Devices, RunProcessingModules, InitProcessingModules, Sessions
+                         Register,
+                         Devices,
+                         RunProcessingModules,
+                         InitProcessingModules,
+                         DiscoverProcessingModules,
+                         Sessions,
                  ),
                  **kwargs):
         """
@@ -727,6 +750,27 @@ class UbiiClient(ubii.proto.Client,
         optional or required by this client. You can check their implementation status using :func:`.implements`.
         """
         return {'optional_behaviors': self._optional_behaviors, 'required_behaviors': self._required_behaviors}
+
+    def wants(self, *behaviors) -> bool:
+        """
+        Checks if the passed behaviours are part of the clients required or optional behaviours and are not implemented
+        Basically just a shorthand for ::
+
+            all(
+                (behavior in self.behaviors['optional_behaviors'] or behavior in self.behaviors['required_behavior']
+                for behavior in behaviors
+            )
+
+        Args:
+            *behaviours: behavior types to check
+
+        Returns:
+            True if all behaviors are contained in required or optional behaviors
+        """
+        return all(
+            behavior in self.behaviors['required_behaviors'] or behavior in self.behaviors['optional_behaviors']
+            for behavior in behaviors
+        )
 
     @contextlib.asynccontextmanager
     async def _with_running_protocol(self):

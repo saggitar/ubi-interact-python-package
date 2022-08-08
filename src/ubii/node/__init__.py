@@ -79,8 +79,11 @@ Attributes:
     Register: alias for :obj:`ubii.framework.client.Register`
     RunProcessingModules: alias for :obj:`ubii.framework.client.RunProcessingModules`
     InitProcessingModules: alias for :obj:`ubii.framework.client.InitProcessingModules`
+    DiscoverProcessingModules: alias for :obj:`ubii.framework.client.DiscoverProcessingModules`
+    Sessions: alias for :obj:`ubii.framework.client.Sessions`
 
 """
+
 from ubii.framework.client import (
     UbiiClient,
     Services,
@@ -89,18 +92,15 @@ from ubii.framework.client import (
     Devices,
     Register,
     RunProcessingModules,
-    InitProcessingModules
+    InitProcessingModules,
+    DiscoverProcessingModules,
+    Sessions
 )
 from .connect import (
     connect as connect_client
 )
 
-from .protocol import (
-    LegacyProtocol
-)
-
 __all__ = (
-    'LegacyProtocol',  # noqa
     'connect_client',
     'UbiiClient',
     'Services',
@@ -110,6 +110,6 @@ __all__ = (
     'Register',
     'RunProcessingModules',
     'InitProcessingModules',
+    'DiscoverProcessingModules',
+    'Sessions'
 )
-
-

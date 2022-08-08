@@ -7,19 +7,7 @@ import typing
 import warnings
 from pathlib import Path
 
-from ubii.framework.client import UbiiClient
-
-try:
-    from importlib import metadata
-except ImportError:  # for Python<3.8
-    import importlib_metadata as metadata
-
 log = logging.getLogger(__name__)
-
-SETUPTOOLS_PM_ENTRYPOINT_KEY = 'ubii.processing_modules'
-"""
-Processing modules need to register their entry points with this key
-"""
 
 
 def import_name(name: str):
@@ -67,20 +55,6 @@ def log_to_folder(log_config, folder='logs/'):
         log_file.parent.mkdir(parents=True, exist_ok=True)
 
     return log_config
-
-
-def load_pm_entry_points() -> typing.Dict[str, typing.Any]:
-    """
-    Loads setuptools entrypoints for key :attr:`SETUPTOOLS_PM_ENTRYPOINT_KEY`
-
-    Returns:
-        list of :class:`~ubii.framework.processing.ProcessingRoutine` types
-    """
-    with warnings.catch_warnings():
-        # this deprecation is discussed a lot
-        warnings.simplefilter("ignore")
-        entries = [entry for entry in metadata.entry_points().get(SETUPTOOLS_PM_ENTRYPOINT_KEY, ())]
-        return {entry.name: entry.load() for entry in entries}
 
 
 def parse_args():
@@ -135,9 +109,12 @@ def parse_args():
 
 
 def create_pm_factories(args: argparse.Namespace) -> typing.Dict[str, typing.Any]:
+    from ubii.node.protocol import LatePMInitProtocol
+
     pms = {}
     if not args.no_discover:
-        pms.update(**load_pm_entry_points())
+        pms.update(**LatePMInitProtocol.load_pm_entry_points())
+
     if args.processing_modules:
         for name, value in args.processing_modules:
             pms[name] = import_name(value)
@@ -162,8 +139,7 @@ def main():
     """
     Entry point for cli script see :ref:`CLI` in the documentation
     """
-    from ubii.node import connect_client
-    from ubii.framework.client import InitProcessingModules
+    from ubii.node import connect_client, InitProcessingModules
     from codestare.async_utils.nursery import TaskNursery
     from ubii.framework import logging_setup
 
@@ -177,8 +153,10 @@ def main():
         with connect_client() as client:
             try:
                 client.is_dedicated_processing_node = True
-                client[InitProcessingModules] = InitProcessingModules(module_factories=pms)
-                assert client.implements(InitProcessingModules)
+                if client.wants(InitProcessingModules):
+                    client[InitProcessingModules] = InitProcessingModules(module_factories=pms)
+                    assert client.implements(InitProcessingModules)
+
                 await client
                 while client.state != client.State.UNAVAILABLE:
                     await asyncio.sleep(1)
@@ -211,13 +189,13 @@ def info_log_client():
     parser.add_argument('--url', type=str, action='store', default=None, help='URL of master node service endpoint')
     args = parse_args(parser=parser)
 
-    from ubii.node import connect_client, Subscriptions, Publish, LegacyProtocol
+    from ubii.node import connect_client, Subscriptions, Publish, UbiiClient
+    from ubii.node.protocol import LegacyProtocol
 
     loop = asyncio.get_event_loop_policy().get_event_loop()
 
     async def run():
-        client: UbiiClient[LegacyProtocol]
-        async with connect_client(url=args.url) as client:
+        async with connect_client(url=args.url, client_type=UbiiClient, protocol_type=LegacyProtocol) as client:
             # we don't hard code the topic, we use the DEFAULT TOPIC from the master node
             constants = client.protocol.context.constants
             assert constants

@@ -12,6 +12,11 @@ import weakref
 
 import aiohttp
 
+try:
+    from importlib import metadata
+except ImportError:  # for Python<3.8
+    import importlib_metadata as metadata
+
 import ubii.proto
 from ubii.framework import (
     topics,
@@ -308,8 +313,12 @@ class LegacyProtocol(client.AbstractClientProtocol[States]):
             if context.client.id is None:
                 return
 
-            result = await deregister_service(client=context.client)
-            assert result.success, f"Client did not deregister correctly! Error: {result.error}"
+            try:
+                result = await deregister_service(client=context.client)
+            except aiohttp.ServerDisconnectedError:
+                log.warning("Could not deregister, server is already disconnected")
+            else:
+                assert result.success, f"Client did not deregister correctly! Error: {result.error}"
 
         context.register_manager = context_manager(context)
         return context.register_manager
@@ -581,20 +590,54 @@ class LatePMInitProtocol(LegacyProtocol):
     load installed processing modules that require a partly initialized client node.
     """
 
+    SETUPTOOLS_PM_ENTRYPOINT_KEY = 'ubii.processing_modules'
+    """
+    Processing modules need to register their entry points with this key
+    """
+
+    @classmethod
+    def load_pm_entry_points(cls) -> typing.Dict[str, typing.Any]:
+        """
+        Loads setuptools entrypoints for key :attr:`SETUPTOOLS_PM_ENTRYPOINT_KEY`
+
+        Returns:
+            list of :class:`~ubii.framework.processing.ProcessingRoutine` types
+        """
+        with warnings.catch_warnings():
+            # this deprecation is discussed a lot
+            warnings.simplefilter("ignore")
+            entries = [entry for entry in metadata.entry_points().get(cls.SETUPTOOLS_PM_ENTRYPOINT_KEY, ())]
+            return {entry.name: entry.load() for entry in entries}
+
     async def create_client(self, context: LegacyProtocol.Context):
         """
         In addition to the behaviour of :meth:`LegacyProtocol.create_client` also initializes all
         processing modules of the client defined by it's :class:`InitProcessingModules` behaviour
         """
         await super().create_client(context)
-        already_initialized_pms = {module.name: module for module in context.client.processing_modules}
+        if context.client.wants(client.DiscoverProcessingModules):
+            if not context.client.implements(client.DiscoverProcessingModules):
+                context.client[client.DiscoverProcessingModules].discover_processing_modules = self.load_pm_entry_points
 
-        if context.client.implements(client.InitProcessingModules):
-            for name, pm in context.client[client.InitProcessingModules].module_factories.items():
-                instance: processing.ProcessingRoutine = pm(context)
-                instance.name = name
-                assert instance.name in processing.ProcessingRoutine.registry
-                already_initialized_pms[instance.name] = instance
+        already_initialized_pms = {module.name: module for module in context.client.processing_modules}
+        load_pms = (
+            context.client[client.DiscoverProcessingModules].discover_processing_modules
+            if context.client.implements(client.DiscoverProcessingModules) else
+            self.load_pm_entry_points
+        )
+
+        if (
+            context.client.wants(client.InitProcessingModules) and not
+            context.client.implements(client.InitProcessingModules)
+        ):
+            context.client[client.InitProcessingModules].module_factories = load_pms()
+
+        assert context.client.implements(client.InitProcessingModules)
+        for name, pm in context.client[client.InitProcessingModules].module_factories.items():
+            instance: processing.ProcessingRoutine = pm(context)
+            instance.name = name
+            assert instance.name in processing.ProcessingRoutine.registry
+            already_initialized_pms[instance.name] = instance
 
         context.client.processing_modules = list(already_initialized_pms.values())
 

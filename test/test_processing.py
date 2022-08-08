@@ -141,7 +141,7 @@ class TestPy(Processing):
         ),), id='processing_node')
     ]
 
-    @pytest.fixture
+    @pytest.fixture(scope='class')
     async def pm_startup(self, client, module_spec, base_session):
         await client.implements(RunProcessingModules)
         await client.implements(Sessions)

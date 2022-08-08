@@ -1,5 +1,4 @@
 import asyncio
-import contextlib
 import functools
 import os
 import threading
@@ -10,19 +9,6 @@ import pytest
 import ubii.framework.processing
 
 DEFAULT_TIMEOUT = 5
-
-
-@pytest.fixture
-def event_loop(request, record_property) -> asyncio.AbstractEventLoop:
-    """
-    Since the test in this file closes the event loop, we need
-    to create a new one each time
-    """
-    record_property('event_loop_scope', request.scope)
-    loop = asyncio.get_event_loop_policy().new_event_loop()
-    asyncio.set_event_loop(loop)
-    yield loop
-    loop.close()
 
 
 class FakePM(ubii.framework.processing.ProcessingRoutine):
@@ -43,6 +29,19 @@ class FakePM(ubii.framework.processing.ProcessingRoutine):
 
 
 class TestCLI:
+
+    @pytest.fixture(autouse=True)
+    def event_loop(self, request, record_property) -> asyncio.AbstractEventLoop:
+        """
+        Since the test in this file closes the event loop, we need
+        to create a new one each time
+        """
+        record_property('event_loop_scope', request.scope)
+        loop = asyncio.get_event_loop_policy().new_event_loop()
+        asyncio.set_event_loop(loop)
+        yield loop
+        loop.close()
+
     @pytest.fixture
     def cancel_after_timeout(self, request):
         def cancel(timeout):
@@ -51,7 +50,7 @@ class TestCLI:
             time.sleep(timeout)
             signal.raise_signal(signal.SIGINT)
 
-        thread = threading.Thread(target=functools.partial(cancel, request.param))
+        thread = threading.Thread(target=functools.partial(cancel, getattr(request, 'param', DEFAULT_TIMEOUT)))
         thread.daemon = True
         thread.start()
         yield
@@ -75,7 +74,7 @@ class TestCLI:
         indirect=['cancel_after_timeout']
     )
     @pytest.mark.closes_loop
-    def test_cli(self, cli_entry_point, monkeypatch, request, args, cancel_after_timeout, event_loop):
+    def test_cli(self, cli_entry_point, monkeypatch, request, args, cancel_after_timeout):
         args = list(itertools.chain.from_iterable(arg.split(' ') for arg in args))
         monkeypatch.setattr('sys.argv',
                             [os.fspath(request.path)] + args,
@@ -97,3 +96,12 @@ class TestCLI:
 
             for arg, value in modargs.items():
                 assert getattr(instance, arg) == value
+
+    @pytest.mark.parametrize('args', [[]])
+    @pytest.mark.parametrize('cli_entry_point', ['example-client'], indirect=True)
+    @pytest.mark.closes_loop
+    def test_info_log_client(self, cli_entry_point, request, args, cancel_after_timeout, monkeypatch):
+        monkeypatch.setattr('sys.argv',
+                            [os.fspath(request.path)] + args,
+                            raising=True)
+        cli_entry_point()

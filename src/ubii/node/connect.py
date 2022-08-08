@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import asyncio
 import logging
 import typing
 
@@ -10,7 +9,7 @@ from ubii.framework import (
     protocol,
 )
 from ubii.framework.util.typing import Protocol
-from . import protocol as default_protocol_
+from . import protocol as protocol_
 
 P = typing.TypeVar('P', bound=protocol.AbstractProtocol)
 
@@ -75,7 +74,7 @@ class connect(typing.Awaitable[client.UbiiClient[P]],
                  url=None,
                  config: constants.UbiiConfig = constants.GLOBAL_CONFIG,
                  client_type: typing.Type[client.UbiiClient] = client.UbiiClient,
-                 protocol_type: typing.Type[P] = default_protocol_.DefaultProtocol):
+                 protocol_type: typing.Type[P] = protocol_.DefaultProtocol):
         """
         Args:
             url: URL of the `master node`, overwrites the
@@ -143,5 +142,7 @@ class connect(typing.Awaitable[client.UbiiClient[P]],
 
     client_factories: typing.Dict[
         typing.Tuple[typing.Type[client.UbiiClient], typing.Type[protocol.AbstractProtocol]], ClientFactory] = {
-        (client.UbiiClient, default_protocol_.DefaultProtocol): default_create
+        (client.UbiiClient, protocol_.DefaultProtocol): default_create,
+        (client.UbiiClient, protocol_.LegacyProtocol): default_create,
+        (client.UbiiClient, protocol_.ResettableProtocol): default_create,
     }

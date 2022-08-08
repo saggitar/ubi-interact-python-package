@@ -198,12 +198,12 @@ def data_dir(pytestconfig) -> pathlib.Path:
     yield data_dir
 
 
-@pytest.fixture(scope='session')
-def cli_entry_point(pytestconfig) -> typing.Callable:
+@pytest.fixture
+def cli_entry_point(pytestconfig, request) -> typing.Callable:
     """
-    Load entry point for CLI, according to pytest config
+    Load entry point for CLI, according to pytest config or request parameter
     """
-    entry_point = pytestconfig.getini('cli_entry_point')
+    entry_point = getattr(request, 'param', pytestconfig.getini('cli_entry_point'))
 
     with warnings.catch_warnings():
         # this deprecation is discussed a lot
