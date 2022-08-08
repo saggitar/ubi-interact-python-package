@@ -190,12 +190,12 @@ def info_log_client():
     args = parse_args(parser=parser)
 
     from ubii.node import connect_client, Subscriptions, Publish, UbiiClient
-    from ubii.node.protocol import LegacyProtocol
 
     loop = asyncio.get_event_loop_policy().get_event_loop()
 
     async def run():
-        async with connect_client(url=args.url, client_type=UbiiClient, protocol_type=LegacyProtocol) as client:
+        client: UbiiClient
+        async with connect_client(url=args.url) as client:
             # we don't hard code the topic, we use the DEFAULT TOPIC from the master node
             constants = client.protocol.context.constants
             assert constants
