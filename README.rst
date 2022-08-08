@@ -158,6 +158,7 @@ modules.
    `auto discovery <#processing-modules>`__ during development or as a
    fallback
 
+
 Processing Modules
 ^^^^^^^^^^^^^^^^^^
 
@@ -180,7 +181,7 @@ Example usage after install of module:
 
    $ pip install ubii-processing-module-ocr
    $ ubii-client
-   > Imported [<class 'ubii.processing_modules.ocr.tesseract_ocr.TesseractOCR_EAST'>, ... ]
+   > Loaded processing module factories <class 'ubii.processing_modules.ocr.tesseract_ocr.TesseractOCR_EAST'>, ...
    > ...
 
 or with cli argument to only load specific processing modules (also
@@ -190,5 +191,5 @@ turning off auto discovery in this example)
 
    $ pip install ubii-processing-module-ocr
    $ ubii-client --no-discover --processing-modules ubii.processing_modules.ocr.tesseract_ocr.TesseractOCR_EAST
-   > Imported <class 'ubii.processing_modules.ocr.tesseract_ocr.TesseractOCR_EAST'>
+   > Loaded processing module factories <class 'ubii.processing_modules.ocr.tesseract_ocr.TesseractOCR_EAST'>
    > ...
