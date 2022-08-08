@@ -77,6 +77,11 @@ Muxer / Demuxer inputs & outputs
 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 If the inputs are :class:`TopicMuxers <ubii.framework.topics.TopicMuxer>`, the client will 
 subscribe to the topic regex that is specified by the 
-:attr:`~ubii.framework.topics.TopicMuxer.topic_selector` attribute, 
+:attr:`~ubii.framework.topics.TopicMuxer.topic_selector` attribute (typically a wildcard pattern)
+and generate metadata for the records it receives, according to the muxer specification.
+
+If the outputs are :class:`TopicDemuxers <ubii.framework.topics.TopicDemuxer>`, the client will
+use the metadata associated with the generated records to publish them to specific topics according to
+the demuxer specification.
 
 
