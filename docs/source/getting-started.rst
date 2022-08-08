@@ -239,9 +239,9 @@ pass the URL of the `master node` service endpoint.
 
 .. literalinclude:: ../../src/ubii/cli/main.py
    :pyobject: info_log_client
-   :lineno-start: 12
-   :lines: 12-27
-   :emphasize-lines: 9,12,15
+   :lineno-start: 14
+   :lines: 14-27
+   :emphasize-lines: 6,10,12
    :dedent: 4
 
 

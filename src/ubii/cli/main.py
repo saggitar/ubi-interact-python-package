@@ -35,7 +35,9 @@ def import_name(name: str):
 def log_to_folder(log_config, folder='logs/'):
     """
     Changes the log config so that all logs are written to the specified folder
+
     Args:
+
         folder: path to folder that should be prefixed
         log_config: configuration dictionary in :func:`logging.config.dictConfig` format
 
@@ -189,9 +191,9 @@ def info_log_client():
     parser.add_argument('--url', type=str, action='store', default=None, help='URL of master node service endpoint')
     args = parse_args(parser=parser)
 
-    from ubii.node import connect_client, Subscriptions, Publish, UbiiClient
-
     loop = asyncio.get_event_loop_policy().get_event_loop()
+
+    from ubii.node import connect_client, Subscriptions, Publish, UbiiClient
 
     async def run():
         client: UbiiClient
@@ -200,10 +202,9 @@ def info_log_client():
             constants = client.protocol.context.constants
             assert constants
             info_topic_pattern = constants.DEFAULT_TOPICS.INFO_TOPICS.REGEX_ALL_INFOS
-            info, = await client[Subscriptions].subscribe_regex(info_topic_pattern)
 
+            await client[Subscriptions].subscribe_regex(info_topic_pattern).with_callback(print)
             print(f"Subscribed to topic {info_topic_pattern!r}")
-            info.register_callback(print)
 
             value = None
 
