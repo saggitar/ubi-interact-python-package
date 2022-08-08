@@ -3,7 +3,7 @@ Ubi Interact Python Node
 
 This project implements the
 `Ubi-Interact <https://github.com/SandroWeber/ubi-interact>`__ Protocol
-in Pyhton. Ubi Interact is a framework developed at TUM (Technical
+in Python. Ubi Interact is a framework developed at TUM (Technical
 University of Munich) for developing distributed and reactive
 applications, the main focus of the Python node is to allow the
 implementation of ``processing-modules`` in Python.
