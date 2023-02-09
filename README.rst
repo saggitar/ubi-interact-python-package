@@ -57,7 +57,7 @@ environment during creation).
 
 -  Python version 3.7 of greater
 -  Virtual Environment (recommended) with pip installed
-   (e.g.``python3 -m venv env`` followed by
+   (e.g. ``python3 -m venv env`` followed by
    ``source ./env/bin/activate``)
 -  Continue at `PyPi <#pypi>`__
 
